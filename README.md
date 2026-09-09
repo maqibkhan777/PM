@@ -170,23 +170,51 @@ APP_ENV=development
 DEBUG=true
 DRY_RUN=true
 
-# Jira Cloud
+# ------------------------------------------------------------------------------
+# Jira Cloud (Primary Ingestion: Polling, Optional: Webhook)
+# ------------------------------------------------------------------------------
 JIRA_BASE_URL=https://your-company.atlassian.net
 JIRA_EMAIL=pm-agent@your-company.com
 JIRA_API_TOKEN=your_jira_api_token
 
-# Discord Webhook
+# Polling Configuration (Primary Event Ingestion)
+JIRA_POLLING_ENABLED=true
+JIRA_POLLING_INTERVAL_MINUTES=2
+JIRA_POLLING_BATCH_SIZE=50
+JIRA_POLLING_LOOKBACK_MINUTES=5
+JIRA_POLLING_INITIAL_LOOKBACK_MINUTES=60
+
+# Optional Fast Path: Jira Webhooks
+JIRA_WEBHOOK_SECRET=
+
+# ------------------------------------------------------------------------------
+# Discord Webhook (Outbound Alerts)
+# ------------------------------------------------------------------------------
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/your/webhook/url
 
-# Mattermost
-MATTERMOST_URL=https://mattermost.your-company.com
-MATTERMOST_TOKEN=your_bot_access_token
+# ------------------------------------------------------------------------------
+# Mattermost (OPTIONAL — Leave empty if not configured)
+# The PM Agent runs completely without Mattermost credentials.
+# ------------------------------------------------------------------------------
+MATTERMOST_URL=
+MATTERMOST_TOKEN=
+MATTERMOST_TEAM_NAME=
 
 # Rule Thresholds
 STALE_TASK_HOURS=24
 SCHEDULER_ENABLED=true
 SCHEDULER_INTERVAL_MINUTES=15
 ```
+
+> [!NOTE]
+> **Enabling Mattermost Later**:
+> When you obtain Mattermost bot access, simply set:
+> ```ini
+> MATTERMOST_URL=https://mattermost.your-company.com
+> MATTERMOST_TOKEN=your_bot_access_token
+> MATTERMOST_TEAM_NAME=main
+> ```
+> The connector will automatically connect and resume delivering direct messages without any code or database changes.
 
 ### Step 4: Seed Demo Data
 ```powershell
@@ -198,6 +226,12 @@ python scripts/seed_demo_data.py
 python run.py
 ```
 The server will start at `http://127.0.0.1:8000`. Interactive OpenAPI documentation is available at `http://127.0.0.1:8000/docs`.
+
+### Step 6: Trigger Manual Polling (Optional / Testing)
+You can trigger an on-demand Jira polling cycle at any time:
+```powershell
+curl -X POST http://127.0.0.1:8000/jira/poll
+```
 
 ---
 
