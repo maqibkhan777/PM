@@ -47,8 +47,8 @@ class ActiveWorkRule(BaseRule):
         task_status = "Unknown"
         # Determine current status from event payload or context
         if isinstance(event, (TaskCommentAdded, TaskWorklogged)):
-            issue_data = event.payload.get("issue", {})
-            fields = issue_data.get("fields", {})
+            issue_data = event.payload.get("issue") if isinstance(event.payload, dict) and "issue" in event.payload else event.payload
+            fields = issue_data.get("fields", {}) if isinstance(issue_data, dict) else {}
             task_status = fields.get("status", {}).get("name", "")
             if not task_status and context:
                 task_status = context.get("current_status", "")
@@ -61,7 +61,8 @@ class ActiveWorkRule(BaseRule):
             task_key = event.task_key or event.task_id or "Unknown"
             resource_name = event.actor_name or "Unassigned"
             project_name = event.project_key or "N/A"
-            task_title = event.payload.get("issue", {}).get("fields", {}).get("summary", "")
+            issue_obj = event.payload.get("issue") if isinstance(event.payload, dict) and "issue" in event.payload else event.payload
+            task_title = issue_obj.get("fields", {}).get("summary", "") if isinstance(issue_obj, dict) else ""
 
             # Deduplication check
             if not notification_dedup_service.should_notify(

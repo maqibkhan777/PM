@@ -186,6 +186,7 @@ class JiraPoller:
 
         events_to_emit: List[BaseEvent] = []
         new_activity_time: Optional[str] = None
+        event_payload = {"issue": issue, "task_key": task_key}
 
         # ----------------------------------------------------------------------
         # Change Detection
@@ -219,7 +220,7 @@ class JiraPoller:
                     reporter_id=fields.get("reporter", {}).get("accountId"),
                     reporter_name=fields.get("reporter", {}).get("displayName"),
                     due_date=duedate,
-                    payload=issue
+                    payload=event_payload
                 )
                 events_to_emit.append(event)
                 new_activity_time = created_str
@@ -266,7 +267,7 @@ class JiraPoller:
                             previous_status=old_st,
                             new_status=new_st,
                             reopened_by=actor_name,
-                            payload=issue
+                            payload=event_payload
                         )
                     elif new_st.lower() in DONE_STATUSES and old_st.lower() not in DONE_STATUSES:
                         event = TaskCompleted(
@@ -282,7 +283,7 @@ class JiraPoller:
                             task_key=task_key,
                             completion_time=hist_created or now_str,
                             resolved_by=actor_name,
-                            payload=issue
+                            payload=event_payload
                         )
                     else:
                         event = TaskStatusChanged(
@@ -298,7 +299,7 @@ class JiraPoller:
                             task_key=task_key,
                             old_status=old_st,
                             new_status=new_st,
-                            payload=issue
+                            payload=event_payload
                         )
                     events_to_emit.append(event)
                     new_activity_time = hist_created
@@ -321,7 +322,7 @@ class JiraPoller:
                         old_assignee_name=from_str,
                         new_assignee_id=item.get("to"),
                         new_assignee_name=to_str,
-                        payload=issue
+                        payload=event_payload
                     )
                     events_to_emit.append(event)
                     new_activity_time = hist_created
@@ -342,7 +343,7 @@ class JiraPoller:
                         task_key=task_key,
                         old_priority=from_str or "Unknown",
                         new_priority=to_str or "Unknown",
-                        payload=issue
+                        payload=event_payload
                     )
                     events_to_emit.append(event)
                     new_activity_time = hist_created
@@ -363,7 +364,7 @@ class JiraPoller:
                         task_key=task_key,
                         changed_fields=[field_name],
                         changes={field_name: {"from": from_str, "to": to_str}},
-                        payload=issue
+                        payload=event_payload
                     )
                     events_to_emit.append(event)
                     new_activity_time = hist_created
@@ -399,7 +400,7 @@ class JiraPoller:
                     comment_body=body_text,
                     author_id=author.get("accountId"),
                     author_name=author.get("displayName"),
-                    payload=issue
+                    payload=event_payload
                 )
                 events_to_emit.append(event)
                 new_activity_time = c_created
@@ -431,7 +432,7 @@ class JiraPoller:
                     time_spent_seconds=time_secs,
                     time_spent_human=w.get("timeSpent"),
                     comment=str(w.get("comment", "")),
-                    payload=issue
+                    payload=event_payload
                 )
                 events_to_emit.append(event)
                 new_activity_time = w_created
@@ -453,7 +454,7 @@ class JiraPoller:
                     task_key=task_key,
                     old_status=cached_state.get("status", "Unknown"),
                     new_status=status_name,
-                    payload=issue
+                    payload=event_payload
                 )
                 events_to_emit.append(event)
                 new_activity_time = updated_str
@@ -473,7 +474,7 @@ class JiraPoller:
                     task_key=task_key,
                     changed_fields=["updated"],
                     changes={"updated": {"from": cached_state.get("updated_at"), "to": updated_str}},
-                    payload=issue
+                    payload=event_payload
                 )
                 events_to_emit.append(event)
                 # Note: per Amendment 2, generic non-meaningful update does not set new_activity_time

@@ -388,6 +388,9 @@ class ActionRepository:
                 return d
             return None
 
+    def get_by_id(self, action_id: str) -> Optional[Dict[str, Any]]:
+        return self.get_by_action_id(action_id)
+
     def update_status(
         self,
         action_id: str,
