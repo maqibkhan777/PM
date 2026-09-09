@@ -105,47 +105,75 @@ class ActionEngine:
         # ----------------------------------------------------------------------
         # 2. Strict User Mapping Resolution (for Mattermost DMs)
         # ----------------------------------------------------------------------
-        if target_system == "mattermost" and action.action_type == ActionType.SEND_MESSAGE:
-            recipient_id = action.parameters.get("recipient_id") or target_id
-            jira_user_id = action.parameters.get("jira_user_id") or recipient_id
-            display_name = action.parameters.get("display_name") or action.parameters.get("recipient_name")
-
-            resolved_mm_id, method = user_mapping_service.resolve_jira_to_mattermost(
-                jira_user_id=jira_user_id,
-                display_name=display_name
-            )
-
-            if not resolved_mm_id:
-                # UNRESOLVED: Do NOT send message! Create USER_MAPPING_REQUIRED alert
-                logger.warning(f"User mapping required for Jira user '{display_name or jira_user_id}'. Message will NOT be sent.")
-                action.status = ActionStatus.USER_MAPPING_REQUIRED
+        if target_system == "mattermost":
+            mm_connector = self.get_connector("mattermost")
+            is_configured = getattr(mm_connector, "is_configured", False) if mm_connector else settings.is_mattermost_configured()
+            if not is_configured:
+                logger.info(f"Mattermost is not configured; skipping action {action.action_id} ({action.action_type.value}).")
+                action.status = ActionStatus.SKIPPED
                 self.action_repo.update_status(
                     action_id=action.action_id,
-                    status=ActionStatus.USER_MAPPING_REQUIRED.value,
-                    last_error="No verified Mattermost account mapping exists."
+                    status=ActionStatus.SKIPPED.value,
+                    last_error="connector_not_configured"
                 )
                 audit_service.log_action(
                     actor=action.requested_by,
                     action=action.action_type.value,
-                    target=f"mattermost:{jira_user_id}",
-                    result="User Mapping Required",
-                    details={"jira_user_id": jira_user_id, "display_name": display_name}
+                    target=f"mattermost:{target_id}",
+                    result="Skipped",
+                    details={"reason": "connector_not_configured"}
                 )
-
-                # Send Discord Alert to PM about missing mapping
-                await self._notify_pm_unmapped_user(jira_user_name=display_name or jira_user_id, jira_user_id=jira_user_id)
-
                 return ActionResult(
-                    success=False,
+                    success=True,
                     action_id=action.action_id,
-                    status=ActionStatus.USER_MAPPING_REQUIRED,
+                    status=ActionStatus.SKIPPED,
                     target_system=target_system,
                     target_id=target_id,
-                    error_message="User mapping required: no verified Mattermost account found."
+                    result_data={"skipped": True, "reason": "connector_not_configured"},
+                    error_message="connector_not_configured"
                 )
-            else:
-                action.parameters["recipient_id"] = resolved_mm_id
-                action.parameters["resolved_via"] = method
+
+            if action.action_type == ActionType.SEND_MESSAGE:
+                recipient_id = action.parameters.get("recipient_id") or target_id
+                jira_user_id = action.parameters.get("jira_user_id") or recipient_id
+                display_name = action.parameters.get("display_name") or action.parameters.get("recipient_name")
+
+                resolved_mm_id, method = user_mapping_service.resolve_jira_to_mattermost(
+                    jira_user_id=jira_user_id,
+                    display_name=display_name
+                )
+
+                if not resolved_mm_id:
+                    # UNRESOLVED: Do NOT send message! Create USER_MAPPING_REQUIRED alert
+                    logger.warning(f"User mapping required for Jira user '{display_name or jira_user_id}'. Message will NOT be sent.")
+                    action.status = ActionStatus.USER_MAPPING_REQUIRED
+                    self.action_repo.update_status(
+                        action_id=action.action_id,
+                        status=ActionStatus.USER_MAPPING_REQUIRED.value,
+                        last_error="No verified Mattermost account mapping exists."
+                    )
+                    audit_service.log_action(
+                        actor=action.requested_by,
+                        action=action.action_type.value,
+                        target=f"mattermost:{jira_user_id}",
+                        result="User Mapping Required",
+                        details={"jira_user_id": jira_user_id, "display_name": display_name}
+                    )
+
+                    # Send Discord Alert to PM about missing mapping
+                    await self._notify_pm_unmapped_user(jira_user_name=display_name or jira_user_id, jira_user_id=jira_user_id)
+
+                    return ActionResult(
+                        success=False,
+                        action_id=action.action_id,
+                        status=ActionStatus.USER_MAPPING_REQUIRED,
+                        target_system=target_system,
+                        target_id=target_id,
+                        error_message="User mapping required: no verified Mattermost account found."
+                    )
+                else:
+                    action.parameters["recipient_id"] = resolved_mm_id
+                    action.parameters["resolved_via"] = method
 
         # ----------------------------------------------------------------------
         # 3. Capability and Security Level Check

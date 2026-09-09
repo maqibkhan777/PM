@@ -119,6 +119,33 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
+
+-- Persistent Jira Polling Checkpoint table
+CREATE TABLE IF NOT EXISTS jira_polling_state (
+    id TEXT PRIMARY KEY,
+    connector TEXT NOT NULL UNIQUE,
+    last_successful_poll TEXT,
+    updated_at TEXT NOT NULL
+);
+
+-- Jira Issue State Projection (Local cache for change detection and stale/overdue monitoring)
+CREATE TABLE IF NOT EXISTS jira_issue_state (
+    jira_issue_key TEXT PRIMARY KEY,
+    summary TEXT,
+    status TEXT NOT NULL,
+    assignee TEXT,
+    priority TEXT,
+    due_date TEXT,
+    updated_at TEXT,
+    last_seen_at TEXT NOT NULL,
+    last_activity_at TEXT NOT NULL,
+    project_key TEXT,
+    raw_reference TEXT -- JSON string
+);
+
+CREATE INDEX IF NOT EXISTS idx_jira_issue_state_status ON jira_issue_state(status);
+CREATE INDEX IF NOT EXISTS idx_jira_issue_state_due_date ON jira_issue_state(due_date);
+CREATE INDEX IF NOT EXISTS idx_jira_issue_state_last_activity ON jira_issue_state(last_activity_at);
 """
 
 

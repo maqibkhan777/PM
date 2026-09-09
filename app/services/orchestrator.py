@@ -2,7 +2,7 @@
 
 import asyncio
 from typing import Any, Dict, Optional
-from app.connectors.jira import JiraConnector
+from app.connectors.jira import JiraConnector, JiraPoller
 from app.connectors.discord import DiscordWebhookConnector, DiscordBotConnector
 from app.connectors.mattermost import MattermostConnector
 from app.core.events.bus import event_bus
@@ -10,7 +10,7 @@ from app.core.events.base import BaseEvent
 from app.core.rules.engine import rules_engine
 from app.core.actions.engine import action_engine
 from app.services.scheduler import periodic_scheduler
-from app.database.repositories import EventRepository
+from app.database.repositories import EventRepository, JiraIssueStateRepository
 from app.database.connection import db_manager, DatabaseManager
 from app.config.settings import settings
 from app.utils.logger import logger
@@ -23,11 +23,21 @@ class SystemOrchestrator:
     def __init__(self, manager: Optional[DatabaseManager] = None):
         self.mgr = manager or db_manager
         self.event_repo = EventRepository(self.mgr)
+        self.issue_state_repo = JiraIssueStateRepository(self.mgr)
         self.jira_connector = JiraConnector()
+        self.jira_poller = JiraPoller(client=self.jira_connector.client, manager=self.mgr)
         self.discord_webhook_connector = DiscordWebhookConnector()
         self.discord_bot_connector = DiscordBotConnector()
         self.mattermost_connector = MattermostConnector()
         self._is_initialized = False
+
+    @property
+    def scheduler(self):
+        return periodic_scheduler
+
+    @property
+    def periodic_scheduler(self):
+        return periodic_scheduler
 
     async def initialize(self) -> None:
         """Initialize connectors and wire event bus subscribers."""
@@ -74,6 +84,35 @@ class SystemOrchestrator:
                 await action_engine.execute(action)
         except Exception as e:
             logger.error(f"Error processing event {event.event_type} in rules pipeline: {e}", exc_info=True)
+
+    async def ingest_polled_event(self, event: BaseEvent) -> str:
+        """Ingest a verified event produced by JiraPoller into the database and Event Bus."""
+        if not self._is_initialized:
+            await self.initialize()
+
+        event_id = self.event_repo.insert(
+            event_type=event.event_type,
+            source=event.source,
+            external_event_id=event.external_event_id,
+            timestamp=event.timestamp,
+            payload=event.payload or event.model_dump(),
+            actor_id=event.actor_id,
+            actor_name=event.actor_name,
+            project_id=event.project_id,
+            task_id=event.task_key or event.task_id,
+            processing_status="PROCESSING"
+        )
+        event.id = event_id
+
+        try:
+            await event_bus.publish(event)
+            self.event_repo.update_status(event_id, "PROCESSED")
+            logger.info(f"Polled event {event_id} ({event.event_type} for {event.task_key or event.task_id}) processed.")
+        except Exception as e:
+            logger.error(f"Error publishing polled event {event_id}: {e}", exc_info=True)
+            self.event_repo.update_status(event_id, "FAILED", last_error=str(e))
+
+        return event_id
 
     async def process_raw_webhook(
         self,
@@ -135,6 +174,25 @@ class SystemOrchestrator:
             if normalized_event:
                 # Ensure the event ID matches the DB event ID for traceability
                 normalized_event.id = event_id
+
+                # Keep local Jira issue state projection updated from webhooks
+                if source == "jira" and raw_payload.get("issue"):
+                    issue = raw_payload["issue"]
+                    fields = issue.get("fields", {})
+                    self.issue_state_repo.upsert(
+                        jira_issue_key=issue.get("key", normalized_event.task_key or ""),
+                        summary=fields.get("summary", getattr(normalized_event, "title", None)),
+                        status=fields.get("status", {}).get("name", getattr(normalized_event, "status", getattr(normalized_event, "new_status", "Unknown"))),
+                        assignee=fields.get("assignee", {}).get("displayName", getattr(normalized_event, "assignee_name", None)),
+                        priority=fields.get("priority", {}).get("name", getattr(normalized_event, "priority", None)),
+                        due_date=fields.get("duedate"),
+                        updated_at=fields.get("updated"),
+                        last_seen_at=utc_now_iso(),
+                        last_activity_at=normalized_event.timestamp or fields.get("updated"),
+                        project_key=fields.get("project", {}).get("key", normalized_event.project_key),
+                        raw_reference=issue
+                    )
+
                 await event_bus.publish(normalized_event)
                 self.event_repo.update_status(event_id, "PROCESSED")
                 logger.info(f"Event {event_id} ({normalized_event.event_type}) successfully processed.")

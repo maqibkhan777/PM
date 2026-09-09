@@ -121,13 +121,35 @@ class JiraClient:
             params={"expand": "changelog,names,schema"}
         )
 
-    async def search_issues(self, jql: str, max_results: int = 50) -> Dict[str, Any]:
-        """Search issues using JQL."""
-        return await self._request(
-            "GET",
-            "/rest/api/3/search",
-            params={"jql": jql, "maxResults": max_results}
-        )
+    async def search_issues(
+        self,
+        jql: str,
+        start_at: int = 0,
+        max_results: int = 50,
+        expand: Optional[str] = "changelog",
+        fields: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """Search issues using JQL with pagination and changelog expansion."""
+        params: Dict[str, Any] = {
+            "jql": jql,
+            "startAt": start_at,
+            "maxResults": max_results
+        }
+        if expand:
+            params["expand"] = expand
+        if fields:
+            params["fields"] = ",".join(fields)
+        return await self._request("GET", "/rest/api/3/search", params=params)
+
+    async def get_issue_comments(self, issue_key_or_id: str) -> List[Dict[str, Any]]:
+        """Fetch comments for a specific issue."""
+        res = await self._request("GET", f"/rest/api/3/issue/{issue_key_or_id}/comment")
+        return res.get("comments", []) if isinstance(res, dict) else []
+
+    async def get_issue_worklogs(self, issue_key_or_id: str) -> List[Dict[str, Any]]:
+        """Fetch worklogs for a specific issue."""
+        res = await self._request("GET", f"/rest/api/3/issue/{issue_key_or_id}/worklog")
+        return res.get("worklogs", []) if isinstance(res, dict) else []
 
     async def get_projects(self) -> List[Dict[str, Any]]:
         """Fetch list of accessible Jira projects."""

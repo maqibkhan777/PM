@@ -23,9 +23,14 @@ class MattermostConnector(BaseConnector):
             Capability.SEND_CHANNEL_MESSAGE,
         }
 
+    @property
+    def is_configured(self) -> bool:
+        """Check if Mattermost is configured with credentials."""
+        return settings.is_mattermost_configured()
+
     async def connect(self) -> bool:
-        if not settings.is_mattermost_configured():
-            logger.info("Mattermost is using placeholder credentials.")
+        if not self.is_configured:
+            logger.info("Mattermost is not configured; Mattermost actions will be skipped.")
             self._is_connected = False
             return False
         try:
@@ -43,27 +48,44 @@ class MattermostConnector(BaseConnector):
         self._is_connected = False
 
     async def health_check(self) -> HealthStatus:
-        if not settings.is_mattermost_configured():
+        if not self.is_configured:
             return HealthStatus(
                 name="Mattermost",
                 status="NOT_CONFIGURED",
                 is_connected=False,
-                details={"message": "Placeholder token in use"}
+                details={
+                    "configured": False,
+                    "connected": False,
+                    "status": "not_configured",
+                    "message": "Mattermost is not configured; Mattermost actions will be skipped."
+                }
             )
         try:
             me = await self.client.get_me()
+            connected = bool(me.get("id"))
             return HealthStatus(
                 name="Mattermost",
-                status="OK",
-                is_connected=True,
-                details={"botUser": me.get("username"), "id": me.get("id")}
+                status="OK" if connected else "DEGRADED",
+                is_connected=connected,
+                details={
+                    "configured": True,
+                    "connected": connected,
+                    "status": "connected" if connected else "unavailable",
+                    "botUser": me.get("username"),
+                    "id": me.get("id")
+                }
             )
         except Exception as e:
             return HealthStatus(
                 name="Mattermost",
                 status="DEGRADED",
                 is_connected=False,
-                details={"error": str(e)}
+                details={
+                    "configured": True,
+                    "connected": False,
+                    "status": "unavailable",
+                    "error": str(e)
+                }
             )
 
     async def execute_action(self, action: Any) -> Dict[str, Any]:

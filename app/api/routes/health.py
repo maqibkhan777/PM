@@ -37,13 +37,30 @@ async def get_health():
 
 @router.get("/health/connectors")
 async def get_connectors_health():
-    """Detailed health and capabilities of all registered connectors."""
+    """Detailed health, polling status, and capabilities of all registered connectors."""
     jira_h = await orchestrator.jira_connector.health_check()
     mm_h = await orchestrator.mattermost_connector.health_check()
     discord_h = await orchestrator.discord_webhook_connector.health_check()
     discord_bot_h = await orchestrator.discord_bot_connector.health_check()
 
     return {
+        "jira": {
+            "connected": jira_h.is_connected,
+            "status": jira_h.status,
+            "polling_enabled": settings.JIRA_POLLING_ENABLED,
+            "polling_status": jira_h.details.get("polling_status", "disabled"),
+            "last_poll_success": jira_h.details.get("last_poll_success")
+        },
+        "mattermost": {
+            "configured": mm_h.details.get("configured", False),
+            "connected": mm_h.is_connected,
+            "status": mm_h.details.get("status", "not_configured")
+        },
+        "discord": {
+            "configured": settings.is_discord_configured(),
+            "connected": discord_h.is_connected,
+            "status": discord_h.status
+        },
         "connectors": [
             {
                 "name": orchestrator.jira_connector.name,

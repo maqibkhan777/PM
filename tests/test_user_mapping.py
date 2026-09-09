@@ -60,8 +60,12 @@ def test_unresolved_user_never_guesses(temp_db):
 
 
 @pytest.mark.asyncio
-async def test_action_engine_blocks_unmapped_user(temp_db):
-    """Test that ActionEngine stops and flags USER_MAPPING_REQUIRED when mapping is missing."""
+async def test_action_engine_blocks_unmapped_user(temp_db, monkeypatch):
+    """Test that ActionEngine stops and flags USER_MAPPING_REQUIRED when mapping is missing and MM is configured."""
+    from app.config.settings import settings
+    monkeypatch.setattr(settings, "MATTERMOST_URL", "https://mattermost.internal.corp")
+    monkeypatch.setattr(settings, "MATTERMOST_TOKEN", "valid-mattermost-token-123")
+
     engine = ActionEngine(manager=temp_db)
     engine.register_connector(MattermostConnector())
     engine.register_connector(DiscordWebhookConnector())

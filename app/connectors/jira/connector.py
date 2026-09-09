@@ -54,12 +54,21 @@ class JiraConnector(BaseConnector):
         self._is_connected = False
 
     async def health_check(self) -> HealthStatus:
+        from app.database.repositories import JiraPollingStateRepository
+        checkpoint = JiraPollingStateRepository().get_checkpoint("jira")
+
         if not settings.is_jira_configured():
             return HealthStatus(
                 name="Jira",
                 status="NOT_CONFIGURED",
                 is_connected=False,
-                details={"message": "Placeholder credentials in use"}
+                details={
+                    "status": "not_configured",
+                    "polling_enabled": settings.JIRA_POLLING_ENABLED,
+                    "polling_status": "not_configured",
+                    "last_poll_success": checkpoint,
+                    "message": "Jira credentials not configured"
+                }
             )
         try:
             myself = await self.client.get_myself()
@@ -68,9 +77,13 @@ class JiraConnector(BaseConnector):
                 status="OK",
                 is_connected=True,
                 details={
+                    "status": "connected",
                     "displayName": myself.get("displayName"),
                     "email": myself.get("emailAddress"),
-                    "accountType": myself.get("accountType")
+                    "accountType": myself.get("accountType"),
+                    "polling_enabled": settings.JIRA_POLLING_ENABLED,
+                    "polling_status": "active" if settings.JIRA_POLLING_ENABLED else "disabled",
+                    "last_poll_success": checkpoint
                 }
             )
         except Exception as e:
@@ -78,7 +91,13 @@ class JiraConnector(BaseConnector):
                 name="Jira",
                 status="DEGRADED",
                 is_connected=False,
-                details={"error": str(e)}
+                details={
+                    "status": "degraded",
+                    "polling_enabled": settings.JIRA_POLLING_ENABLED,
+                    "polling_status": "degraded",
+                    "last_poll_success": checkpoint,
+                    "error": str(e)
+                }
             )
 
     async def handle_incoming_event(

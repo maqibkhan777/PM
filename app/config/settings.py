@@ -37,10 +37,17 @@ class Settings(BaseSettings):
     DISCORD_WEBHOOK_URL: str = "https://discord.com/api/webhooks/placeholder"
     PM_DISCORD_CHANNEL: str = "pm-alerts"
 
-    # Mattermost Connector
-    MATTERMOST_URL: str = "https://mattermost.your-domain.com"
-    MATTERMOST_TOKEN: str = "placeholder_mm_token"
-    MATTERMOST_TEAM_NAME: str = "main"
+    # Mattermost Connector (Optional)
+    MATTERMOST_URL: Optional[str] = None
+    MATTERMOST_TOKEN: Optional[str] = None
+    MATTERMOST_TEAM_NAME: Optional[str] = None
+
+    # Jira Polling Settings
+    JIRA_POLLING_ENABLED: bool = True
+    JIRA_POLLING_INTERVAL_MINUTES: int = 2
+    JIRA_POLLING_BATCH_SIZE: int = 50
+    JIRA_POLLING_LOOKBACK_MINUTES: int = 5
+    JIRA_POLLING_INITIAL_LOOKBACK_MINUTES: int = 60
 
     # Rules & Notification Policies
     STALE_TASK_HOURS: int = 24
@@ -87,8 +94,10 @@ class Settings(BaseSettings):
         """Check if Mattermost credentials are meaningfully configured."""
         return bool(
             self.MATTERMOST_URL
+            and self.MATTERMOST_URL.strip()
             and not self.MATTERMOST_URL.startswith("https://mattermost.your-domain")
             and self.MATTERMOST_TOKEN
+            and self.MATTERMOST_TOKEN.strip()
             and self.MATTERMOST_TOKEN != "placeholder_mm_token"
         )
 

@@ -62,6 +62,7 @@ class ActionStatus(str, Enum):
     DRY_RUN_SIMULATED = "DRY_RUN_SIMULATED"
     ACTION_UNSUPPORTED = "ACTION_UNSUPPORTED"
     USER_MAPPING_REQUIRED = "USER_MAPPING_REQUIRED"
+    SKIPPED = "SKIPPED"
 
 
 class ApprovalClassification(str, Enum):

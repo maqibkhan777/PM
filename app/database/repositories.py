@@ -508,3 +508,221 @@ class AuditRepository:
                 d["details"] = json.loads(d["details"]) if d["details"] else {}
                 results.append(d)
             return results
+
+
+class JiraPollingStateRepository:
+    """Repository for persisting Jira polling checkpoints across application restarts."""
+
+    def __init__(self, manager: Optional[DatabaseManager] = None):
+        self.mgr = manager or db_manager
+
+    def get_checkpoint(self, connector: str = "jira") -> Optional[str]:
+        """Fetch the last successful polling timestamp for a connector."""
+        from app.database.schema import init_db
+        try:
+            with self.mgr.session() as conn:
+                cursor = conn.execute(
+                    "SELECT last_successful_poll FROM jira_polling_state WHERE connector = ?",
+                    (connector,)
+                )
+                row = cursor.fetchone()
+                if row and row["last_successful_poll"]:
+                    return str(row["last_successful_poll"])
+                return None
+        except sqlite3.OperationalError:
+            init_db(self.mgr)
+            return None
+
+    def update_checkpoint(self, connector: str, checkpoint_iso: str) -> None:
+        """Atomically record the latest successful poll checkpoint."""
+        from app.database.schema import init_db
+        sid = str(uuid.uuid4())
+        now_str = utc_now_iso()
+        try:
+            with self.mgr.session() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO jira_polling_state (id, connector, last_successful_poll, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(connector) DO UPDATE SET
+                        last_successful_poll = excluded.last_successful_poll,
+                        updated_at = excluded.updated_at
+                    """,
+                    (sid, connector, checkpoint_iso, now_str)
+                )
+        except sqlite3.OperationalError:
+            init_db(self.mgr)
+            with self.mgr.session() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO jira_polling_state (id, connector, last_successful_poll, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(connector) DO UPDATE SET
+                        last_successful_poll = excluded.last_successful_poll,
+                        updated_at = excluded.updated_at
+                    """,
+                    (sid, connector, checkpoint_iso, now_str)
+                )
+
+
+class JiraIssueStateRepository:
+    """Repository for local Jira issue state projection (read cache of Jira).
+
+    Note: Jira remains the authoritative source of truth. This repository stores a
+    local projection used for change detection, stale task evaluation, and overdue monitoring.
+    """
+
+    def __init__(self, manager: Optional[DatabaseManager] = None):
+        self.mgr = manager or db_manager
+
+    def get(self, issue_key: str) -> Optional[Dict[str, Any]]:
+        """Retrieve latest known state for a specific Jira issue."""
+        from app.database.schema import init_db
+        try:
+            with self.mgr.session() as conn:
+                cursor = conn.execute(
+                    "SELECT * FROM jira_issue_state WHERE jira_issue_key = ?",
+                    (issue_key,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    d = dict(row)
+                    if d.get("raw_reference"):
+                        try:
+                            d["raw_reference"] = json.loads(d["raw_reference"])
+                        except Exception:
+                            pass
+                    return d
+                return None
+        except sqlite3.OperationalError:
+            init_db(self.mgr)
+            return None
+
+    def upsert(
+        self,
+        jira_issue_key: str,
+        summary: Optional[str],
+        status: str,
+        assignee: Optional[str] = None,
+        priority: Optional[str] = None,
+        due_date: Optional[str] = None,
+        updated_at: Optional[str] = None,
+        last_seen_at: Optional[str] = None,
+        last_activity_at: Optional[str] = None,
+        project_key: Optional[str] = None,
+        raw_reference: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Upsert an issue state projection."""
+        now_str = utc_now_iso()
+        seen_str = last_seen_at or now_str
+
+        # If last_activity_at is not explicitly provided, preserve existing or use seen_str
+        existing = self.get(jira_issue_key)
+        if not last_activity_at:
+            last_activity_at = existing["last_activity_at"] if existing and existing.get("last_activity_at") else seen_str
+
+        raw_json = json.dumps(raw_reference) if raw_reference is not None else (json.dumps(existing.get("raw_reference")) if existing and existing.get("raw_reference") else None)
+
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO jira_issue_state (
+                    jira_issue_key, summary, status, assignee, priority, due_date,
+                    updated_at, last_seen_at, last_activity_at, project_key, raw_reference
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(jira_issue_key) DO UPDATE SET
+                    summary = excluded.summary,
+                    status = excluded.status,
+                    assignee = excluded.assignee,
+                    priority = excluded.priority,
+                    due_date = excluded.due_date,
+                    updated_at = excluded.updated_at,
+                    last_seen_at = excluded.last_seen_at,
+                    last_activity_at = excluded.last_activity_at,
+                    project_key = excluded.project_key,
+                    raw_reference = excluded.raw_reference
+                """,
+                (
+                    jira_issue_key,
+                    summary,
+                    status,
+                    assignee,
+                    priority,
+                    due_date,
+                    updated_at,
+                    seen_str,
+                    last_activity_at,
+                    project_key,
+                    raw_json,
+                )
+            )
+
+    def get_stale_candidates(self, threshold_hours: int) -> List[Dict[str, Any]]:
+        """Retrieve active issues whose last meaningful activity exceeds threshold_hours."""
+        import datetime
+        from app.utils.time import utc_now, format_iso
+
+        cutoff = utc_now() - datetime.timedelta(hours=threshold_hours)
+        cutoff_iso = format_iso(cutoff)
+
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                """
+                SELECT * FROM jira_issue_state
+                WHERE lower(status) IN ('in progress', 'doing', 'active', 'in development', 'wip')
+                  AND last_activity_at <= ?
+                ORDER BY last_activity_at ASC
+                """,
+                (cutoff_iso,)
+            )
+            results = []
+            for row in cursor.fetchall():
+                d = dict(row)
+                if d.get("raw_reference"):
+                    try:
+                        d["raw_reference"] = json.loads(d["raw_reference"])
+                    except Exception:
+                        pass
+                results.append(d)
+            return results
+
+    def get_overdue_candidates(self, now_iso: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Retrieve incomplete issues whose due date has passed."""
+        from app.utils.time import utc_now_iso
+
+        current_time = now_iso or utc_now_iso()
+        # Jira duedates can be YYYY-MM-DD or full ISO strings
+        # Extract YYYY-MM-DD for comparison if needed
+        date_prefix = current_time[:10]
+
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                """
+                SELECT * FROM jira_issue_state
+                WHERE due_date IS NOT NULL
+                  AND trim(due_date) != ''
+                  AND (due_date < ? OR (length(due_date) = 10 AND due_date < ?))
+                  AND lower(status) NOT IN ('done', 'completed', 'resolved', 'closed', 'finished')
+                ORDER BY due_date ASC
+                """,
+                (current_time, date_prefix)
+            )
+            results = []
+            for row in cursor.fetchall():
+                d = dict(row)
+                if d.get("raw_reference"):
+                    try:
+                        d["raw_reference"] = json.loads(d["raw_reference"])
+                    except Exception:
+                        pass
+                results.append(d)
+            return results
+
+    def list_all(self, limit: int = 100) -> List[Dict[str, Any]]:
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM jira_issue_state ORDER BY last_seen_at DESC LIMIT ?",
+                (limit,)
+            )
+            return [dict(r) for r in cursor.fetchall()]
