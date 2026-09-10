@@ -93,7 +93,8 @@ async def test_end_to_end_polling_to_action_pipeline(temp_db):
         JIRA_API_TOKEN="token-xyz",
         MATTERMOST_URL=None,
         MATTERMOST_TOKEN=None,
-        DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/valid-webhook"
+        DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/valid-webhook",
+        JIRA_TEAM_GROUP="Engineering Team"
     )
 
     # Issue with comment on 'To Do' status (triggers ActiveWorkRule!)
@@ -128,13 +129,19 @@ async def test_end_to_end_polling_to_action_pipeline(temp_db):
         mock_client = JiraClient()
         mock_client.search_issues = AsyncMock(return_value={"issues": [issue_payload], "total": 1})
 
-        from app.database.repositories import ActionRepository
+        import time
+        unique_key = f"E2E-{int(time.time() * 1000)}"
+        issue_payload["key"] = unique_key
+
+        from app.database.repositories import ActionRepository, NotificationRepository
+        from app.services.notification_deduplication import notification_dedup_service
         orch = SystemOrchestrator(manager=temp_db)
         orch.jira_poller.client = mock_client
 
         with patch("app.services.orchestrator.orchestrator", orch), \
              patch("app.core.actions.engine.action_engine.mgr", temp_db), \
-             patch("app.core.actions.engine.action_engine.action_repo", ActionRepository(temp_db)):
+             patch("app.core.actions.engine.action_engine.action_repo", ActionRepository(temp_db)), \
+             patch.object(notification_dedup_service, "repo", NotificationRepository(temp_db)):
             await orch.initialize()
 
             # Run poller
@@ -146,7 +153,7 @@ async def test_end_to_end_polling_to_action_pipeline(temp_db):
 
             # Check action repository for resulting actions dispatched by ActiveWorkRule
             with temp_db.session() as conn:
-                cursor = conn.execute("SELECT * FROM actions WHERE target_id = 'E2E-10' OR target_id = 'pm-alerts'")
+                cursor = conn.execute(f"SELECT * FROM actions WHERE target_id = '{unique_key}' OR target_id = 'pm-alerts'")
                 rows = cursor.fetchall()
                 assert len(rows) >= 1
                 status = rows[0]["status"]

@@ -140,19 +140,137 @@ CREATE TABLE IF NOT EXISTS jira_issue_state (
     last_seen_at TEXT NOT NULL,
     last_activity_at TEXT NOT NULL,
     project_key TEXT,
-    raw_reference TEXT -- JSON string
+    raw_reference TEXT, -- JSON string
+    team_group TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_jira_issue_state_status ON jira_issue_state(status);
 CREATE INDEX IF NOT EXISTS idx_jira_issue_state_due_date ON jira_issue_state(due_date);
 CREATE INDEX IF NOT EXISTS idx_jira_issue_state_last_activity ON jira_issue_state(last_activity_at);
+
+-- Jira Worklogs (Local normalized worklog data for team reporting)
+CREATE TABLE IF NOT EXISTS jira_worklogs (
+    worklog_id TEXT PRIMARY KEY,
+    jira_issue_key TEXT NOT NULL,
+    jira_issue_id TEXT,
+    author_account_id TEXT,
+    author_display_name TEXT,
+    time_spent_seconds INTEGER NOT NULL,
+    started_at TEXT NOT NULL,
+    created_at TEXT,
+    updated_at TEXT,
+    comment TEXT,
+    team_group TEXT,
+    source TEXT DEFAULT 'jira'
+);
+
+CREATE INDEX IF NOT EXISTS idx_jira_worklogs_issue ON jira_worklogs(jira_issue_key);
+CREATE INDEX IF NOT EXISTS idx_jira_worklogs_started ON jira_worklogs(started_at);
+CREATE INDEX IF NOT EXISTS idx_jira_worklogs_author ON jira_worklogs(author_account_id);
+CREATE INDEX IF NOT EXISTS idx_jira_worklogs_team ON jira_worklogs(team_group);
+
+-- Daily Report History (Records generated/sent reports for idempotency)
+CREATE TABLE IF NOT EXISTS daily_report_history (
+    id TEXT PRIMARY KEY,
+    team_group TEXT NOT NULL,
+    report_date TEXT NOT NULL,
+    report_type TEXT NOT NULL DEFAULT 'daily_worklog',
+    generated_at TEXT NOT NULL,
+    sent_to_discord INTEGER DEFAULT 0,
+    report_payload TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_report_history_date ON daily_report_history(team_group, report_date);
 """
 
 
+def _migrate_jira_issue_state(conn) -> None:
+    """Idempotently ensure jira_issue_state schema contains all expected columns."""
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='jira_issue_state'"
+    )
+    if not cursor.fetchone():
+        return
+
+    cursor = conn.execute("PRAGMA table_info(jira_issue_state)")
+    rows = cursor.fetchall()
+    existing_columns = {
+        row["name"] if hasattr(row, "keys") and "name" in row.keys() else row[1]
+        for row in rows
+    }
+
+    if "team_group" not in existing_columns:
+        logger.info("Migrating database: adding 'team_group' column to jira_issue_state table...")
+        conn.execute("ALTER TABLE jira_issue_state ADD COLUMN team_group TEXT")
+        logger.info("Database migration complete: 'team_group' column added successfully.")
+
+
+def _migrate_jira_worklogs(conn) -> None:
+    """Idempotently ensure jira_worklogs schema contains all expected columns."""
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='jira_worklogs'"
+    )
+    if not cursor.fetchone():
+        return
+
+    cursor = conn.execute("PRAGMA table_info(jira_worklogs)")
+    rows = cursor.fetchall()
+    existing_columns = {
+        row["name"] if hasattr(row, "keys") and "name" in row.keys() else row[1]
+        for row in rows
+    }
+
+    expected_columns = {
+        "worklog_id": "TEXT",
+        "jira_issue_key": "TEXT",
+        "jira_issue_id": "TEXT",
+        "author_account_id": "TEXT",
+        "author_display_name": "TEXT",
+        "time_spent_seconds": "INTEGER",
+        "started_at": "TEXT",
+        "created_at": "TEXT",
+        "updated_at": "TEXT",
+        "comment": "TEXT",
+        "team_group": "TEXT",
+        "source": "TEXT",
+    }
+    for col_name, col_type in expected_columns.items():
+        if col_name not in existing_columns:
+            logger.info(f"Migrating database: adding '{col_name}' column to jira_worklogs table...")
+            conn.execute(f"ALTER TABLE jira_worklogs ADD COLUMN {col_name} {col_type}")
+
+
+def _apply_migrations(conn) -> None:
+    """Execute all registered schema migrations safely and idempotently."""
+    _migrate_jira_issue_state(conn)
+    _migrate_jira_worklogs(conn)
+
+
+def _ensure_post_migration_indexes(conn) -> None:
+    """Create indexes that depend on migrated columns safely after columns exist."""
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jira_issue_state_team_group ON jira_issue_state(team_group)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jira_worklogs_team ON jira_worklogs(team_group)"
+    )
+
+
+
 def init_db(manager: Optional[DatabaseManager] = None) -> None:
-    """Initialize database tables and indexes."""
+    """Initialize database tables, migrations, and indexes."""
     mgr = manager or db_manager
     logger.info(f"Initializing SQLite database schema at: {mgr.db_path}")
     with mgr.session() as conn:
+        # 1. Run migrations first so pre-existing tables are upgraded before any schema execution
+        _apply_migrations(conn)
+
+        # 2. Execute table creations and baseline indexes
         conn.executescript(SCHEMA_SQL)
+
+        # 3. Safeguard: re-check migrations for any freshly created or altered tables
+        _apply_migrations(conn)
+
+        # 4. Create post-migration indexes now that all columns are guaranteed to exist
+        _ensure_post_migration_indexes(conn)
     logger.info("Database schema initialized successfully.")

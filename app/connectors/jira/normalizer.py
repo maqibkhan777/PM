@@ -1,6 +1,5 @@
-"""Normalizer converting raw Jira Cloud webhook JSON payloads into internal BaseEvent models."""
-
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 from app.core.events.base import BaseEvent
 from app.core.events.types import (
     TaskCreated,
@@ -105,13 +104,8 @@ class JiraEventNormalizer:
         # 2. Comment Added
         # ----------------------------------------------------------------------
         if webhook_event in ("comment_created", "jira:comment_created"):
-            body_text = ""
             body = comment.get("body", "")
-            if isinstance(body, dict):
-                # Extract text from ADF
-                body_text = JiraEventNormalizer._extract_adf_text(body)
-            elif isinstance(body, str):
-                body_text = body
+            body_text, mentioned_acc_ids, mentioned_names = JiraEventNormalizer.extract_adf_text_and_mentions(body)
 
             comment_author = comment.get("author", {}) or user
             return TaskCommentAdded(
@@ -129,6 +123,8 @@ class JiraEventNormalizer:
                 comment_body=body_text,
                 author_id=comment_author.get("accountId"),
                 author_name=comment_author.get("displayName"),
+                mentioned_account_ids=mentioned_acc_ids,
+                mentioned_display_names=mentioned_names,
                 payload=payload
             )
 
@@ -283,19 +279,67 @@ class JiraEventNormalizer:
         return None
 
     @staticmethod
-    def _extract_adf_text(doc: Dict[str, Any]) -> str:
-        """Recursively extract plain text from an Atlassian Document Format JSON object."""
+    def extract_adf_text_and_mentions(doc_or_text: Any) -> Tuple[str, List[str], List[str]]:
+        """Extract plain text, mentioned account IDs, and mentioned display names.
+        
+        Supports both ADF JSON dicts and plain text / Jira wiki markup strings.
+        """
         texts: List[str] = []
+        account_ids: List[str] = []
+        display_names: List[str] = []
+
+        if isinstance(doc_or_text, str):
+            # Parse Jira wiki markup mentions: [~accountid:712020:...] or [~712020:...]
+            for match in re.finditer(r"\[~accountid:([^\]]+)\]", doc_or_text, re.IGNORECASE):
+                acc = match.group(1).strip()
+                if acc and acc not in account_ids:
+                    account_ids.append(acc)
+            for match in re.finditer(r"\[~([a-zA-Z0-9_:\-]+)\]", doc_or_text):
+                val = match.group(1).strip()
+                if val.lower().startswith("accountid:"):
+                    val = val[10:].strip()
+                if val and val not in account_ids:
+                    account_ids.append(val)
+            return doc_or_text, account_ids, display_names
+
+        if not isinstance(doc_or_text, dict):
+            return str(doc_or_text or ""), account_ids, display_names
 
         def _traverse(node: Any):
             if isinstance(node, dict):
-                if node.get("type") == "text":
+                node_type = node.get("type")
+                if node_type == "text":
                     texts.append(node.get("text", ""))
+                elif node_type == "mention":
+                    attrs = node.get("attrs", {})
+                    acc_id = attrs.get("id")
+                    disp_name = attrs.get("text", "")
+                    if acc_id and acc_id not in account_ids:
+                        account_ids.append(acc_id)
+                    if disp_name and disp_name not in display_names:
+                        display_names.append(disp_name.lstrip("@"))
+                    # Render mention text in readable string
+                    texts.append(disp_name or f"@{acc_id}")
                 for val in node.values():
                     _traverse(val)
             elif isinstance(node, list):
                 for elem in node:
                     _traverse(elem)
 
-        _traverse(doc)
-        return " ".join(texts).strip()
+        _traverse(doc_or_text)
+        rendered_text = re.sub(r"\s+", " ", " ".join(texts)).strip()
+
+        # Check for any embedded wiki markup inside extracted text
+        for match in re.finditer(r"\[~accountid:([^\]]+)\]", rendered_text, re.IGNORECASE):
+            acc = match.group(1).strip()
+            if acc and acc not in account_ids:
+                account_ids.append(acc)
+
+        return rendered_text, account_ids, display_names
+
+    @staticmethod
+    def _extract_adf_text(doc: Dict[str, Any]) -> str:
+        """Recursively extract plain text from an Atlassian Document Format JSON object."""
+        text, _, _ = JiraEventNormalizer.extract_adf_text_and_mentions(doc)
+        return text
+

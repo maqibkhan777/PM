@@ -49,6 +49,8 @@ class TaskCommentAdded(BaseEvent):
     comment_body: str
     author_id: Optional[str] = None
     author_name: Optional[str] = None
+    mentioned_account_ids: List[str] = Field(default_factory=list)
+    mentioned_display_names: List[str] = Field(default_factory=list)
 
 
 class TaskPriorityChanged(BaseEvent):

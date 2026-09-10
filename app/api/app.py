@@ -14,6 +14,7 @@ from app.api.routes import (
     reports_router,
     mappings_router,
     jira_poll_router,
+    test_notifications_router,
 )
 from app.config.settings import settings
 from app.utils.logger import logger
@@ -75,6 +76,7 @@ def create_app() -> FastAPI:
     app.include_router(reports_router)
     app.include_router(mappings_router)
     app.include_router(jira_poll_router)
+    app.include_router(test_notifications_router)
 
     return app
 

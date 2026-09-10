@@ -7,6 +7,8 @@ from app.core.rules.builtin import (
     OverdueRule,
     BlockedRule,
     ReopenedRule,
+    CommentNotificationRule,
+    AssignmentRule,
 )
 from app.core.rules.engine import RulesEngine, rules_engine
 
@@ -17,6 +19,8 @@ __all__ = [
     "OverdueRule",
     "BlockedRule",
     "ReopenedRule",
+    "CommentNotificationRule",
+    "AssignmentRule",
     "RulesEngine",
     "rules_engine",
 ]

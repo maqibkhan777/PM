@@ -2,6 +2,7 @@
 
 from typing import Any, Dict, List, Optional
 from app.utils.time import utc_now_iso
+from app.config.settings import settings
 
 
 # Discord Color Constants (Decimal)
@@ -10,10 +11,18 @@ COLOR_AMBER = 15965458     # #F39C12 - Stale, Overdue, Warnings, User Mapping Re
 COLOR_BLUE = 3447003       # #3498DB - Transitions, In Progress, Info
 COLOR_GREEN = 3066993      # #2ECC71 - Completed, Success
 COLOR_PURPLE = 10181046    # #9B59B6 - Reports, Summary
+COLOR_MAGENTA = 15844367   # #F1C40F / Mention, Direct Attention
 
 
 class DiscordFormatter:
     """Formats notifications and events into Discord Webhook embed payloads."""
+
+    @staticmethod
+    def format_jira_link(task_key: str, label: Optional[str] = None) -> str:
+        """Construct a clickable markdown link for Jira issues."""
+        url = settings.get_jira_browse_url(task_key)
+        display_label = label or task_key
+        return f"[{display_label}]({url})"
 
     @staticmethod
     def format_embed(
@@ -22,7 +31,8 @@ class DiscordFormatter:
         color: int = COLOR_BLUE,
         fields: Optional[List[Dict[str, Any]]] = None,
         footer_text: str = "PM Operations Agent v0.1",
-        timestamp: Optional[str] = None
+        timestamp: Optional[str] = None,
+        url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Construct a Discord Webhook payload with a rich embed."""
         embed: Dict[str, Any] = {
@@ -32,6 +42,8 @@ class DiscordFormatter:
             "footer": {"text": footer_text},
             "timestamp": timestamp or utc_now_iso()
         }
+        if url:
+            embed["url"] = url
         if fields:
             embed["fields"] = fields
 
@@ -48,19 +60,22 @@ class DiscordFormatter:
         timestamp: Optional[str] = None
     ) -> Dict[str, Any]:
         """Format a PM workflow violation alert."""
+        issue_link = cls.format_jira_link(task_key)
+        jira_url = settings.get_jira_browse_url(task_key)
         fields = [
-            {"name": "Issue", "value": task_key, "inline": True},
+            {"name": "Issue", "value": issue_link, "inline": True},
             {"name": "Project", "value": project_name or "N/A", "inline": True},
             {"name": "Resource", "value": resource_name or "Unassigned", "inline": True},
             {"name": "Title", "value": task_title or "Untitled", "inline": False},
             {"name": "Issue Details", "value": details, "inline": False},
         ]
         return cls.format_embed(
-            title="🚨 Jira Workflow Alert",
-            description=f"Activity detected on **{task_key}** while remaining in **To Do**.",
+            title=f"🚨 Jira Workflow Alert — {task_key}",
+            description=f"Activity detected on {issue_link} while remaining in **To Do**.",
             color=COLOR_RED,
             fields=fields,
-            timestamp=timestamp
+            timestamp=timestamp,
+            url=jira_url
         )
 
     @classmethod
@@ -73,18 +88,21 @@ class DiscordFormatter:
         timestamp: Optional[str] = None
     ) -> Dict[str, Any]:
         """Format a stale task warning."""
+        issue_link = cls.format_jira_link(task_key)
+        jira_url = settings.get_jira_browse_url(task_key)
         fields = [
-            {"name": "Issue", "value": task_key, "inline": True},
+            {"name": "Issue", "value": issue_link, "inline": True},
             {"name": "Assigned to", "value": assignee_name or "Unassigned", "inline": True},
             {"name": "Inactivity", "value": f"{hours_inactive:.1f} hours", "inline": True},
             {"name": "Title", "value": task_title or "Untitled", "inline": False},
         ]
         return cls.format_embed(
-            title="⚠️ Stale Task Alert",
-            description=f"Task **{task_key}** has been In Progress for >{int(hours_inactive)}h without activity.",
+            title=f"⚠️ Stale Task Alert — {task_key}",
+            description=f"Task {issue_link} has been In Progress for >{int(hours_inactive)}h without activity.",
             color=COLOR_AMBER,
             fields=fields,
-            timestamp=timestamp
+            timestamp=timestamp,
+            url=jira_url
         )
 
     @classmethod
@@ -98,19 +116,408 @@ class DiscordFormatter:
         timestamp: Optional[str] = None
     ) -> Dict[str, Any]:
         """Format an overdue task alert."""
+        issue_link = cls.format_jira_link(task_key)
+        jira_url = settings.get_jira_browse_url(task_key)
         fields = [
-            {"name": "Issue", "value": task_key, "inline": True},
+            {"name": "Issue", "value": issue_link, "inline": True},
             {"name": "Assignee", "value": assignee_name or "Unassigned", "inline": True},
             {"name": "Status", "value": current_status, "inline": True},
             {"name": "Due Date", "value": due_date, "inline": True},
             {"name": "Title", "value": task_title or "Untitled", "inline": False},
         ]
         return cls.format_embed(
-            title="⏰ Overdue Task Alert",
-            description=f"Task **{task_key}** passed its due date ({due_date}) and is not Done.",
+            title=f"⏰ Overdue Task Alert — {task_key}",
+            description=f"Task {issue_link} passed its due date ({due_date}) and is not Done.",
             color=COLOR_AMBER,
             fields=fields,
-            timestamp=timestamp
+            timestamp=timestamp,
+            url=jira_url
+        )
+
+    @classmethod
+    def format_reopened_task(
+        cls,
+        task_key: str,
+        task_title: str,
+        reopened_by: str,
+        prev_status: str,
+        new_status: str,
+        timestamp: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Format a reopened task alert."""
+        issue_link = cls.format_jira_link(task_key)
+        jira_url = settings.get_jira_browse_url(task_key)
+        fields = [
+            {"name": "Issue", "value": issue_link, "inline": True},
+            {"name": "Reopened by", "value": reopened_by or "Unknown", "inline": True},
+            {"name": "Transition", "value": f"`{prev_status}` ➔ `{new_status}`", "inline": True},
+            {"name": "Title", "value": task_title or "Untitled", "inline": False},
+        ]
+        return cls.format_embed(
+            title=f"🔄 Task Reopened Alert — {task_key}",
+            description=f"Task {issue_link} was reopened from **{prev_status}** to **{new_status}**.",
+            color=COLOR_BLUE,
+            fields=fields,
+            timestamp=timestamp,
+            url=jira_url
+        )
+
+    @classmethod
+    def format_task_comment(
+        cls,
+        task_key: str,
+        task_title: str,
+        author_name: str,
+        comment_body: str,
+        task_status: str,
+        timestamp: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Format a general comment notification alert."""
+        issue_link = cls.format_jira_link(task_key)
+        jira_url = settings.get_jira_browse_url(task_key)
+        preview = comment_body if len(comment_body) <= 400 else comment_body[:397] + "..."
+        fields = [
+            {"name": "Issue", "value": issue_link, "inline": True},
+            {"name": "Status", "value": task_status or "Unknown", "inline": True},
+            {"name": "Author", "value": author_name or "Unknown", "inline": True},
+            {"name": "Title", "value": task_title or "Untitled", "inline": False},
+            {"name": "Comment", "value": preview or "(empty)", "inline": False},
+        ]
+        return cls.format_embed(
+            title=f"💬 Jira Comment Added — {task_key}",
+            description=f"New comment posted on {issue_link} by **{author_name or 'Unknown'}**.",
+            color=COLOR_BLUE,
+            fields=fields,
+            timestamp=timestamp,
+            url=jira_url
+        )
+
+    @classmethod
+    def format_task_mention(
+        cls,
+        task_key: str,
+        task_title: str,
+        author_name: str,
+        comment_body: str,
+        task_status: str,
+        timestamp: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Format a high-priority personal mention notification alert."""
+        issue_link = cls.format_jira_link(task_key)
+        jira_url = settings.get_jira_browse_url(task_key)
+        preview = comment_body if len(comment_body) <= 500 else comment_body[:497] + "..."
+        fields = [
+            {"name": "Issue", "value": issue_link, "inline": True},
+            {"name": "Status", "value": task_status or "Unknown", "inline": True},
+            {"name": "Mentioned by", "value": author_name or "Unknown", "inline": True},
+            {"name": "Title", "value": task_title or "Untitled", "inline": False},
+            {"name": "Comment", "value": preview or "(empty)", "inline": False},
+        ]
+        return cls.format_embed(
+            title=f"🔔 You were mentioned on {task_key}",
+            description=f"**{author_name or 'Someone'}** mentioned you in a comment on {issue_link}.",
+            color=COLOR_AMBER,
+            fields=fields,
+            timestamp=timestamp,
+            url=jira_url
+        )
+
+    @classmethod
+    def format_task_assigned(
+        cls,
+        task_key: str,
+        task_title: str,
+        new_assignee_name: str,
+        old_assignee_name: Optional[str] = None,
+        assigned_by: Optional[str] = None,
+        is_assigned_to_me: bool = False,
+        timestamp: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Format a ticket assignment notification."""
+        issue_link = cls.format_jira_link(task_key)
+        jira_url = settings.get_jira_browse_url(task_key)
+        
+        if is_assigned_to_me:
+            title = f"🎯 Task Assigned to You — {task_key}"
+            desc = f"You have been assigned to task {issue_link}."
+            color = COLOR_GREEN
+        else:
+            title = f"👤 Task Assigned — {task_key}"
+            desc = f"Task {issue_link} was assigned to **{new_assignee_name or 'Unassigned'}**."
+            color = COLOR_BLUE
+
+        fields = [
+            {"name": "Issue", "value": issue_link, "inline": True},
+            {"name": "New Assignee", "value": new_assignee_name or "Unassigned", "inline": True},
+            {"name": "Previous Assignee", "value": old_assignee_name or "None", "inline": True},
+            {"name": "Title", "value": task_title or "Untitled", "inline": False},
+        ]
+        if assigned_by:
+            fields.append({"name": "Assigned By", "value": assigned_by, "inline": True})
+
+        return cls.format_embed(
+            title=title,
+            description=desc,
+            color=color,
+            fields=fields,
+            timestamp=timestamp,
+            url=jira_url
+        )
+
+    @classmethod
+    def format_jira_navigator_link(cls, ticket_keys: List[str], label: Optional[str] = None) -> str:
+        """Construct a clickable markdown link to Jira Issue Navigator for a list of tickets."""
+        if not ticket_keys:
+            return label or "0"
+        url = settings.get_jira_issue_navigator_url(ticket_keys)
+        unique_keys = sorted(list({k.strip() for k in ticket_keys if k and k.strip()}))
+        display_label = label if label is not None else str(len(unique_keys))
+        return f"[{display_label}]({url})"
+
+    @staticmethod
+    def _get_visual_length(text: str) -> int:
+        """Calculate visual character width in monospace font (emojis count as 2)."""
+        length = 0
+        for char in text:
+            if ord(char) > 0x2000:
+                length += 2
+            else:
+                length += 1
+        return length
+
+    @classmethod
+    def _pad_visual(cls, text: str, width: int) -> str:
+        """Pad string to visual monospace width with trailing spaces."""
+        vlen = cls._get_visual_length(text)
+        pad = max(0, width - vlen)
+        return text + (" " * pad)
+
+    @classmethod
+    def format_daily_worklog_report(cls, report_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Format daily team worklog report into a rich Discord embed with clickable Jira links and single unified table."""
+        team_name = report_data.get("team_name", "Team")
+        report_date = report_data.get("report_date", "Today")
+        formatted_date = report_data.get("formatted_date") or report_date
+        tickets_worked_count = report_data.get("tickets_worked_count", 0)
+
+        # Build clean monospace table for all eligible members in a single table
+        member_entries = report_data.get("members", [])
+        table_text = ""
+        if member_entries:
+            # Determine maximum visual column width for member names, preserving full names without truncation
+            max_name_len = 0
+            for m in member_entries:
+                name = m.get("display_name") or "Unknown"
+                time_secs = m.get("time_logged_seconds", 0)
+                ticket_keys = m.get("tickets", [])
+                has_worked = (time_secs > 0) or (len(ticket_keys) > 0)
+                disp_name = name if has_worked else f"🔴 {name}"
+                vlen = cls._get_visual_length(disp_name)
+                if vlen > max_name_len:
+                    max_name_len = vlen
+
+            col_member_w = max(24, max_name_len)
+            col_time_w = 11
+            col_tickets_w = 7
+
+            header_line = f"| {'Team Member':<{col_member_w}} | {'Time Logged':<{col_time_w}} | {'Tickets':<{col_tickets_w}} |"
+            sep_line = f"| {'-' * col_member_w} | {'-' * col_time_w} | {'-' * col_tickets_w} |"
+
+            table_lines = [f"`{header_line}`", f"`{sep_line}`"]
+            for m in member_entries:
+                name = m.get("display_name") or "Unknown"
+                time_secs = m.get("time_logged_seconds", 0)
+                ticket_keys = m.get("tickets", [])
+                has_worked = (time_secs > 0) or (len(ticket_keys) > 0)
+
+                disp_name = name if has_worked else f"🔴 {name}"
+                np = cls._pad_visual(disp_name, col_member_w)
+                time_str = m.get("time_logged_human") or "0m" if has_worked else "0m"
+                tp = cls._pad_visual(time_str, col_time_w)
+
+                if has_worked:
+                    unique_tickets = sorted(list({k.strip() for k in ticket_keys if k and k.strip()}))
+                    t_count = m.get("tickets_count") or len(unique_tickets)
+                    pad_t = " " * max(0, col_tickets_w - len(str(t_count)))
+                    if unique_tickets:
+                        nav_url = settings.get_jira_issue_navigator_url(unique_tickets)
+                        tickets_cell = f"[{t_count}]({nav_url})"
+                    else:
+                        tickets_cell = str(t_count)
+                    # Inline code wrapping ensures Discord maintains fixed-width monospace alignment
+                    # while preserving clickable Jira link outside the backtick markers
+                    row = f"`| {np} | {tp} | `{tickets_cell}`{pad_t} |`"
+                else:
+                    pad_t = " " * max(0, col_tickets_w - 1)
+                    row = f"`| {np} | {tp} | 0{pad_t} |`"
+
+                table_lines.append(row)
+
+            table_text = "\n".join(table_lines)
+
+        description = (
+            f"**Date:** {formatted_date}\n"
+            f"**Tickets Worked:** {tickets_worked_count}\n\n"
+            f"👥 Team Worklog\n\n"
+            f"{table_text}"
+        )
+
+        return cls.format_embed(
+            title=f"📊 {team_name} — Daily Worklog",
+            description=description,
+            color=COLOR_PURPLE,
+            fields=[]
+        )
+
+    @classmethod
+    def format_overdue_digest(cls, report_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Format daily consolidated overdue task digest for Discord."""
+        team_name = report_data.get("team_name") or "Team"
+        formatted_date = report_data.get("formatted_date") or report_data.get("date") or "Today"
+        tickets = report_data.get("tickets", [])
+
+        if not tickets:
+            title = f"✅ {team_name} — Overdue Tasks"
+            description = f"**Date:** {formatted_date}\n\nNo overdue tasks."
+            return cls.format_embed(
+                title=title,
+                description=description,
+                color=COLOR_GREEN,
+                fields=[]
+            )
+
+        title = f"🚨 {team_name} — Overdue Tasks"
+
+        col_ticket_w = max(11, max((len(t.get("key", "")) for t in tickets), default=11))
+        col_due_w = 12
+        col_updated_w = 12
+
+        header_line = f"| {'Ticket':<{col_ticket_w}} | {'Due Date':<{col_due_w}} | {'Last Updated':<{col_updated_w}} |"
+        sep_line = f"| {'-' * col_ticket_w} | {'-' * col_due_w} | {'-' * col_updated_w} |"
+
+        table_lines = [f"`{header_line}`", f"`{sep_line}`"]
+        for t in tickets:
+            tkey = t.get("key", "Unknown")
+            jira_url = t.get("url") or settings.get_jira_browse_url(tkey)
+            due_str = t.get("due_date") or "N/A"
+            upd_str = t.get("updated_at") or "N/A"
+            pad_ticket = " " * max(0, col_ticket_w - len(tkey))
+            row = f"`| `[{tkey}]({jira_url})`{pad_ticket} | {due_str:<{col_due_w}} | {upd_str:<{col_updated_w}} |`"
+            table_lines.append(row)
+
+        table_text = "\n".join(table_lines)
+        description = f"**Date:** {formatted_date}\n\n{table_text}"
+
+        return cls.format_embed(
+            title=title,
+            description=description,
+            color=COLOR_RED,
+            fields=[]
+        )
+
+    @classmethod
+    def format_pm_attention_digest(cls, report_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Format daily consolidated PM Attention Digest for Discord."""
+        team_name = report_data.get("team_name") or "Team"
+        formatted_date = report_data.get("formatted_date") or report_data.get("date") or "Today"
+        total_count = report_data.get("total_count", 0)
+        categories = report_data.get("categories", {})
+
+        if total_count == 0:
+            title = f"✅ {team_name} — PM Attention Digest"
+            description = f"**Date:** {formatted_date}\n\nNo items requiring attention."
+            return cls.format_embed(
+                title=title,
+                description=description,
+                color=COLOR_GREEN,
+                fields=[]
+            )
+
+        title = f"⚠️ {team_name} — PM Attention Digest"
+        sections = []
+
+        # 1. Inactive / Stalled
+        stale_info = categories.get("inactive_stalled", {})
+        stale_tickets = stale_info.get("tickets", [])
+        if stale_tickets:
+            stale_title = stale_info.get("title", "🟠 Inactive / Stalled")
+            col_ticket_w = max(11, max((len(t.get("key", "")) for t in stale_tickets), default=11))
+            col_status_w = max(11, max((len(t.get("status", "")) for t in stale_tickets), default=11))
+            col_updated_w = 12
+            col_inactive_w = 12
+
+            header_line = f"| {'Ticket':<{col_ticket_w}} | {'Status':<{col_status_w}} | {'Last Updated':<{col_updated_w}} | {'Inactive For':<{col_inactive_w}} |"
+            sep_line = f"| {'-' * col_ticket_w} | {'-' * col_status_w} | {'-' * col_updated_w} | {'-' * col_inactive_w} |"
+
+            table_lines = [f"`{header_line}`", f"`{sep_line}`"]
+            for t in stale_tickets:
+                tkey = t.get("key", "Unknown")
+                jira_url = t.get("url") or settings.get_jira_browse_url(tkey)
+                status_str = t.get("status", "Unknown")
+                upd_str = t.get("updated_at", "N/A")
+                inactive_str = t.get("inactive_for", "N/A")
+                pad_ticket = " " * max(0, col_ticket_w - len(tkey))
+                row = f"`| `[{tkey}]({jira_url})`{pad_ticket} | {status_str:<{col_status_w}} | {upd_str:<{col_updated_w}} | {inactive_str:<{col_inactive_w}} |`"
+                table_lines.append(row)
+
+            sections.append(f"{stale_title}\n\n" + "\n".join(table_lines))
+
+        # 2. Reopened
+        reopened_info = categories.get("reopened", {})
+        reopened_tickets = reopened_info.get("tickets", [])
+        if reopened_tickets:
+            reopened_title = reopened_info.get("title", "🔁 Reopened")
+            col_ticket_w = max(11, max((len(t.get("key", "")) for t in reopened_tickets), default=11))
+            col_status_w = max(11, max((len(t.get("status", "")) for t in reopened_tickets), default=11))
+            col_updated_w = 12
+
+            header_line = f"| {'Ticket':<{col_ticket_w}} | {'Status':<{col_status_w}} | {'Last Updated':<{col_updated_w}} |"
+            sep_line = f"| {'-' * col_ticket_w} | {'-' * col_status_w} | {'-' * col_updated_w} |"
+
+            table_lines = [f"`{header_line}`", f"`{sep_line}`"]
+            for t in reopened_tickets:
+                tkey = t.get("key", "Unknown")
+                jira_url = t.get("url") or settings.get_jira_browse_url(tkey)
+                status_str = t.get("status", "Unknown")
+                upd_str = t.get("updated_at", "N/A")
+                pad_ticket = " " * max(0, col_ticket_w - len(tkey))
+                row = f"`| `[{tkey}]({jira_url})`{pad_ticket} | {status_str:<{col_status_w}} | {upd_str:<{col_updated_w}} |`"
+                table_lines.append(row)
+
+            sections.append(f"{reopened_title}\n\n" + "\n".join(table_lines))
+
+        # 3. Unassigned
+        unassigned_info = categories.get("unassigned", {})
+        unassigned_tickets = unassigned_info.get("tickets", [])
+        if unassigned_tickets:
+            unassigned_title = unassigned_info.get("title", "📌 Unassigned")
+            col_ticket_w = max(11, max((len(t.get("key", "")) for t in unassigned_tickets), default=11))
+            col_status_w = max(11, max((len(t.get("status", "")) for t in unassigned_tickets), default=11))
+            col_updated_w = 12
+
+            header_line = f"| {'Ticket':<{col_ticket_w}} | {'Status':<{col_status_w}} | {'Last Updated':<{col_updated_w}} |"
+            sep_line = f"| {'-' * col_ticket_w} | {'-' * col_status_w} | {'-' * col_updated_w} |"
+
+            table_lines = [f"`{header_line}`", f"`{sep_line}`"]
+            for t in unassigned_tickets:
+                tkey = t.get("key", "Unknown")
+                jira_url = t.get("url") or settings.get_jira_browse_url(tkey)
+                status_str = t.get("status", "Unknown")
+                upd_str = t.get("updated_at", "N/A")
+                pad_ticket = " " * max(0, col_ticket_w - len(tkey))
+                row = f"`| `[{tkey}]({jira_url})`{pad_ticket} | {status_str:<{col_status_w}} | {upd_str:<{col_updated_w}} |`"
+                table_lines.append(row)
+
+            sections.append(f"{unassigned_title}\n\n" + "\n".join(table_lines))
+
+        body = "\n\n".join(sections)
+        description = f"**Date:** {formatted_date}\n\n{body}"
+
+        return cls.format_embed(
+            title=title,
+            description=description,
+            color=COLOR_AMBER,
+            fields=[]
         )
 
     @classmethod
@@ -159,7 +566,6 @@ class DiscordFormatter:
             {"name": "⚠️ Stale Tasks", "value": str(stale_count), "inline": True},
         ]
 
-        # Resources breakdown
         by_resource = report_data.get("activities_by_resource", {})
         if by_resource:
             res_summary = "\n".join([f"• **{name}**: {count} activities" for name, count in by_resource.items()])

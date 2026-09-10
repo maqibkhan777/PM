@@ -49,7 +49,9 @@ async def get_connectors_health():
             "status": jira_h.status,
             "polling_enabled": settings.JIRA_POLLING_ENABLED,
             "polling_status": jira_h.details.get("polling_status", "disabled"),
-            "last_poll_success": jira_h.details.get("last_poll_success")
+            "last_poll_success": jira_h.details.get("last_poll_success"),
+            "team_group": settings.JIRA_TEAM_GROUP,
+            "team_group_scoped": settings.is_jira_team_group_configured()
         },
         "mattermost": {
             "configured": mm_h.details.get("configured", False),

@@ -18,6 +18,7 @@ from app.core.events.types import (
 )
 from app.core.models.enums import ActionType
 from app.services.notification_deduplication import notification_dedup_service
+from app.config.settings import settings
 
 
 @pytest.fixture(autouse=True)
@@ -69,39 +70,49 @@ def test_active_work_rule_does_not_trigger_on_in_progress():
 
 def test_stale_task_rule_triggers_on_inactivity():
     """Rule 2: If task is 'In Progress' and inactive >24h -> Discord alert + Mattermost DM."""
-    rule = StaleTaskRule(configuration={"threshold_hours": 24})
-    event = StaleTask(
-        source="scheduler",
-        task_key="CF7-StaleTest-1",
-        task_title="Payment Gateway Testing",
-        assignee_id="jira-user-ahsan",
-        assignee_name="Ahsan Amin",
-        hours_inactive=28.5,
-        threshold_hours=24
-    )
-    actions = rule.evaluate(event)
-    # Should produce 2 actions: 1 Discord alert + 1 Mattermost DM reminder
-    assert len(actions) == 2
-    action_types = {a.target_system: a.action_type for a in actions}
-    assert action_types["discord"] == ActionType.SEND_NOTIFICATION
-    assert action_types["mattermost"] == ActionType.SEND_MESSAGE
+    prev = settings.STALE_TASK_NOTIFY_PM
+    settings.STALE_TASK_NOTIFY_PM = True
+    try:
+        rule = StaleTaskRule(configuration={"threshold_hours": 24})
+        event = StaleTask(
+            source="scheduler",
+            task_key="CF7-StaleTest-1",
+            task_title="Payment Gateway Testing",
+            assignee_id="jira-user-ahsan",
+            assignee_name="Ahsan Amin",
+            hours_inactive=28.5,
+            threshold_hours=24
+        )
+        actions = rule.evaluate(event)
+        # Should produce 2 actions: 1 Discord alert + 1 Mattermost DM reminder
+        assert len(actions) == 2
+        action_types = {a.target_system: a.action_type for a in actions}
+        assert action_types["discord"] == ActionType.SEND_NOTIFICATION
+        assert action_types["mattermost"] == ActionType.SEND_MESSAGE
+    finally:
+        settings.STALE_TASK_NOTIFY_PM = prev
 
 
 def test_overdue_rule_triggers_on_past_due():
     """Rule 3: If due_date < now and status != Done -> Overdue alert."""
-    rule = OverdueRule()
-    event = OverdueTask(
-        source="scheduler",
-        task_key="CF7-OverdueTest-1",
-        task_title="Deliverable Alpha",
-        assignee_name="John Doe",
-        due_date="2026-01-01T00:00:00Z",
-        current_status="In Progress"
-    )
-    actions = rule.evaluate(event)
-    assert len(actions) == 1
-    assert actions[0].target_system == "discord"
-    assert "Overdue" in actions[0].parameters.get("title", "")
+    prev = settings.OVERDUE_NOTIFY_PM
+    settings.OVERDUE_NOTIFY_PM = True
+    try:
+        rule = OverdueRule()
+        event = OverdueTask(
+            source="scheduler",
+            task_key="CF7-OverdueTest-1",
+            task_title="Deliverable Alpha",
+            assignee_name="John Doe",
+            due_date="2026-01-01T00:00:00Z",
+            current_status="In Progress"
+        )
+        actions = rule.evaluate(event)
+        assert len(actions) == 1
+        assert actions[0].target_system == "discord"
+        assert "Overdue" in actions[0].parameters.get("title", "")
+    finally:
+        settings.OVERDUE_NOTIFY_PM = prev
 
 
 def test_blocked_rule_triggers_on_blocked_status():

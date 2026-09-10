@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 from app.database.repositories import JiraIssueStateRepository
 from app.services.scheduler import PeriodicScheduler
 from app.utils.time import format_iso, utc_now
+from app.config.settings import settings
 
 
 @pytest.mark.asyncio
@@ -67,12 +68,18 @@ async def test_stale_task_evaluated_from_projection(temp_db):
         status="In Progress",
         assignee="Sara",
         last_seen_at=thirty_hours_ago,
-        last_activity_at=thirty_hours_ago
+        last_activity_at=thirty_hours_ago,
+        team_group=settings.JIRA_TEAM_GROUP
     )
 
-    result = await scheduler.run_cycle()
-    assert result["stale_actions"] >= 1
-    assert result["actions_dispatched"] >= 1
+    prev = settings.STALE_TASK_NOTIFY_PM
+    settings.STALE_TASK_NOTIFY_PM = True
+    try:
+        result = await scheduler.run_cycle()
+        assert result["stale_actions"] >= 1
+        assert result["actions_dispatched"] >= 1
+    finally:
+        settings.STALE_TASK_NOTIFY_PM = prev
 
 
 @pytest.mark.asyncio
@@ -89,9 +96,15 @@ async def test_overdue_task_evaluated_from_projection(temp_db):
         assignee="Bob",
         due_date=yesterday_date,
         last_seen_at=format_iso(datetime.now(timezone.utc)),
-        last_activity_at=format_iso(datetime.now(timezone.utc))
+        last_activity_at=format_iso(datetime.now(timezone.utc)),
+        team_group=settings.JIRA_TEAM_GROUP
     )
 
-    result = await scheduler.run_cycle()
-    assert result["overdue_actions"] >= 1
-    assert result["actions_dispatched"] >= 1
+    prev = settings.OVERDUE_NOTIFY_PM
+    settings.OVERDUE_NOTIFY_PM = True
+    try:
+        result = await scheduler.run_cycle()
+        assert result["overdue_actions"] >= 1
+        assert result["actions_dispatched"] >= 1
+    finally:
+        settings.OVERDUE_NOTIFY_PM = prev

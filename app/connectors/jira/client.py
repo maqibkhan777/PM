@@ -124,22 +124,26 @@ class JiraClient:
     async def search_issues(
         self,
         jql: str,
-        start_at: int = 0,
+        next_page_token: Optional[str] = None,
         max_results: int = 50,
         expand: Optional[str] = "changelog",
-        fields: Optional[List[str]] = None
+        fields: Optional[List[str]] = None,
+        **kwargs: Any
     ) -> Dict[str, Any]:
-        """Search issues using JQL with pagination and changelog expansion."""
+        """Search issues using JQL via Jira Cloud /rest/api/3/search/jql with cursor pagination and changelog expansion."""
         params: Dict[str, Any] = {
             "jql": jql,
-            "startAt": start_at,
             "maxResults": max_results
         }
+        if next_page_token:
+            params["nextPageToken"] = next_page_token
         if expand:
             params["expand"] = expand
+        if fields is None:
+            fields = ["*navigable", "comment", "worklog"]
         if fields:
             params["fields"] = ",".join(fields)
-        return await self._request("GET", "/rest/api/3/search", params=params)
+        return await self._request("GET", "/rest/api/3/search/jql", params=params)
 
     async def get_issue_comments(self, issue_key_or_id: str) -> List[Dict[str, Any]]:
         """Fetch comments for a specific issue."""
@@ -231,3 +235,23 @@ class JiraClient:
                 "content": [{"type": "paragraph", "content": [{"type": "text", "text": description}]}]
             }
         return await self._request("POST", "/rest/api/3/issue", json_data={"fields": fields})
+
+    async def get_issue_worklogs(self, issue_key_or_id: str) -> List[Dict[str, Any]]:
+        """Fetch all worklogs logged on a specific Jira issue."""
+        res = await self._request("GET", f"/rest/api/3/issue/{issue_key_or_id}/worklog")
+        if isinstance(res, dict):
+            return res.get("worklogs", [])
+        return []
+
+    async def get_group_members(self, groupname: str, max_results: int = 50) -> List[Dict[str, Any]]:
+        """Retrieve members of a Jira group."""
+        params = {"groupname": groupname, "maxResults": max_results}
+        try:
+            res = await self._request("GET", "/rest/api/3/group/member", params=params)
+            if isinstance(res, dict):
+                return res.get("values", [])
+            return []
+        except Exception as e:
+            logger.warning(f"Could not retrieve members for group '{groupname}': {e}")
+            return []
+

@@ -5,6 +5,7 @@ from app.services.scheduler import PeriodicScheduler
 from app.database.repositories import EventRepository
 from app.services.notification_deduplication import notification_dedup_service
 from app.utils.time import utc_now, format_iso
+from app.config.settings import settings
 from datetime import datetime, timezone, timedelta
 
 
@@ -45,9 +46,14 @@ async def test_scheduler_evaluates_stale_task(temp_db):
         processing_status="PROCESSED"
     )
 
-    result = await scheduler.run_cycle()
-    assert result["stale_actions"] >= 1
-    assert result["actions_dispatched"] >= 1
+    prev = settings.STALE_TASK_NOTIFY_PM
+    settings.STALE_TASK_NOTIFY_PM = True
+    try:
+        result = await scheduler.run_cycle()
+        assert result["stale_actions"] >= 1
+        assert result["actions_dispatched"] >= 1
+    finally:
+        settings.STALE_TASK_NOTIFY_PM = prev
 
 
 @pytest.mark.asyncio
@@ -81,6 +87,11 @@ async def test_scheduler_evaluates_overdue_task(temp_db):
         processing_status="PROCESSED"
     )
 
-    result = await scheduler.run_cycle()
-    assert result["overdue_actions"] >= 1
-    assert result["actions_dispatched"] >= 1
+    prev = settings.OVERDUE_NOTIFY_PM
+    settings.OVERDUE_NOTIFY_PM = True
+    try:
+        result = await scheduler.run_cycle()
+        assert result["overdue_actions"] >= 1
+        assert result["actions_dispatched"] >= 1
+    finally:
+        settings.OVERDUE_NOTIFY_PM = prev

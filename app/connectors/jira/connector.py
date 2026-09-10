@@ -83,7 +83,9 @@ class JiraConnector(BaseConnector):
                     "accountType": myself.get("accountType"),
                     "polling_enabled": settings.JIRA_POLLING_ENABLED,
                     "polling_status": "active" if settings.JIRA_POLLING_ENABLED else "disabled",
-                    "last_poll_success": checkpoint
+                    "last_poll_success": checkpoint,
+                    "team_group": settings.JIRA_TEAM_GROUP,
+                    "team_group_scoped": settings.is_jira_team_group_configured()
                 }
             )
         except Exception as e:

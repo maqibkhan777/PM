@@ -23,6 +23,7 @@ from app.database.repositories import (
     EventRepository,
     JiraPollingStateRepository,
     JiraIssueStateRepository,
+    JiraWorklogRepository,
 )
 from app.utils.logger import logger
 from app.utils.time import utc_now, utc_now_iso, parse_iso_datetime, format_iso
@@ -58,6 +59,7 @@ class JiraPoller:
         self.event_repo = EventRepository(self.mgr)
         self.polling_state_repo = JiraPollingStateRepository(self.mgr)
         self.issue_state_repo = JiraIssueStateRepository(self.mgr)
+        self.worklog_repo = JiraWorklogRepository(self.mgr)
         self.normalizer = JiraEventNormalizer()
 
     async def poll(self) -> Dict[str, Any]:
@@ -80,6 +82,16 @@ class JiraPoller:
                 "duplicates_skipped": 0,
             }
 
+        if not settings.is_jira_team_group_configured():
+            logger.warning("Jira team group is not configured (JIRA_TEAM_GROUP is empty); polling skipped to avoid ingesting unrelated issues.")
+            return {
+                "status": "skipped",
+                "reason": "jira_team_group_not_configured",
+                "issues_scanned": 0,
+                "events_generated": 0,
+                "duplicates_skipped": 0,
+            }
+
         now_dt = utc_now()
         current_poll_start_iso = format_iso(now_dt)
         logger.info("Jira polling cycle started.")
@@ -95,31 +107,31 @@ class JiraPoller:
             initial_lookback_delta = datetime.timedelta(minutes=settings.JIRA_POLLING_INITIAL_LOOKBACK_MINUTES)
             query_start_dt = now_dt - initial_lookback_delta
 
-        # Format JQL query timestamp: 'YYYY-MM-DD HH:mm'
+        # Format JQL query timestamp: 'YYYY-MM-DD HH:mm' and apply team group filter
         jql_time_str = query_start_dt.strftime("%Y-%m-%d %H:%M")
-        jql = f'updated >= "{jql_time_str}" ORDER BY updated ASC'
+        team_group = settings.JIRA_TEAM_GROUP.strip()
+        jql = f'updated >= "{jql_time_str}" AND assignee in membersOf("{team_group}") ORDER BY updated ASC'
+        logger.info(f"Jira polling scope: assignee in membersOf(\"{team_group}\")")
 
         issues_scanned = 0
         events_generated = 0
         duplicates_skipped = 0
 
         try:
-            # 2. Paginated issue search
-            start_at = 0
+            # 2. Paginated issue search via /rest/api/3/search/jql (cursor-based)
+            next_page_token: Optional[str] = None
             batch_size = settings.JIRA_POLLING_BATCH_SIZE
-            total_issues = 1  # will be updated on first response
+            seen_tokens = set()
 
-            while start_at < total_issues:
+            while True:
                 data = await self.client.search_issues(
                     jql=jql,
-                    start_at=start_at,
+                    next_page_token=next_page_token,
                     max_results=batch_size,
                     expand="changelog"
                 )
 
                 issues = data.get("issues", [])
-                total_issues = data.get("total", len(issues))
-
                 if not issues:
                     break
 
@@ -129,7 +141,12 @@ class JiraPoller:
                     events_generated += gen
                     duplicates_skipped += dups
 
-                start_at += len(issues)
+                is_last = data.get("isLast", True if not data.get("nextPageToken") else False)
+                next_page_token = data.get("nextPageToken")
+
+                if is_last or not next_page_token or next_page_token in seen_tokens:
+                    break
+                seen_tokens.add(next_page_token)
 
             # 3. Only advance checkpoint on complete success
             self.polling_state_repo.update_checkpoint("jira", current_poll_start_iso)
@@ -183,6 +200,7 @@ class JiraPoller:
 
         now_str = utc_now_iso()
         cached_state = self.issue_state_repo.get(task_key)
+        team_group = settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else None
 
         events_to_emit: List[BaseEvent] = []
         new_activity_time: Optional[str] = None
@@ -383,7 +401,7 @@ class JiraPoller:
                 ext_id = f"jira:{task_key}:comment:{cid}"
                 author = c.get("author", {})
                 body_val = c.get("body", "")
-                body_text = JiraEventNormalizer._extract_adf_text(body_val) if isinstance(body_val, dict) else str(body_val)
+                body_text, mentioned_acc_ids, mentioned_names = JiraEventNormalizer.extract_adf_text_and_mentions(body_val)
 
                 event = TaskCommentAdded(
                     source="jira",
@@ -400,6 +418,8 @@ class JiraPoller:
                     comment_body=body_text,
                     author_id=author.get("accountId"),
                     author_name=author.get("displayName"),
+                    mentioned_account_ids=mentioned_acc_ids,
+                    mentioned_display_names=mentioned_names,
                     payload=event_payload
                 )
                 events_to_emit.append(event)
@@ -410,17 +430,41 @@ class JiraPoller:
         worklogs_list = worklog_section.get("worklogs", []) if isinstance(worklog_section, dict) else []
         for w in worklogs_list:
             wid = w.get("id")
-            w_created = w.get("created") or w.get("started")
-            w_dt = parse_iso_datetime(w_created) if w_created else None
-            if w_dt and w_dt >= query_start_dt and wid:
-                ext_id = f"jira:{task_key}:worklog:{wid}"
-                author = w.get("author", {})
-                time_secs = int(w.get("timeSpentSeconds", 0))
+            if not wid:
+                continue
+            author = w.get("author", {})
+            time_secs = int(w.get("timeSpentSeconds", 0))
+            w_started = w.get("started") or w.get("created") or now_str
+            w_created = w.get("created")
+            w_updated = w.get("updated")
+            w_comment_raw = w.get("comment", "")
+            w_comment = JiraEventNormalizer._extract_adf_text(w_comment_raw) if isinstance(w_comment_raw, dict) else str(w_comment_raw or "")
 
+            # Persist to local SQLite worklog repository (idempotent, duplicate prevention)
+            self.worklog_repo.upsert_worklog(
+                worklog_id=str(wid),
+                jira_issue_key=task_key,
+                jira_issue_id=str(issue.get("id")),
+                author_account_id=author.get("accountId"),
+                author_display_name=author.get("displayName"),
+                time_spent_seconds=time_secs,
+                started_at=w_started,
+                created_at=w_created,
+                updated_at=w_updated,
+                comment=w_comment,
+                team_group=team_group,
+                source="jira"
+            )
+
+            # Check if this worklog is within the current polling lookback to emit event
+            w_event_time = w_created or w_started
+            w_dt = parse_iso_datetime(w_event_time) if w_event_time else None
+            if w_dt and w_dt >= query_start_dt:
+                ext_id = f"jira:{task_key}:worklog:{wid}"
                 event = TaskWorklogged(
                     source="jira",
                     external_event_id=ext_id,
-                    timestamp=w_created or now_str,
+                    timestamp=w_event_time or now_str,
                     actor_id=author.get("accountId"),
                     actor_name=author.get("displayName"),
                     actor_email=author.get("emailAddress"),
@@ -428,14 +472,14 @@ class JiraPoller:
                     project_key=project_key,
                     task_id=issue.get("id"),
                     task_key=task_key,
-                    worklog_id=wid,
+                    worklog_id=str(wid),
                     time_spent_seconds=time_secs,
                     time_spent_human=w.get("timeSpent"),
-                    comment=str(w.get("comment", "")),
+                    comment=w_comment,
                     payload=event_payload
                 )
                 events_to_emit.append(event)
-                new_activity_time = w_created
+                new_activity_time = w_event_time
 
         # Fallback: If issue was updated according to timestamp, but no specific event was produced yet
         if not events_to_emit and cached_state and updated_str != cached_state.get("updated_at"):
@@ -496,7 +540,8 @@ class JiraPoller:
             last_seen_at=now_str,
             last_activity_at=effective_activity_time,
             project_key=project_key,
-            raw_reference=issue
+            raw_reference=issue,
+            team_group=settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else None
         )
 
         # ----------------------------------------------------------------------

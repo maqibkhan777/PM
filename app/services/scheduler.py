@@ -1,6 +1,8 @@
 """Lightweight in-process asynchronous scheduler for evaluating time-based rules and Jira polling."""
 
 import asyncio
+from datetime import datetime
+import zoneinfo
 from typing import Any, Dict, List, Optional
 from app.core.events.types import StaleTask, OverdueTask
 from app.core.rules.engine import rules_engine
@@ -128,20 +130,54 @@ class PeriodicScheduler:
         except Exception as e:
             logger.error(f"Error during OverdueTask evaluation: {e}", exc_info=True)
 
+        # 3. Evaluate Scheduled Daily Worklog Report
+        daily_report_status = None
+        try:
+            daily_report_res = await self._evaluate_daily_worklog_report()
+            if daily_report_res:
+                daily_report_status = daily_report_res.get("status")
+        except Exception as e:
+            logger.error(f"Error during Daily Worklog Report evaluation: {e}", exc_info=True)
+
+        # 4. Evaluate Scheduled Daily Overdue Digest
+        daily_overdue_status = None
+        try:
+            overdue_digest_res = await self._evaluate_daily_overdue_digest()
+            if overdue_digest_res:
+                daily_overdue_status = overdue_digest_res.get("status")
+        except Exception as e:
+            logger.error(f"Error during Daily Overdue Digest evaluation: {e}", exc_info=True)
+
+        # 5. Evaluate Scheduled Daily PM Attention Digest
+        daily_attention_status = None
+        try:
+            attention_digest_res = await self._evaluate_daily_pm_attention_digest()
+            if attention_digest_res:
+                daily_attention_status = attention_digest_res.get("status")
+        except Exception as e:
+            logger.error(f"Error during Daily PM Attention Digest evaluation: {e}", exc_info=True)
+
         logger.info(
             f"Scheduler cycle complete. Evaluated: {stale_evaluated} stale, "
-            f"{overdue_evaluated} overdue. Actions dispatched: {actions_dispatched}"
+            f"{overdue_evaluated} overdue. Actions dispatched: {actions_dispatched}. "
+            f"Daily worklog status: {daily_report_status or 'idle'}, "
+            f"Daily overdue status: {daily_overdue_status or 'idle'}, "
+            f"Daily attention status: {daily_attention_status or 'idle'}"
         )
         return {
             "timestamp": utc_now_iso(),
             "stale_actions": stale_evaluated,
             "overdue_actions": overdue_evaluated,
-            "actions_dispatched": actions_dispatched
+            "actions_dispatched": actions_dispatched,
+            "daily_report_status": daily_report_status,
+            "daily_overdue_status": daily_overdue_status,
+            "daily_attention_status": daily_attention_status,
         }
 
     def _sync_recent_events_to_projection(self) -> None:
         """Sync recent raw events into local jira_issue_state projection cache if not already present."""
         try:
+            team_group = settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else None
             recent_events = self.event_repo.list_events(limit=50)
             for e in reversed(recent_events):
                 tkey = e.get("task_key") or e.get("task_id")
@@ -160,7 +196,8 @@ class PeriodicScheduler:
                     due_date=fields.get("duedate"),
                     last_seen_at=e.get("timestamp"),
                     last_activity_at=e.get("timestamp"),
-                    raw_reference=issue_data
+                    raw_reference=issue_data,
+                    team_group=team_group
                 )
         except Exception as err:
             logger.debug(f"Event sync to projection failed: {err}")
@@ -169,7 +206,11 @@ class PeriodicScheduler:
         """Find active tasks in 'In Progress' whose last meaningful activity exceeds threshold."""
         self._sync_recent_events_to_projection()
         actions = []
-        stale_candidates = self.issue_state_repo.get_stale_candidates(threshold_hours=settings.STALE_TASK_HOURS)
+        team_group = settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else None
+        stale_candidates = self.issue_state_repo.get_stale_candidates(
+            threshold_hours=settings.STALE_TASK_HOURS,
+            team_group=team_group
+        )
 
         for item in stale_candidates:
             tkey = item.get("jira_issue_key")
@@ -200,7 +241,8 @@ class PeriodicScheduler:
         """Find active tasks with due date in the past using local state projection."""
         self._sync_recent_events_to_projection()
         actions = []
-        overdue_candidates = self.issue_state_repo.get_overdue_candidates()
+        team_group = settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else None
+        overdue_candidates = self.issue_state_repo.get_overdue_candidates(team_group=team_group)
 
         for item in overdue_candidates:
             tkey = item.get("jira_issue_key")
@@ -223,6 +265,106 @@ class PeriodicScheduler:
 
         return actions
 
+    async def _evaluate_daily_worklog_report(self) -> Optional[Dict[str, Any]]:
+        """Check if daily worklog report should be triggered based on scheduled time."""
+        if not settings.DAILY_WORKLOG_REPORT_ENABLED:
+            return None
+
+        try:
+            tz = zoneinfo.ZoneInfo(settings.DAILY_WORKLOG_REPORT_TIMEZONE)
+            now_tz = datetime.now(tz)
+        except Exception:
+            now_tz = datetime.now()
+
+        today_str = now_tz.strftime("%Y-%m-%d")
+        current_time_str = now_tz.strftime("%H:%M")
+
+        scheduled_time = (settings.DAILY_WORKLOG_REPORT_TIME or "18:00").strip()
+        if current_time_str >= scheduled_time:
+            from app.core.reports.worklog_report import DailyWorklogReportGenerator
+            generator = DailyWorklogReportGenerator(manager=self.mgr)
+            team_group = settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else "Team"
+
+            # Check idempotency: skip if already sent today
+            if not generator.history_repo.has_report_been_sent(team_group, today_str):
+                logger.info(
+                    f"Triggering scheduled daily worklog report for team '{team_group}' on {today_str} "
+                    f"(current_time={current_time_str}, scheduled_time={scheduled_time})"
+                )
+                return await generator.send_report_to_discord(
+                    target_date=today_str,
+                    force=False,
+                    sync_jira=True
+                )
+        return None
+
+    async def _evaluate_daily_overdue_digest(self) -> Optional[Dict[str, Any]]:
+        """Check if daily overdue digest should be triggered based on scheduled time."""
+        if not settings.OVERDUE_DIGEST_ENABLED:
+            return None
+
+        try:
+            tz = zoneinfo.ZoneInfo(settings.OVERDUE_DIGEST_TIMEZONE)
+            now_tz = datetime.now(tz)
+        except Exception:
+            now_tz = datetime.now()
+
+        today_str = now_tz.strftime("%Y-%m-%d")
+        current_time_str = now_tz.strftime("%H:%M")
+
+        scheduled_time = (settings.OVERDUE_DIGEST_TIME or "09:00").strip()
+        if current_time_str >= scheduled_time:
+            from app.core.reports.overdue_report import DailyOverdueReportGenerator
+            generator = DailyOverdueReportGenerator(manager=self.mgr)
+            team_group = settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else "Mursaleen Cluster"
+
+            # Check persistent idempotency: skip if already sent today
+            if not generator.history_repo.has_report_been_sent(team_group, today_str, report_type="overdue_digest"):
+                logger.info(
+                    f"Triggering scheduled daily overdue digest for team '{team_group}' on {today_str} "
+                    f"(current_time={current_time_str}, scheduled_time={scheduled_time})"
+                )
+                return await generator.send_digest_to_discord(
+                    target_date=today_str,
+                    force=False,
+                    record_history=True
+                )
+        return None
+
+    async def _evaluate_daily_pm_attention_digest(self) -> Optional[Dict[str, Any]]:
+        """Check if daily PM Attention Digest should be triggered based on scheduled time."""
+        if not settings.PM_ATTENTION_DIGEST_ENABLED:
+            return None
+
+        try:
+            tz = zoneinfo.ZoneInfo(settings.PM_ATTENTION_DIGEST_TIMEZONE)
+            now_tz = datetime.now(tz)
+        except Exception:
+            now_tz = datetime.now()
+
+        today_str = now_tz.strftime("%Y-%m-%d")
+        current_time_str = now_tz.strftime("%H:%M")
+
+        scheduled_time = (settings.PM_ATTENTION_DIGEST_TIME or "09:00").strip()
+        if current_time_str >= scheduled_time:
+            from app.core.reports.attention_report import DailyPMAttentionReportGenerator
+            generator = DailyPMAttentionReportGenerator(manager=self.mgr)
+            team_group = settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else "Mursaleen Cluster"
+
+            # Check persistent idempotency: skip if already sent today
+            if not generator.history_repo.has_report_been_sent(team_group, today_str, report_type="pm_attention_digest"):
+                logger.info(
+                    f"Triggering scheduled daily PM Attention Digest for team '{team_group}' on {today_str} "
+                    f"(current_time={current_time_str}, scheduled_time={scheduled_time})"
+                )
+                return await generator.send_digest_to_discord(
+                    target_date=today_str,
+                    force=False,
+                    record_history=True
+                )
+        return None
+
 
 # Global scheduler instance
 periodic_scheduler = PeriodicScheduler()
+

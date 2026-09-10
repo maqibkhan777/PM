@@ -8,6 +8,7 @@ from app.core.events.types import (
     TaskWorklogged,
     TaskStatusChanged,
     TaskReopened,
+    TaskAssigned,
     StaleTask,
     OverdueTask,
     TaskBlocked,
@@ -20,6 +21,7 @@ from app.core.actions.types import (
 )
 from app.connectors.discord.formatter import DiscordFormatter
 from app.services.notification_deduplication import notification_dedup_service
+from app.services.user_identity_service import user_identity_service
 from app.config.settings import settings
 from app.utils.time import parse_iso_datetime, utc_now, hours_between
 from app.utils.logger import logger
@@ -248,6 +250,10 @@ class OverdueRule(BaseRule):
         if due_date_str and status.lower() not in ("done", "completed", "resolved", "closed"):
             due_dt = parse_iso_datetime(due_date_str)
             if due_dt and due_dt < utc_now():
+                if not settings.OVERDUE_NOTIFY_PM:
+                    logger.debug(f"Overdue notification for {task_key} suppressed (OVERDUE_NOTIFY_PM=False).")
+                    return []
+
                 if not notification_dedup_service.should_notify(
                     rule_id=self.name,
                     target_id=task_key,
@@ -405,27 +411,22 @@ class ReopenedRule(BaseRule):
             logger.info(f"Rule [ReopenedTaskDetection] triggered for {task_key} ({prev_status} -> {new_status})")
             task_title = event.payload.get("issue", {}).get("fields", {}).get("summary", "")
 
-            fields = [
-                {"name": "Issue", "value": task_key, "inline": True},
-                {"name": "Reopened by", "value": event.actor_name or "Unknown", "inline": True},
-                {"name": "Transition", "value": f"`{prev_status}` ➔ `{new_status}`", "inline": True},
-                {"name": "Title", "value": task_title or "Untitled", "inline": False},
-            ]
-            embed_payload = DiscordFormatter.format_embed(
-                title="🔄 Task Reopened Alert",
-                description=f"Task **{task_key}** was reopened from **{prev_status}** to **{new_status}**.",
-                color=3447003,  # Blue
-                fields=fields,
+            embed_payload = DiscordFormatter.format_reopened_task(
+                task_key=task_key,
+                task_title=task_title or "",
+                reopened_by=event.actor_name or "Unknown",
+                prev_status=prev_status,
+                new_status=new_status,
                 timestamp=event.timestamp
             )
 
             notif_action = create_send_notification_action(
                 target_system="discord",
                 channel=settings.PM_DISCORD_CHANNEL,
-                title="🔄 Task Reopened Alert",
+                title=f"🔄 Task Reopened Alert — {task_key}",
                 message=f"Task {task_key} was reopened.",
                 level="INFO",
-                fields=embed_payload.get("embeds"),
+                fields=embed_payload.get("embeds", [{}])[0].get("fields"),
                 requested_by=self.name
             )
             notif_action.parameters["embeds"] = embed_payload.get("embeds")
@@ -439,3 +440,214 @@ class ReopenedRule(BaseRule):
             return [notif_action]
 
         return []
+
+
+class CommentNotificationRule(BaseRule):
+    """Rule 6: Comment Notification Relevance Rule.
+
+    Separates team data collection from personal notifications.
+    Generates high-priority personal notification when 'I' am mentioned.
+    Suppresses noisy customer/support replies unless COMMENT_NOTIFY_ALL is True.
+    """
+
+    def __init__(self, enabled: bool = True, configuration: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            name="CommentNotificationRule",
+            description="Alerts PM via Discord when mentioned in a Jira comment.",
+            enabled=enabled,
+            configuration=configuration or {}
+        )
+
+    def evaluate(self, event: BaseEvent, context: Optional[Dict[str, Any]] = None) -> List[BaseAction]:
+        if not self.enabled:
+            return []
+
+        if not isinstance(event, TaskCommentAdded):
+            return []
+
+        task_key = event.task_key or event.task_id or "Unknown"
+        comment_id = getattr(event, "comment_id", "") or getattr(event, "external_event_id", "default")
+        author_name = event.actor_name or getattr(event, "author_name", "Unknown") or "Unknown"
+        comment_body = getattr(event, "comment_body", "")
+
+        # Check if "I" am mentioned
+        is_mentioned = False
+        mentioned_ids = getattr(event, "mentioned_account_ids", []) or []
+        mentioned_names = getattr(event, "mentioned_display_names", []) or []
+
+        for acc_id in mentioned_ids:
+            if user_identity_service.is_me(account_id=acc_id):
+                is_mentioned = True
+                break
+
+        if not is_mentioned:
+            for disp_name in mentioned_names:
+                if user_identity_service.is_me(display_name=disp_name):
+                    is_mentioned = True
+                    break
+
+        # Fallback check on raw body text if structured mentions weren't present
+        if not is_mentioned and comment_body:
+            my_identity = user_identity_service._cached_display_name or settings.MY_JIRA_DISPLAY_NAME
+            if my_identity and f"@{my_identity.lower()}" in comment_body.lower():
+                is_mentioned = True
+
+        # If not mentioned and not configured to notify all comments, do NOT notify PM
+        if not is_mentioned and not settings.COMMENT_NOTIFY_ALL:
+            logger.debug(f"Comment on {task_key} by {author_name} does not mention PM. Suppressing Discord alert.")
+            return []
+
+        # Deduplication check: notify once per comment
+        condition_key = f"comment_{comment_id}"
+        if not notification_dedup_service.should_notify(
+            rule_id=self.name,
+            target_id=task_key,
+            condition=condition_key
+        ):
+            return []
+
+        issue_obj = event.payload.get("issue") if isinstance(event.payload, dict) and "issue" in event.payload else event.payload
+        fields = issue_obj.get("fields", {}) if isinstance(issue_obj, dict) else {}
+        task_title = fields.get("summary", "")
+        task_status = fields.get("status", {}).get("name", "")
+
+        if is_mentioned:
+            logger.info(f"Rule [CommentNotificationRule] triggered (MENTION) on {task_key} by {author_name}")
+            embed_payload = DiscordFormatter.format_task_mention(
+                task_key=task_key,
+                task_title=task_title,
+                author_name=author_name,
+                comment_body=comment_body,
+                task_status=task_status,
+                timestamp=event.timestamp
+            )
+            title = f"🔔 You were mentioned on {task_key}"
+            msg = f"You were mentioned in a comment on {task_key} by {author_name}."
+            level = "WARNING"
+        else:
+            logger.info(f"Rule [CommentNotificationRule] triggered (ALL_COMMENTS) on {task_key} by {author_name}")
+            embed_payload = DiscordFormatter.format_task_comment(
+                task_key=task_key,
+                task_title=task_title,
+                author_name=author_name,
+                comment_body=comment_body,
+                task_status=task_status,
+                timestamp=event.timestamp
+            )
+            title = f"💬 Jira Comment Added — {task_key}"
+            msg = f"New comment posted on {task_key} by {author_name}."
+            level = "INFO"
+
+        notif_action = create_send_notification_action(
+            target_system="discord",
+            channel=settings.PM_DISCORD_CHANNEL,
+            title=title,
+            message=msg,
+            level=level,
+            fields=embed_payload.get("embeds", [{}])[0].get("fields"),
+            requested_by=self.name
+        )
+        notif_action.parameters["embeds"] = embed_payload.get("embeds")
+
+        notification_dedup_service.record_notification_sent(
+            rule_id=self.name,
+            target_id=task_key,
+            condition=condition_key
+        )
+
+        return [notif_action]
+
+
+class AssignmentRule(BaseRule):
+    """Rule 7: Assignment Notification Rule.
+
+    Distinguishes:
+    - Assigned to me -> High-priority personal notification.
+    - Assigned to another team member -> Team awareness notification (if ASSIGNMENT_NOTIFY_TEAM=true).
+    - Customer/support activity -> Not an assignment, no noise.
+    """
+
+    def __init__(self, enabled: bool = True, configuration: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            name="AssignmentRule",
+            description="Alerts when a ticket is assigned to me or a team member.",
+            enabled=enabled,
+            configuration=configuration or {}
+        )
+
+    def evaluate(self, event: BaseEvent, context: Optional[Dict[str, Any]] = None) -> List[BaseAction]:
+        if not self.enabled:
+            return []
+
+        if not isinstance(event, TaskAssigned):
+            return []
+
+        task_key = event.task_key or event.task_id or "Unknown"
+        new_assignee_id = getattr(event, "new_assignee_id", None)
+        new_assignee_name = getattr(event, "new_assignee_name", None) or "Unassigned"
+        old_assignee_name = getattr(event, "old_assignee_name", None)
+        actor_name = event.actor_name or "System"
+
+        # Check if assigned to "me"
+        is_assigned_to_me = user_identity_service.is_me(
+            account_id=new_assignee_id,
+            display_name=new_assignee_name
+        )
+
+        # If assigned to someone else, check if team notifications are enabled
+        if not is_assigned_to_me and not settings.ASSIGNMENT_NOTIFY_TEAM:
+            return []
+
+        condition_key = f"assignment_{new_assignee_id or new_assignee_name}"
+        if not notification_dedup_service.should_notify(
+            rule_id=self.name,
+            target_id=task_key,
+            condition=condition_key
+        ):
+            return []
+
+        issue_obj = event.payload.get("issue") if isinstance(event.payload, dict) and "issue" in event.payload else event.payload
+        fields = issue_obj.get("fields", {}) if isinstance(issue_obj, dict) else {}
+        task_title = fields.get("summary", "")
+
+        embed_payload = DiscordFormatter.format_task_assigned(
+            task_key=task_key,
+            task_title=task_title,
+            new_assignee_name=new_assignee_name,
+            old_assignee_name=old_assignee_name,
+            assigned_by=actor_name,
+            is_assigned_to_me=is_assigned_to_me,
+            timestamp=event.timestamp
+        )
+
+        if is_assigned_to_me:
+            logger.info(f"Rule [AssignmentRule] triggered (ASSIGNED_TO_ME) on {task_key}")
+            title = f"🎯 Task Assigned to You — {task_key}"
+            msg = f"Task {task_key} has been assigned to you."
+            level = "SUCCESS"
+        else:
+            logger.info(f"Rule [AssignmentRule] triggered (TEAM_AWARENESS) on {task_key} to {new_assignee_name}")
+            title = f"👤 Task Assigned — {task_key}"
+            msg = f"Task {task_key} assigned to {new_assignee_name}."
+            level = "INFO"
+
+        notif_action = create_send_notification_action(
+            target_system="discord",
+            channel=settings.PM_DISCORD_CHANNEL,
+            title=title,
+            message=msg,
+            level=level,
+            fields=embed_payload.get("embeds", [{}])[0].get("fields"),
+            requested_by=self.name
+        )
+        notif_action.parameters["embeds"] = embed_payload.get("embeds")
+
+        notification_dedup_service.record_notification_sent(
+            rule_id=self.name,
+            target_id=task_key,
+            condition=condition_key
+        )
+
+        return [notif_action]
+
+

@@ -84,7 +84,8 @@ async def test_discord_and_mattermost_rule_pipeline(temp_db):
         STALE_TASK_NOTIFY_ASSIGNEE=True
     )
     with patch("app.core.actions.engine.settings", test_settings), \
-         patch("app.connectors.mattermost.connector.settings", test_settings):
+         patch("app.connectors.mattermost.connector.settings", test_settings), \
+         patch("app.core.rules.builtin.settings", test_settings):
         engine = ActionEngine(manager=temp_db)
         mm_conn = MattermostConnector()
         discord_conn = DiscordWebhookConnector()

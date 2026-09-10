@@ -18,6 +18,15 @@ def disable_background_scheduler():
     settings.SCHEDULER_ENABLED = prev
 
 
+@pytest.fixture(autouse=True)
+def clean_notification_dedup():
+    """Ensure clean notification history across test runs."""
+    from app.services.notification_deduplication import notification_dedup_service
+    notification_dedup_service.clear_all()
+    yield
+    notification_dedup_service.clear_all()
+
+
 @pytest.fixture
 def temp_db():
     """Create an isolated temporary SQLite database for testing."""

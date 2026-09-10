@@ -8,6 +8,8 @@ from app.core.rules.builtin import (
     OverdueRule,
     BlockedRule,
     ReopenedRule,
+    CommentNotificationRule,
+    AssignmentRule,
 )
 from app.core.events.base import BaseEvent
 from app.core.actions.base import BaseAction
@@ -33,6 +35,8 @@ class RulesEngine:
             OverdueRule(),
             BlockedRule(),
             ReopenedRule(),
+            CommentNotificationRule(),
+            AssignmentRule(),
         ]
         for r in defaults:
             self.register_rule(r)

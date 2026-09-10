@@ -40,7 +40,8 @@ async def test_polling_empty_results(temp_db, mock_jira_client):
         JIRA_BASE_URL="https://mycompany.atlassian.net",
         JIRA_EMAIL="pm@mycompany.com",
         JIRA_API_TOKEN="valid-token-123",
-        JIRA_POLLING_LOOKBACK_MINUTES=5
+        JIRA_POLLING_LOOKBACK_MINUTES=5,
+        JIRA_TEAM_GROUP="Engineering Team"
     )
     mock_jira_client.search_issues.return_value = {"issues": [], "total": 0}
 
@@ -63,7 +64,8 @@ async def test_polling_failure_does_not_advance_checkpoint(temp_db, mock_jira_cl
     configured_settings = Settings(
         JIRA_BASE_URL="https://mycompany.atlassian.net",
         JIRA_EMAIL="pm@mycompany.com",
-        JIRA_API_TOKEN="valid-token-123"
+        JIRA_API_TOKEN="valid-token-123",
+        JIRA_TEAM_GROUP="Engineering Team"
     )
     mock_jira_client.search_issues.side_effect = RuntimeError("Jira 503 Service Unavailable")
 
@@ -89,16 +91,18 @@ async def test_polling_pagination(temp_db, mock_jira_client):
         JIRA_BASE_URL="https://mycompany.atlassian.net",
         JIRA_EMAIL="pm@mycompany.com",
         JIRA_API_TOKEN="valid-token-123",
-        JIRA_POLLING_BATCH_SIZE=1
+        JIRA_POLLING_BATCH_SIZE=1,
+        JIRA_TEAM_GROUP="Engineering Team"
     )
 
     page1 = {
         "issues": [{"key": "PAG-1", "fields": {"summary": "Issue 1", "status": {"name": "To Do"}}}],
-        "total": 2
+        "nextPageToken": "cursor-token-page-2",
+        "isLast": False
     }
     page2 = {
         "issues": [{"key": "PAG-2", "fields": {"summary": "Issue 2", "status": {"name": "In Progress"}}}],
-        "total": 2
+        "isLast": True
     }
     mock_jira_client.search_issues.side_effect = [page1, page2]
 
@@ -110,6 +114,11 @@ async def test_polling_pagination(temp_db, mock_jira_client):
         assert result["status"] == "completed"
         assert result["issues_scanned"] == 2
         assert mock_jira_client.search_issues.call_count == 2
+        # Verify first call had no token and second call used nextPageToken
+        first_call = mock_jira_client.search_issues.call_args_list[0]
+        second_call = mock_jira_client.search_issues.call_args_list[1]
+        assert first_call.kwargs.get("next_page_token") is None
+        assert second_call.kwargs.get("next_page_token") == "cursor-token-page-2"
 
 
 @pytest.mark.asyncio
@@ -119,7 +128,8 @@ async def test_change_detection_new_issue(temp_db, mock_jira_client):
     configured_settings = Settings(
         JIRA_BASE_URL="https://mycompany.atlassian.net",
         JIRA_EMAIL="pm@mycompany.com",
-        JIRA_API_TOKEN="valid-token-123"
+        JIRA_API_TOKEN="valid-token-123",
+        JIRA_TEAM_GROUP="Engineering Team"
     )
     issue_payload = {
         "id": "1001",
@@ -161,7 +171,8 @@ async def test_change_detection_changelog_status_change(temp_db, mock_jira_clien
     configured_settings = Settings(
         JIRA_BASE_URL="https://mycompany.atlassian.net",
         JIRA_EMAIL="pm@mycompany.com",
-        JIRA_API_TOKEN="valid-token-123"
+        JIRA_API_TOKEN="valid-token-123",
+        JIRA_TEAM_GROUP="Engineering Team"
     )
     issue_payload = {
         "id": "1002",
@@ -216,7 +227,8 @@ async def test_deterministic_comment_and_worklog_detection(temp_db, mock_jira_cl
     configured_settings = Settings(
         JIRA_BASE_URL="https://mycompany.atlassian.net",
         JIRA_EMAIL="pm@mycompany.com",
-        JIRA_API_TOKEN="valid-token-123"
+        JIRA_API_TOKEN="valid-token-123",
+        JIRA_TEAM_GROUP="Engineering Team"
     )
     issue_payload = {
         "id": "1003",
@@ -278,7 +290,8 @@ async def test_duplicate_event_skipping_in_overlapping_window(temp_db, mock_jira
     configured_settings = Settings(
         JIRA_BASE_URL="https://mycompany.atlassian.net",
         JIRA_EMAIL="pm@mycompany.com",
-        JIRA_API_TOKEN="valid-token-123"
+        JIRA_API_TOKEN="valid-token-123",
+        JIRA_TEAM_GROUP="Engineering Team"
     )
     issue_payload = {
         "id": "1004",

@@ -601,6 +601,10 @@ class JiraIssueStateRepository:
             init_db(self.mgr)
             return None
 
+    def get_by_key(self, jira_issue_key: str) -> Optional[Dict[str, Any]]:
+        """Alias for get(jira_issue_key)."""
+        return self.get(jira_issue_key)
+
     def upsert(
         self,
         jira_issue_key: str,
@@ -614,6 +618,7 @@ class JiraIssueStateRepository:
         last_activity_at: Optional[str] = None,
         project_key: Optional[str] = None,
         raw_reference: Optional[Dict[str, Any]] = None,
+        team_group: Optional[str] = None,
     ) -> None:
         """Upsert an issue state projection."""
         now_str = utc_now_iso()
@@ -624,6 +629,9 @@ class JiraIssueStateRepository:
         if not last_activity_at:
             last_activity_at = existing["last_activity_at"] if existing and existing.get("last_activity_at") else seen_str
 
+        if not team_group and existing:
+            team_group = existing.get("team_group")
+
         raw_json = json.dumps(raw_reference) if raw_reference is not None else (json.dumps(existing.get("raw_reference")) if existing and existing.get("raw_reference") else None)
 
         with self.mgr.session() as conn:
@@ -631,9 +639,9 @@ class JiraIssueStateRepository:
                 """
                 INSERT INTO jira_issue_state (
                     jira_issue_key, summary, status, assignee, priority, due_date,
-                    updated_at, last_seen_at, last_activity_at, project_key, raw_reference
+                    updated_at, last_seen_at, last_activity_at, project_key, raw_reference, team_group
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(jira_issue_key) DO UPDATE SET
                     summary = excluded.summary,
                     status = excluded.status,
@@ -644,7 +652,8 @@ class JiraIssueStateRepository:
                     last_seen_at = excluded.last_seen_at,
                     last_activity_at = excluded.last_activity_at,
                     project_key = excluded.project_key,
-                    raw_reference = excluded.raw_reference
+                    raw_reference = excluded.raw_reference,
+                    team_group = excluded.team_group
                 """,
                 (
                     jira_issue_key,
@@ -658,10 +667,15 @@ class JiraIssueStateRepository:
                     last_activity_at,
                     project_key,
                     raw_json,
+                    team_group,
                 )
             )
 
-    def get_stale_candidates(self, threshold_hours: int) -> List[Dict[str, Any]]:
+    def get_stale_candidates(
+        self,
+        threshold_hours: int,
+        team_group: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """Retrieve active issues whose last meaningful activity exceeds threshold_hours."""
         import datetime
         from app.utils.time import utc_now, format_iso
@@ -670,15 +684,27 @@ class JiraIssueStateRepository:
         cutoff_iso = format_iso(cutoff)
 
         with self.mgr.session() as conn:
-            cursor = conn.execute(
-                """
-                SELECT * FROM jira_issue_state
-                WHERE lower(status) IN ('in progress', 'doing', 'active', 'in development', 'wip')
-                  AND last_activity_at <= ?
-                ORDER BY last_activity_at ASC
-                """,
-                (cutoff_iso,)
-            )
+            if team_group:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM jira_issue_state
+                    WHERE team_group = ?
+                      AND lower(status) IN ('in progress', 'doing', 'active', 'in development', 'wip')
+                      AND last_activity_at <= ?
+                    ORDER BY last_activity_at ASC
+                    """,
+                    (team_group, cutoff_iso)
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM jira_issue_state
+                    WHERE lower(status) IN ('in progress', 'doing', 'active', 'in development', 'wip')
+                      AND last_activity_at <= ?
+                    ORDER BY last_activity_at ASC
+                    """,
+                    (cutoff_iso,)
+                )
             results = []
             for row in cursor.fetchall():
                 d = dict(row)
@@ -690,7 +716,11 @@ class JiraIssueStateRepository:
                 results.append(d)
             return results
 
-    def get_overdue_candidates(self, now_iso: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_overdue_candidates(
+        self,
+        now_iso: Optional[str] = None,
+        team_group: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """Retrieve incomplete issues whose due date has passed."""
         from app.utils.time import utc_now_iso
 
@@ -700,17 +730,114 @@ class JiraIssueStateRepository:
         date_prefix = current_time[:10]
 
         with self.mgr.session() as conn:
-            cursor = conn.execute(
-                """
-                SELECT * FROM jira_issue_state
-                WHERE due_date IS NOT NULL
-                  AND trim(due_date) != ''
-                  AND (due_date < ? OR (length(due_date) = 10 AND due_date < ?))
-                  AND lower(status) NOT IN ('done', 'completed', 'resolved', 'closed', 'finished')
-                ORDER BY due_date ASC
-                """,
-                (current_time, date_prefix)
-            )
+            if team_group:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM jira_issue_state
+                    WHERE team_group = ?
+                      AND due_date IS NOT NULL
+                      AND trim(due_date) != ''
+                      AND (due_date < ? OR (length(due_date) = 10 AND due_date < ?))
+                      AND lower(status) NOT IN ('done', 'completed', 'resolved', 'closed', 'finished')
+                    ORDER BY due_date ASC
+                    """,
+                    (team_group, current_time, date_prefix)
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM jira_issue_state
+                    WHERE due_date IS NOT NULL
+                      AND trim(due_date) != ''
+                      AND (due_date < ? OR (length(due_date) = 10 AND due_date < ?))
+                      AND lower(status) NOT IN ('done', 'completed', 'resolved', 'closed', 'finished')
+                    ORDER BY due_date ASC
+                    """,
+                    (current_time, date_prefix)
+                )
+            results = []
+            for row in cursor.fetchall():
+                d = dict(row)
+                if d.get("raw_reference"):
+                    try:
+                        d["raw_reference"] = json.loads(d["raw_reference"])
+                    except Exception:
+                        pass
+                results.append(d)
+            return results
+
+    def get_reopened_candidates(
+        self,
+        team_group: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Retrieve active issues that have been reopened (via TaskReopened event or 'reopened' status)."""
+        with self.mgr.session() as conn:
+            done_clause = "lower(status) NOT IN ('done', 'completed', 'resolved', 'closed', 'cancelled', 'finished')"
+            if team_group:
+                cursor = conn.execute(
+                    f"""
+                    SELECT * FROM jira_issue_state
+                    WHERE team_group = ?
+                      AND {done_clause}
+                      AND (
+                          jira_issue_key IN (SELECT task_id FROM events WHERE event_type = 'TaskReopened')
+                          OR lower(status) IN ('reopened', 're-opened')
+                      )
+                    ORDER BY updated_at DESC, jira_issue_key ASC
+                    """,
+                    (team_group,)
+                )
+            else:
+                cursor = conn.execute(
+                    f"""
+                    SELECT * FROM jira_issue_state
+                    WHERE {done_clause}
+                      AND (
+                          jira_issue_key IN (SELECT task_id FROM events WHERE event_type = 'TaskReopened')
+                          OR lower(status) IN ('reopened', 're-opened')
+                      )
+                    ORDER BY updated_at DESC, jira_issue_key ASC
+                    """
+                )
+            results = []
+            for row in cursor.fetchall():
+                d = dict(row)
+                if d.get("raw_reference"):
+                    try:
+                        d["raw_reference"] = json.loads(d["raw_reference"])
+                    except Exception:
+                        pass
+                results.append(d)
+            return results
+
+    def get_unassigned_candidates(
+        self,
+        team_group: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Retrieve active issues without an assignee."""
+        with self.mgr.session() as conn:
+            done_clause = "lower(status) NOT IN ('done', 'completed', 'resolved', 'closed', 'cancelled', 'finished')"
+            unassigned_clause = "(assignee IS NULL OR trim(assignee) = '' OR lower(assignee) = 'unassigned')"
+            if team_group:
+                cursor = conn.execute(
+                    f"""
+                    SELECT * FROM jira_issue_state
+                    WHERE team_group = ?
+                      AND {done_clause}
+                      AND {unassigned_clause}
+                    ORDER BY updated_at DESC, jira_issue_key ASC
+                    """,
+                    (team_group,)
+                )
+            else:
+                cursor = conn.execute(
+                    f"""
+                    SELECT * FROM jira_issue_state
+                    WHERE {done_clause}
+                      AND {unassigned_clause}
+                    ORDER BY updated_at DESC, jira_issue_key ASC
+                    """
+                )
             results = []
             for row in cursor.fetchall():
                 d = dict(row)
@@ -729,3 +856,186 @@ class JiraIssueStateRepository:
                 (limit,)
             )
             return [dict(r) for r in cursor.fetchall()]
+
+
+class JiraWorklogRepository:
+    """Repository for persisting and querying Jira worklog records."""
+
+    def __init__(self, manager: Optional[DatabaseManager] = None):
+        self.mgr = manager or db_manager
+
+    def upsert_worklog(
+        self,
+        worklog_id: str,
+        jira_issue_key: str,
+        time_spent_seconds: int,
+        started_at: str,
+        jira_issue_id: Optional[str] = None,
+        author_account_id: Optional[str] = None,
+        author_display_name: Optional[str] = None,
+        created_at: Optional[str] = None,
+        updated_at: Optional[str] = None,
+        comment: Optional[str] = None,
+        team_group: Optional[str] = None,
+        source: str = "jira"
+    ) -> None:
+        """Idempotently insert or update a worklog record."""
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO jira_worklogs (
+                    worklog_id, jira_issue_key, jira_issue_id, author_account_id,
+                    author_display_name, time_spent_seconds, started_at, created_at,
+                    updated_at, comment, team_group, source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(worklog_id) DO UPDATE SET
+                    jira_issue_key = excluded.jira_issue_key,
+                    jira_issue_id = COALESCE(excluded.jira_issue_id, jira_worklogs.jira_issue_id),
+                    author_account_id = COALESCE(excluded.author_account_id, jira_worklogs.author_account_id),
+                    author_display_name = COALESCE(excluded.author_display_name, jira_worklogs.author_display_name),
+                    time_spent_seconds = excluded.time_spent_seconds,
+                    started_at = excluded.started_at,
+                    updated_at = COALESCE(excluded.updated_at, jira_worklogs.updated_at),
+                    comment = COALESCE(excluded.comment, jira_worklogs.comment),
+                    team_group = COALESCE(excluded.team_group, jira_worklogs.team_group),
+                    source = excluded.source
+                """,
+                (
+                    str(worklog_id),
+                    jira_issue_key,
+                    jira_issue_id,
+                    author_account_id,
+                    author_display_name,
+                    int(time_spent_seconds),
+                    started_at,
+                    created_at,
+                    updated_at,
+                    comment,
+                    team_group,
+                    source
+                )
+            )
+
+    def get_worklogs_for_date(
+        self,
+        date_str: str,
+        team_group: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Retrieve worklogs where started_at matches the given YYYY-MM-DD date."""
+        prefix = date_str[:10]
+        with self.mgr.session() as conn:
+            if team_group:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM jira_worklogs
+                    WHERE substr(started_at, 1, 10) = ?
+                      AND team_group = ?
+                    ORDER BY started_at ASC
+                    """,
+                    (prefix, team_group)
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM jira_worklogs
+                    WHERE substr(started_at, 1, 10) = ?
+                    ORDER BY started_at ASC
+                    """,
+                    (prefix,)
+                )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def get_worklogs_for_range(
+        self,
+        start_date: str,
+        end_date: str,
+        team_group: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Retrieve worklogs started between start_date and end_date (inclusive, YYYY-MM-DD)."""
+        s_pref = start_date[:10]
+        e_pref = end_date[:10]
+        with self.mgr.session() as conn:
+            if team_group:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM jira_worklogs
+                    WHERE substr(started_at, 1, 10) >= ?
+                      AND substr(started_at, 1, 10) <= ?
+                      AND team_group = ?
+                    ORDER BY started_at ASC
+                    """,
+                    (s_pref, e_pref, team_group)
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM jira_worklogs
+                    WHERE substr(started_at, 1, 10) >= ?
+                      AND substr(started_at, 1, 10) <= ?
+                    ORDER BY started_at ASC
+                    """,
+                    (s_pref, e_pref)
+                )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def count(self, team_group: Optional[str] = None) -> int:
+        with self.mgr.session() as conn:
+            if team_group:
+                cursor = conn.execute("SELECT COUNT(*) FROM jira_worklogs WHERE team_group = ?", (team_group,))
+            else:
+                cursor = conn.execute("SELECT COUNT(*) FROM jira_worklogs")
+            return cursor.fetchone()[0]
+
+
+class DailyReportHistoryRepository:
+    """Repository for recording and checking daily report generation history for idempotency."""
+
+    def __init__(self, manager: Optional[DatabaseManager] = None):
+        self.mgr = manager or db_manager
+
+    def has_report_been_sent(
+        self,
+        team_group: str,
+        report_date: str,
+        report_type: str = "daily_worklog"
+    ) -> bool:
+        """Check if report has already been dispatched to Discord."""
+        clean_date = report_date[:10]
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                """
+                SELECT sent_to_discord FROM daily_report_history
+                WHERE team_group = ? AND report_date = ? AND report_type = ?
+                """,
+                (team_group, clean_date, report_type)
+            )
+            row = cursor.fetchone()
+            if row:
+                return bool(row["sent_to_discord"])
+            return False
+
+    def record_report_sent(
+        self,
+        team_group: str,
+        report_date: str,
+        payload: Dict[str, Any],
+        report_type: str = "daily_worklog"
+    ) -> None:
+        """Record that report was generated and dispatched."""
+        from app.utils.time import utc_now_iso
+        clean_date = report_date[:10]
+        rec_id = f"{report_type}:{team_group}:{clean_date}"
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO daily_report_history (
+                    id, team_group, report_date, report_type, generated_at, sent_to_discord, report_payload
+                ) VALUES (?, ?, ?, ?, ?, 1, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    generated_at = excluded.generated_at,
+                    sent_to_discord = 1,
+                    report_payload = excluded.report_payload
+                """,
+                (rec_id, team_group, clean_date, report_type, utc_now_iso(), json.dumps(payload))
+            )
+
