@@ -353,17 +353,17 @@ async def test_report_sending_is_idempotent(isolated_worklog_env):
     )
 
     # First dispatch -> should send
-    res1 = await gen.send_report_to_discord(target_date="2026-09-10", force=False)
+    res1 = await gen.send_report_to_discord(target_date="2026-09-10", force=False, sync_jira=False)
     assert res1["status"] == "sent"
     assert history_repo.has_report_been_sent("Mursaleen Cluster", "2026-09-10") is True
 
     # Second dispatch without force -> should skip
-    res2 = await gen.send_report_to_discord(target_date="2026-09-10", force=False)
+    res2 = await gen.send_report_to_discord(target_date="2026-09-10", force=False, sync_jira=False)
     assert res2["status"] == "skipped"
     assert res2["reason"] == "already_sent_today"
 
     # Third dispatch with force=True -> should re-send
-    res3 = await gen.send_report_to_discord(target_date="2026-09-10", force=True)
+    res3 = await gen.send_report_to_discord(target_date="2026-09-10", force=True, sync_jira=False)
     assert res3["status"] == "sent"
 
     settings.DRY_RUN = prev_dry_run

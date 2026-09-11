@@ -51,8 +51,27 @@ class ActionType(str, Enum):
     ADD_COMMENT = "AddComment"
     CHANGE_PRIORITY = "ChangePriority"
 
+    @classmethod
+    def from_str(cls, value: str) -> Optional["ActionType"]:
+        if not value:
+            return None
+        try:
+            return cls(value)
+        except ValueError:
+            pass
+        clean = value.strip().upper().replace(" ", "_").replace("-", "_")
+        if clean in cls.__members__:
+            return cls.__members__[clean]
+        for member in cls:
+            if member.value.lower() == value.strip().lower() or member.name.lower() == clean.lower():
+                return member
+        return None
+
+
 
 class ActionStatus(str, Enum):
+    REQUESTED = "REQUESTED"
+    VALIDATED = "VALIDATED"
     PENDING_APPROVAL = "PENDING_APPROVAL"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"

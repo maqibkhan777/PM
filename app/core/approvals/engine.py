@@ -12,19 +12,17 @@ class ApprovalEngine:
 
     @staticmethod
     def classify(action: BaseAction) -> ApprovalClassification:
-        """Determine approval classification for an action."""
+        """Determine approval classification for an action in V1."""
         action_type = action.action_type
 
-        # Automatically allowed in V0.1
-        if action_type in (ActionType.SEND_NOTIFICATION, ActionType.SEND_MESSAGE):
-            return ApprovalClassification.AUTO
-
-        # Destructive operations - unconditionally blocked in V0.1
+        # Destructive operations - unconditionally blocked in V1
         if action.parameters.get("is_destructive") or "delete" in action_type.value.lower():
             return ApprovalClassification.BLOCKED
 
-        # Mutating operations on Jira - require approval
+        # All standard V1 operations are automatically permitted without manual approval
         if action_type in (
+            ActionType.SEND_NOTIFICATION,
+            ActionType.SEND_MESSAGE,
             ActionType.TRANSITION_TASK,
             ActionType.ASSIGN_TASK,
             ActionType.ADD_COMMENT,
@@ -32,9 +30,9 @@ class ApprovalEngine:
             ActionType.CREATE_TASK,
             ActionType.UPDATE_TASK,
         ):
-            return ApprovalClassification.APPROVAL_REQUIRED
+            return ApprovalClassification.AUTO
 
-        return ApprovalClassification.APPROVAL_REQUIRED
+        return ApprovalClassification.AUTO
 
     @staticmethod
     def generate_preview(action: BaseAction) -> ActionPreview:
@@ -49,20 +47,34 @@ class ApprovalEngine:
         task_title = params.get("task_title") or params.get("summary")
 
         if action_type == ActionType.TRANSITION_TASK:
-            summary = f"Transition Jira Task {target_id} from '{current_state or 'To Do'}' to '{target_state or 'In Progress'}'"
+            from_str = f" from '{current_state}'" if current_state else ""
+            summary = f"Transition Jira task {target_id}{from_str} to '{target_state or 'Done'}'"
         elif action_type == ActionType.ASSIGN_TASK:
-            summary = f"Assign Jira Task {target_id} to '{params.get('assignee_name') or params.get('account_id')}'"
+            assignee = params.get("assignee") or params.get("assignee_name") or params.get("account_id") or target_id
+            summary = f"Assign Jira task {target_id} to '{assignee}'"
         elif action_type == ActionType.ADD_COMMENT:
-            comment_snippet = str(params.get('comment') or params.get('body', ''))[:60]
-            summary = f"Add comment to Jira Task {target_id}: '{comment_snippet}...'"
-        elif action_type == ActionType.CHANGE_PRIORITY:
-            summary = f"Change priority of Jira Task {target_id} to '{params.get('priority')}'"
+            comment_snippet = str(params.get("comment") or params.get("body", ""))[:100]
+            summary = f"Add comment to {target_id}:\n{comment_snippet}"
+        elif action_type == ActionType.UPDATE_TASK:
+            fields = params.get("fields", {})
+            field_lines = [f"{k}: {v}" for k, v in fields.items()]
+            fields_str = "\n".join(field_lines) if field_lines else "None"
+            summary = f"Update {target_id}:\n{fields_str}"
         elif action_type == ActionType.CREATE_TASK:
-            summary = f"Create new Jira Task in project '{target_id}': '{params.get('summary')}'"
+            proj = params.get("project_key") or target_id
+            summ = params.get("summary") or "Task"
+            assignee = params.get("assignee")
+            assignee_str = f"\nAssignee: {assignee}" if assignee else ""
+            summary = f"Create Jira task:\nProject: {proj}\nSummary: {summ}{assignee_str}"
+        elif action_type == ActionType.CHANGE_PRIORITY:
+            summary = f"Change priority of Jira task {target_id} to '{params.get('priority')}'"
         elif action_type == ActionType.SEND_MESSAGE:
-            summary = f"Send Mattermost DM to '{params.get('recipient_name') or target_id}': '{str(params.get('text', ''))[:60]}...'"
+            recip = params.get("recipient") or params.get("recipient_name") or target_id
+            msg_snippet = str(params.get("message") or params.get("text", ""))[:100]
+            summary = f"Send {target_sys.capitalize()} message to {recip}: {msg_snippet}"
         elif action_type == ActionType.SEND_NOTIFICATION:
-            summary = f"Send Discord alert to #{target_id}: [{params.get('level', 'INFO')}] {params.get('title', '')}"
+            notif_content = params.get("title") or params.get("message") or ""
+            summary = f"Send PM notification:\n{notif_content}"
         else:
             summary = f"Execute {action_type.value} on {target_sys} ({target_id})"
 
@@ -70,7 +82,7 @@ class ApprovalEngine:
         requires_approval = (classification == ApprovalClassification.APPROVAL_REQUIRED)
 
         return ActionPreview(
-            action_type=action_type.value,
+            action_type=action_type.value if hasattr(action_type, "value") else str(action_type),
             target_system=target_sys,
             target_id=target_id,
             task_title=task_title,

@@ -388,25 +388,68 @@ class DiscordFormatter:
 
         title = f"🚨 {team_name} — Overdue Tasks"
 
-        col_ticket_w = max(11, max((len(t.get("key", "")) for t in tickets), default=11))
+        def _format_assignee(name: Any, max_len: int = 16) -> str:
+            """Format assignee name cleanly, using middle/last name for long names."""
+            if not name or not str(name).strip():
+                return "Unassigned"
+            s = str(name).strip()
+            if len(s) <= max_len:
+                return s
+            parts = s.split()
+            if len(parts) >= 3:
+                # e.g., "Muhammad Ali Siddiqui" -> "Ali Siddiqui"
+                middle_last = " ".join(parts[1:])
+                if len(middle_last) <= max_len:
+                    return middle_last.title()
+                initialed = f"{parts[0][0]}. {middle_last}"
+                if len(initialed) <= max_len:
+                    return initialed.title()
+                return f"{parts[0][0]}. {parts[-1]}".title()[:max_len]
+            elif len(parts) == 2:
+                # e.g., "Muhammad Shahmeer" -> "M. Shahmeer"
+                initialed = f"{parts[0][0]}. {parts[1]}"
+                if len(initialed) <= max_len:
+                    return initialed.title()
+                return initialed.title()[:max_len]
+            return s[:max_len]
+
+        def _format_summary(summary: Any, max_len: int = 30) -> str:
+            """Clean and truncate summary string to fixed width."""
+            if not summary or not str(summary).strip():
+                return "No summary"
+            s = " ".join(str(summary).strip().split()).replace("|", "-")
+            if len(s) <= max_len:
+                return s
+            return s[:max_len - 3].rstrip() + "..."
+
+        # Calculate column widths
+        col_ticket_w = max(10, max((len(t.get("key", "")) for t in tickets), default=10))
+        col_sum_w = 30
+        col_ass_w = 16
         col_due_w = 12
-        col_updated_w = 12
 
-        header_line = f"| {'Ticket':<{col_ticket_w}} | {'Due Date':<{col_due_w}} | {'Last Updated':<{col_updated_w}} |"
-        sep_line = f"| {'-' * col_ticket_w} | {'-' * col_due_w} | {'-' * col_updated_w} |"
+        header_line = f"| {'Ticket':<{col_ticket_w}} | {'Summary':<{col_sum_w}} | {'Assignee':<{col_ass_w}} | {'Due Date':<{col_due_w}} |"
+        sep_line = f"| {'-' * col_ticket_w} | {'-' * col_sum_w} | {'-' * col_ass_w} | {'-' * col_due_w} |"
 
-        table_lines = [f"`{header_line}`", f"`{sep_line}`"]
+        table_lines = [header_line, sep_line]
+        ticket_keys = []
         for t in tickets:
             tkey = t.get("key", "Unknown")
-            jira_url = t.get("url") or settings.get_jira_browse_url(tkey)
+            if tkey and tkey != "Unknown":
+                ticket_keys.append(tkey)
+            sum_str = _format_summary(t.get("summary"), col_sum_w)
+            ass_str = _format_assignee(t.get("assignee"), col_ass_w)
             due_str = t.get("due_date") or "N/A"
-            upd_str = t.get("updated_at") or "N/A"
-            pad_ticket = " " * max(0, col_ticket_w - len(tkey))
-            row = f"`| `[{tkey}]({jira_url})`{pad_ticket} | {due_str:<{col_due_w}} | {upd_str:<{col_updated_w}} |`"
+
+            row = f"| {tkey:<{col_ticket_w}} | {sum_str:<{col_sum_w}} | {ass_str:<{col_ass_w}} | {due_str:<{col_due_w}} |"
             table_lines.append(row)
 
-        table_text = "\n".join(table_lines)
-        description = f"**Date:** {formatted_date}\n\n{table_text}"
+        table_block = "```\n" + "\n".join(table_lines) + "\n```"
+
+        nav_url = settings.get_jira_issue_navigator_url(ticket_keys) if ticket_keys else settings.JIRA_BASE_URL
+        jira_link_text = f"[🔗 Open {len(tickets)} Overdue Tasks in Jira]({nav_url})"
+
+        description = f"**Date:** {formatted_date}\n\n{table_block}\n{jira_link_text}"
 
         return cls.format_embed(
             title=title,
@@ -414,6 +457,8 @@ class DiscordFormatter:
             color=COLOR_RED,
             fields=[]
         )
+
+
 
     @classmethod
     def format_pm_attention_digest(cls, report_data: Dict[str, Any]) -> Dict[str, Any]:

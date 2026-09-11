@@ -55,6 +55,7 @@ class SystemOrchestrator:
         # 2. Attempt connector initial connection checks
         await self.jira_connector.connect()
         await self.discord_webhook_connector.connect()
+        await self.discord_bot_connector.connect()
         await self.mattermost_connector.connect()
 
         # 3. Wire Event Bus Wildcard to Rules Engine
@@ -73,6 +74,7 @@ class SystemOrchestrator:
         periodic_scheduler.stop()
         await self.jira_connector.disconnect()
         await self.discord_webhook_connector.disconnect()
+        await self.discord_bot_connector.disconnect()
         await self.mattermost_connector.disconnect()
         self._is_initialized = False
 

@@ -79,11 +79,19 @@ CREATE TABLE IF NOT EXISTS actions (
     target_system TEXT NOT NULL,
     target_id TEXT NOT NULL,
     parameters TEXT NOT NULL, -- JSON string
-    status TEXT NOT NULL, -- PENDING_APPROVAL, APPROVED, REJECTED, EXECUTING, COMPLETED, FAILED, DRY_RUN_SIMULATED, ACTION_UNSUPPORTED, USER_MAPPING_REQUIRED
+    status TEXT NOT NULL, -- REQUESTED, VALIDATED, PENDING_APPROVAL, APPROVED, REJECTED, EXECUTING, COMPLETED, FAILED, DRY_RUN_SIMULATED, ACTION_UNSUPPORTED, USER_MAPPING_REQUIRED
     attempt_count INTEGER NOT NULL DEFAULT 0,
     dry_run INTEGER NOT NULL DEFAULT 0,
     preview TEXT, -- JSON string
     last_error TEXT,
+    requested_by TEXT,
+    requires_approval INTEGER NOT NULL DEFAULT 0,
+    approved_by TEXT,
+    approved_at TEXT,
+    rejected_by TEXT,
+    rejected_at TEXT,
+    rejection_reason TEXT,
+    result_data TEXT, -- JSON string
     created_at TEXT NOT NULL,
     executed_at TEXT
 );
@@ -240,10 +248,42 @@ def _migrate_jira_worklogs(conn) -> None:
             conn.execute(f"ALTER TABLE jira_worklogs ADD COLUMN {col_name} {col_type}")
 
 
+def _migrate_actions(conn) -> None:
+    """Idempotently ensure actions schema contains all expected columns."""
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='actions'"
+    )
+    if not cursor.fetchone():
+        return
+
+    cursor = conn.execute("PRAGMA table_info(actions)")
+    rows = cursor.fetchall()
+    existing_columns = {
+        row["name"] if hasattr(row, "keys") and "name" in row.keys() else row[1]
+        for row in rows
+    }
+
+    expected_columns = {
+        "requested_by": "TEXT",
+        "requires_approval": "INTEGER NOT NULL DEFAULT 0",
+        "approved_by": "TEXT",
+        "approved_at": "TEXT",
+        "rejected_by": "TEXT",
+        "rejected_at": "TEXT",
+        "rejection_reason": "TEXT",
+        "result_data": "TEXT",
+    }
+    for col_name, col_type in expected_columns.items():
+        if col_name not in existing_columns:
+            logger.info(f"Migrating database: adding '{col_name}' column to actions table...")
+            conn.execute(f"ALTER TABLE actions ADD COLUMN {col_name} {col_type}")
+
+
 def _apply_migrations(conn) -> None:
     """Execute all registered schema migrations safely and idempotently."""
     _migrate_jira_issue_state(conn)
     _migrate_jira_worklogs(conn)
+    _migrate_actions(conn)
 
 
 def _ensure_post_migration_indexes(conn) -> None:

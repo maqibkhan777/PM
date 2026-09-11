@@ -343,6 +343,8 @@ class ActionRepository:
         idempotency_key: Optional[str] = None,
         dry_run: bool = False,
         preview: Optional[Dict[str, Any]] = None,
+        requested_by: str = "RulesEngine",
+        requires_approval: bool = False,
         db_id: Optional[str] = None
     ) -> str:
         aid = db_id or str(uuid.uuid4())
@@ -353,13 +355,14 @@ class ActionRepository:
                 INSERT INTO actions (
                     id, action_id, idempotency_key, action_type, target_system,
                     target_id, parameters, status, attempt_count, dry_run,
-                    preview, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                    preview, requested_by, requires_approval, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
                 """,
                 (
                     aid, action_id, idempotency_key, action_type, target_system,
                     target_id, json.dumps(parameters), status, 1 if dry_run else 0,
-                    json.dumps(preview) if preview else None, created_at
+                    json.dumps(preview) if preview else None, requested_by,
+                    1 if requires_approval else 0, created_at
                 )
             )
         return aid
@@ -372,8 +375,13 @@ class ActionRepository:
             row = cursor.fetchone()
             if row:
                 d = dict(row)
-                d["parameters"] = json.loads(d["parameters"]) if d["parameters"] else {}
-                d["preview"] = json.loads(d["preview"]) if d["preview"] else None
+                d["parameters"] = json.loads(d["parameters"]) if d.get("parameters") else {}
+                d["preview"] = json.loads(d["preview"]) if d.get("preview") else None
+                if d.get("result_data"):
+                    try:
+                        d["result_data"] = json.loads(d["result_data"])
+                    except Exception:
+                        pass
                 return d
             return None
 
@@ -383,8 +391,13 @@ class ActionRepository:
             row = cursor.fetchone()
             if row:
                 d = dict(row)
-                d["parameters"] = json.loads(d["parameters"]) if d["parameters"] else {}
-                d["preview"] = json.loads(d["preview"]) if d["preview"] else None
+                d["parameters"] = json.loads(d["parameters"]) if d.get("parameters") else {}
+                d["preview"] = json.loads(d["preview"]) if d.get("preview") else None
+                if d.get("result_data"):
+                    try:
+                        d["result_data"] = json.loads(d["result_data"])
+                    except Exception:
+                        pass
                 return d
             return None
 
@@ -424,6 +437,93 @@ class ActionRepository:
                     (status, last_error, executed_at, action_id, action_id)
                 )
 
+    def update_approval(
+        self,
+        action_id: str,
+        approved_by: str,
+        approved_at: Optional[str] = None,
+        status: str = "APPROVED"
+    ) -> None:
+        """Mark action as approved with approver identity and timestamp."""
+        at = approved_at or utc_now_iso()
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                UPDATE actions
+                SET status = ?,
+                    approved_by = ?,
+                    approved_at = ?
+                WHERE action_id = ? OR id = ?
+                """,
+                (status, approved_by, at, action_id, action_id)
+            )
+
+    def update_rejection(
+        self,
+        action_id: str,
+        rejected_by: str,
+        rejection_reason: Optional[str] = None,
+        rejected_at: Optional[str] = None,
+        status: str = "REJECTED"
+    ) -> None:
+        """Mark action as rejected with rejector identity, reason, and timestamp."""
+        at = rejected_at or utc_now_iso()
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                UPDATE actions
+                SET status = ?,
+                    rejected_by = ?,
+                    rejected_at = ?,
+                    rejection_reason = ?,
+                    last_error = ?
+                WHERE action_id = ? OR id = ?
+                """,
+                (status, rejected_by, at, rejection_reason, rejection_reason, action_id, action_id)
+            )
+
+    def update_result(
+        self,
+        action_id: str,
+        status: str,
+        result_data: Optional[Dict[str, Any]] = None,
+        last_error: Optional[str] = None,
+        increment_attempt: bool = True
+    ) -> None:
+        """Update action with final execution status and result_data payload."""
+        executed_at = utc_now_iso() if status in ("COMPLETED", "FAILED", "DRY_RUN_SIMULATED") else None
+        res_json = json.dumps(result_data) if result_data is not None else None
+        dry_run_val = 1 if status == "DRY_RUN_SIMULATED" else (0 if status == "COMPLETED" else None)
+        with self.mgr.session() as conn:
+            if increment_attempt:
+                conn.execute(
+                    """
+                    UPDATE actions
+                    SET status = ?,
+                        result_data = COALESCE(?, result_data),
+                        last_error = ?,
+                        dry_run = COALESCE(?, dry_run),
+                        attempt_count = attempt_count + 1,
+                        executed_at = COALESCE(?, executed_at)
+                    WHERE action_id = ? OR id = ?
+                    """,
+                    (status, res_json, last_error, dry_run_val, executed_at, action_id, action_id)
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE actions
+                    SET status = ?,
+                        result_data = COALESCE(?, result_data),
+                        last_error = ?,
+                        dry_run = COALESCE(?, dry_run),
+                        executed_at = COALESCE(?, executed_at)
+                    WHERE action_id = ? OR id = ?
+                    """,
+                    (status, res_json, last_error, dry_run_val, executed_at, action_id, action_id)
+                )
+
+
     def list_actions(self, limit: int = 50, offset: int = 0, status: Optional[str] = None) -> List[Dict[str, Any]]:
         query = "SELECT * FROM actions WHERE 1=1"
         params: List[Any] = []
@@ -438,8 +538,13 @@ class ActionRepository:
             results = []
             for row in cursor.fetchall():
                 d = dict(row)
-                d["parameters"] = json.loads(d["parameters"]) if d["parameters"] else {}
-                d["preview"] = json.loads(d["preview"]) if d["preview"] else None
+                d["parameters"] = json.loads(d["parameters"]) if d.get("parameters") else {}
+                d["preview"] = json.loads(d["preview"]) if d.get("preview") else None
+                if d.get("result_data"):
+                    try:
+                        d["result_data"] = json.loads(d["result_data"])
+                    except Exception:
+                        pass
                 results.append(d)
             return results
 

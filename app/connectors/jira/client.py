@@ -1,6 +1,8 @@
 """Jira Cloud REST API HTTP client with timeouts, authentication, and retry handling."""
 
 import asyncio
+import random
+import time
 from typing import Any, Dict, List, Optional
 import httpx
 from app.config.settings import settings
@@ -22,6 +24,8 @@ class JiraClient:
         self.api_token = api_token or settings.JIRA_API_TOKEN
         self.timeout = timeout or settings.REQUEST_TIMEOUT_SECONDS
         self._client: Optional[httpx.AsyncClient] = None
+        self._myself_cache: Optional[Dict[str, Any]] = None
+        self._myself_cache_expires_at: float = 0.0
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -68,14 +72,36 @@ class JiraClient:
 
                 # Permanent auth failure - do not retry
                 if response.status_code in (401, 403):
-                    logger.error(f"Jira authentication failed: HTTP {response.status_code} for {method} {url}")
+                    logger.error(f"Jira authentication failed: HTTP {response.status_code} for {method} {path}")
                     response.raise_for_status()
 
-                # Rate limiting or server errors - retry with exponential backoff
+                # Rate limiting (429) or transient server errors (5xx)
                 if response.status_code in (429, 500, 502, 503, 504):
                     if attempt < max_retries:
-                        sleep_time = backoff ** attempt
-                        logger.warning(f"Jira API transient error {response.status_code}. Retrying in {sleep_time:.1f}s (attempt {attempt}/{max_retries})")
+                        retry_after = None
+                        header_val = response.headers.get("Retry-After") or response.headers.get("retry-after")
+                        if header_val:
+                            try:
+                                retry_after = float(header_val)
+                            except ValueError:
+                                pass
+
+                        base_sleep = retry_after if retry_after is not None else (backoff ** attempt)
+                        jitter = random.uniform(0.1, 0.5)
+                        sleep_time = min(max(base_sleep, backoff ** attempt) + jitter, 60.0)
+
+                        if response.status_code == 429:
+                            logger.warning(
+                                f"Jira API rate-limited (HTTP 429) on {method} {path}. "
+                                f"Retry-After: {retry_after or 'N/A'}s. "
+                                f"Backing off for {sleep_time:.2f}s (attempt {attempt}/{max_retries})"
+                            )
+                        else:
+                            logger.warning(
+                                f"Jira API transient error (HTTP {response.status_code}) on {method} {path}. "
+                                f"Retrying in {sleep_time:.2f}s (attempt {attempt}/{max_retries})"
+                            )
+
                         await asyncio.sleep(sleep_time)
                         continue
                     else:
@@ -88,19 +114,21 @@ class JiraClient:
 
             except httpx.TimeoutException as e:
                 if attempt < max_retries:
-                    sleep_time = backoff ** attempt
-                    logger.warning(f"Jira API timeout on {method} {url}. Retrying in {sleep_time:.1f}s (attempt {attempt}/{max_retries})")
+                    jitter = random.uniform(0.1, 0.5)
+                    sleep_time = min((backoff ** attempt) + jitter, 60.0)
+                    logger.warning(f"Jira API timeout on {method} {path}. Retrying in {sleep_time:.2f}s (attempt {attempt}/{max_retries})")
                     await asyncio.sleep(sleep_time)
                 else:
-                    logger.error(f"Jira API request timed out after {max_retries} attempts: {e}")
+                    logger.error(f"Jira API request timed out after {max_retries} attempts on {method} {path}: {e}")
                     raise
             except httpx.RequestError as e:
                 if attempt < max_retries:
-                    sleep_time = backoff ** attempt
-                    logger.warning(f"Jira connection error {e}. Retrying in {sleep_time:.1f}s (attempt {attempt}/{max_retries})")
+                    jitter = random.uniform(0.1, 0.5)
+                    sleep_time = min((backoff ** attempt) + jitter, 60.0)
+                    logger.warning(f"Jira connection error on {method} {path}: {e}. Retrying in {sleep_time:.2f}s (attempt {attempt}/{max_retries})")
                     await asyncio.sleep(sleep_time)
                 else:
-                    logger.error(f"Jira API connection failed after {max_retries} attempts: {e}")
+                    logger.error(f"Jira API connection failed after {max_retries} attempts on {method} {path}: {e}")
                     raise
 
         raise RuntimeError("Unexpected end of request retry loop")
@@ -109,9 +137,17 @@ class JiraClient:
     # API Methods
     # --------------------------------------------------------------------------
 
-    async def get_myself(self) -> Dict[str, Any]:
-        """Fetch current authenticated user profile for health check."""
-        return await self._request("GET", "/rest/api/3/myself")
+    async def get_myself(self, force_refresh: bool = False) -> Dict[str, Any]:
+        """Fetch current authenticated user profile for health check with short TTL cache."""
+        now = time.time()
+        if not force_refresh and self._myself_cache and now < self._myself_cache_expires_at:
+            return self._myself_cache
+
+        data = await self._request("GET", "/rest/api/3/myself")
+        if isinstance(data, dict):
+            self._myself_cache = data
+            self._myself_cache_expires_at = now + 60.0
+        return data
 
     async def get_issue(self, issue_key_or_id: str) -> Dict[str, Any]:
         """Fetch issue details including changelog."""
@@ -211,8 +247,22 @@ class JiraClient:
         return await self._request("PUT", f"/rest/api/3/issue/{issue_key}", json_data=payload)
 
     async def update_fields(self, issue_key: str, fields: Dict[str, Any]) -> Dict[str, Any]:
-        """Update arbitrary issue fields."""
-        payload = {"fields": fields}
+        """Update arbitrary issue fields, formatting description to ADF when provided as plain text."""
+        formatted_fields: Dict[str, Any] = {}
+        for k, v in fields.items():
+            if k == "description" and isinstance(v, str):
+                formatted_fields["description"] = {
+                    "type": "doc",
+                    "version": 1,
+                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": v}]}]
+                }
+            elif k == "priority" and isinstance(v, str):
+                formatted_fields["priority"] = {"name": v}
+            elif k in ("assignee", "account_id") and isinstance(v, str):
+                formatted_fields["assignee"] = {"accountId": v}
+            else:
+                formatted_fields[k] = v
+        payload = {"fields": formatted_fields}
         return await self._request("PUT", f"/rest/api/3/issue/{issue_key}", json_data=payload)
 
     async def create_issue(
@@ -220,7 +270,10 @@ class JiraClient:
         project_key: str,
         summary: str,
         issue_type: str = "Task",
-        description: Optional[str] = None
+        description: Optional[str] = None,
+        assignee: Optional[str] = None,
+        priority: Optional[str] = None,
+        labels: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Create a new Jira issue."""
         fields: Dict[str, Any] = {
@@ -234,6 +287,12 @@ class JiraClient:
                 "version": 1,
                 "content": [{"type": "paragraph", "content": [{"type": "text", "text": description}]}]
             }
+        if assignee:
+            fields["assignee"] = {"accountId": assignee}
+        if priority:
+            fields["priority"] = {"name": priority}
+        if labels:
+            fields["labels"] = labels
         return await self._request("POST", "/rest/api/3/issue", json_data={"fields": fields})
 
     async def get_issue_worklogs(self, issue_key_or_id: str) -> List[Dict[str, Any]]:

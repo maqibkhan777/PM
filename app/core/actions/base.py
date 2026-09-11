@@ -21,15 +21,28 @@ class BaseAction(BaseModel):
     requested_by: str = "RulesEngine"
     requires_approval: bool = False
     dry_run: bool = False
-    status: ActionStatus = ActionStatus.PENDING_APPROVAL
+    status: ActionStatus = ActionStatus.REQUESTED
     preview: Optional[ActionPreview] = None
     attempt_count: int = 0
     created_at: str = Field(default_factory=utc_now_iso)
+    approved_by: Optional[str] = None
+    approved_at: Optional[str] = None
+    rejected_by: Optional[str] = None
+    rejected_at: Optional[str] = None
+    rejection_reason: Optional[str] = None
+    validation_error: Optional[str] = None
+    execution_error: Optional[str] = None
+    result_data: Optional[Dict[str, Any]] = None
+    executed_at: Optional[str] = None
 
     def generate_idempotency_key(self) -> str:
         """Generate a deterministic idempotency key based on action contents."""
         params_serialized = json.dumps(self.parameters, sort_keys=True)
-        raw_str = f"{self.action_type.value}:{self.target_system}:{self.target_id}:{params_serialized}"
+        if self.action_type == ActionType.CREATE_TASK:
+            req_id = self.parameters.get("request_id") or self.parameters.get("idempotency_key") or self.action_id
+            raw_str = f"{self.action_type.value}:{self.target_system}:{self.target_id}:{req_id}:{params_serialized}"
+        else:
+            raw_str = f"{self.action_type.value}:{self.target_system}:{self.target_id}:{params_serialized}"
         return hashlib.sha256(raw_str.encode("utf-8")).hexdigest()
 
     def ensure_idempotency_key(self) -> str:

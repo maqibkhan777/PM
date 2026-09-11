@@ -22,6 +22,7 @@ async def get_health():
     jira_health = await orchestrator.jira_connector.health_check()
     mm_health = await orchestrator.mattermost_connector.health_check()
     discord_health = await orchestrator.discord_webhook_connector.health_check()
+    discord_bot_health = await orchestrator.discord_bot_connector.health_check()
 
     return {
         "application": "OK",
@@ -31,6 +32,7 @@ async def get_health():
         "jira": jira_health.status,
         "mattermost": mm_health.status,
         "discord": discord_health.status,
+        "discord_bot": discord_bot_health.status,
         "scheduler_running": orchestrator.periodic_scheduler.is_running if hasattr(orchestrator, "periodic_scheduler") else False
     }
 

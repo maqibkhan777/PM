@@ -77,15 +77,20 @@ class DailyOverdueReportGenerator:
 
             due_date_raw = item.get("due_date")
             updated_at_raw = item.get("updated_at")
+            summary = item.get("summary") or "No summary"
+            assignee = item.get("assignee") or "Unassigned"
 
             tickets.append({
                 "key": tkey,
+                "summary": summary,
+                "assignee": assignee,
                 "url": settings.get_jira_browse_url(tkey),
                 "due_date": format_display_date(due_date_raw),
                 "due_date_raw": due_date_raw,
                 "updated_at": format_display_date(updated_at_raw),
                 "updated_at_raw": updated_at_raw,
             })
+
 
         return {
             "team_name": team_group,

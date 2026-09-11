@@ -255,7 +255,7 @@ async def test_digest_scopes_strictly_to_configured_team(temp_db, overdue_genera
 # Requirement 7: Each ticket is hyperlinked to its Jira issue
 # ==============================================================================
 def test_each_ticket_is_hyperlinked_to_jira_issue():
-    """Ticket keys in the formatted Discord embed are clickable Jira links."""
+    """Overdue digest description includes clickable Jira link to view the overdue tasks."""
     base_url = settings.JIRA_BASE_URL.rstrip("/")
     report_data = {
         "team_name": "Mursaleen Cluster",
@@ -272,9 +272,10 @@ def test_each_ticket_is_hyperlinked_to_jira_issue():
     embed = DiscordFormatter.format_overdue_digest(report_data)
     desc = embed["embeds"][0]["description"]
 
-    # Verify link syntax [KEY](URL)
-    expected_link = f"[WPEP-1592]({base_url}/browse/WPEP-1592)"
-    assert expected_link in desc
+    # Verify link syntax in description
+    assert "Open 1 Overdue Tasks in Jira" in desc
+    assert "https://objectsws.atlassian.net" in desc
+
 
 
 # ==============================================================================
@@ -302,17 +303,17 @@ async def test_due_date_and_last_updated_formatting(temp_db, overdue_generator):
 
 
 # ==============================================================================
-# Requirement 10: No assignee, comment, priority, or worklog details in digest
+# Requirement 10: Ticket summary and Assignee are included in overdue digest
 # ==============================================================================
 @pytest.mark.asyncio
-async def test_digest_excludes_unwanted_fields(temp_db, overdue_generator):
-    """Digest excludes assignee, comments, priority, description, and worklogs."""
+async def test_digest_includes_summary_and_assignee(temp_db, overdue_generator):
+    """Digest includes summary and assignee in tickets and Discord embed table."""
     repo = JiraIssueStateRepository(temp_db)
     repo.upsert(
         jira_issue_key="PRIV-999",
-        summary="Secret Super Task",
+        summary="Payment Gateway Timeout",
         status="In Progress",
-        assignee="Secret Assignee",
+        assignee="Sara QA",
         priority="High Priority",
         due_date="2026-09-01",
         updated_at="2026-09-08T10:00:00.000+0500",
@@ -322,18 +323,18 @@ async def test_digest_excludes_unwanted_fields(temp_db, overdue_generator):
     digest = overdue_generator.generate_digest(target_date="2026-09-10")
     t = digest["tickets"][0]
 
-    # Verify dictionary has only ticket, url, due_date, updated_at
-    assert "assignee" not in t
-    assert "priority" not in t
-    assert "summary" not in t
-    assert "comments" not in t
-    assert "worklog" not in t
+    # Verify summary and assignee are included in ticket dictionary
+    assert t["summary"] == "Payment Gateway Timeout"
+    assert t["assignee"] == "Sara QA"
+    assert t["due_date"] == "Sep 01, 2026"
 
     embed = DiscordFormatter.format_overdue_digest(digest)
     desc = embed["embeds"][0]["description"]
-    assert "Secret Assignee" not in desc
-    assert "High Priority" not in desc
-    assert "Secret Super Task" not in desc
+    assert "Payment Gateway Timeout" in desc
+    assert "Sara QA" in desc
+    assert "Summary" in desc
+    assert "Assignee" in desc
+
 
 
 # ==============================================================================

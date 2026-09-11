@@ -34,8 +34,13 @@ class Settings(BaseSettings):
     JIRA_API_TOKEN: str = "placeholder_token"
     JIRA_WEBHOOK_SECRET: Optional[str] = None
 
-    # Discord Connector (Webhook)
+    # Discord Connector (Webhook & Interactive Bot)
     DISCORD_WEBHOOK_URL: str = "https://discord.com/api/webhooks/placeholder"
+    DISCORD_BOT_TOKEN: Optional[str] = None
+    DISCORD_APPLICATION_ID: Optional[str] = None
+    DISCORD_GUILD_ID: Optional[str] = None  # Optional: specific guild ID for instant dev slash-command registration
+    DISCORD_PM_ALLOWED_USERS: str = ""  # Comma-separated Discord user IDs allowed to run /pm commands
+    DISCORD_PM_COMMAND_ENABLED: bool = True
     PM_DISCORD_CHANNEL: str = "pm-alerts"
 
     # Mattermost Connector (Optional)
@@ -123,6 +128,41 @@ class Settings(BaseSettings):
             self.DISCORD_WEBHOOK_URL
             and not self.DISCORD_WEBHOOK_URL.endswith("placeholder")
         )
+
+    def is_discord_bot_configured(self) -> bool:
+        """Check if Discord Bot credentials (Token and Application ID) are configured."""
+        return bool(
+            self.DISCORD_BOT_TOKEN
+            and self.DISCORD_BOT_TOKEN.strip()
+            and self.DISCORD_BOT_TOKEN != "placeholder_bot_token"
+            and self.DISCORD_APPLICATION_ID
+            and self.DISCORD_APPLICATION_ID.strip()
+            and self.DISCORD_APPLICATION_ID != "placeholder_application_id"
+        )
+
+    def get_discord_pm_allowed_users(self) -> Set[str]:
+        """Return the set of Discord user IDs authorized to execute /pm commands."""
+        if not self.DISCORD_PM_ALLOWED_USERS:
+            return set()
+        return {
+            x.strip()
+            for x in self.DISCORD_PM_ALLOWED_USERS.split(",")
+            if x.strip()
+        }
+
+    def is_discord_user_allowed(self, discord_user_id: Optional[str]) -> bool:
+        """Check if a Discord user ID is allowed to run PM commands.
+        
+        If DISCORD_PM_ALLOWED_USERS is empty, in development it defaults to allowed;
+        if populated, strictly enforces the allowlist.
+        """
+        if not discord_user_id:
+            return False
+        allowed = self.get_discord_pm_allowed_users()
+        if not allowed:
+            # If no explicit allowlist is configured, permit (e.g. initial dev/testing)
+            return True
+        return str(discord_user_id).strip() in allowed
 
     def is_mattermost_configured(self) -> bool:
         """Check if Mattermost credentials are meaningfully configured."""

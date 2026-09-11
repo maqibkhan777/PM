@@ -109,3 +109,94 @@ async def test_user_mappings_api():
         assert get_res.status_code == 200
         mappings = get_res.json()["mappings"]
         assert any(m["jira_user_id"] == "test-jira-1" for m in mappings)
+
+
+@pytest.mark.asyncio
+async def test_action_api_full_flow(temp_db):
+    """Test POST /actions, GET /actions/{id}, approve, reject, and execute endpoints."""
+    import uuid
+    from app.database.repositories import ActionRepository
+    from app.core.models.enums import ActionStatus
+
+    uid = uuid.uuid4().hex[:8]
+    task_key_1 = f"API-{uid}-1"
+    task_key_2 = f"API-{uid}-2"
+
+    orig_dry = settings.DRY_RUN
+    settings.DRY_RUN = True
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            # 1. Create action via API (in V1, standard actions execute automatically to DRY_RUN_SIMULATED)
+            create_res = await ac.post(
+                "/actions",
+                json={
+                    "action_type": "TRANSITION_TASK",
+                    "target_system": "jira",
+                    "target_id": task_key_1,
+                    "parameters": {"target_status": "Done"},
+                    "requested_by": "TestUser"
+                }
+            )
+
+            assert create_res.status_code == 200
+            data = create_res.json()
+            action_id = data["action_id"]
+            assert data["status"] == "DRY_RUN_SIMULATED"
+
+            # 2. Get action by ID
+            get_res = await ac.get(f"/actions/{action_id}")
+            assert get_res.status_code == 200
+            assert get_res.json()["action_id"] == action_id
+            assert get_res.json()["status"] == "DRY_RUN_SIMULATED"
+
+            # 3. Test approval on a PENDING_APPROVAL action
+            repo = ActionRepository()
+            pending_action_id = str(uuid.uuid4())
+            repo.insert(
+                action_id=pending_action_id,
+                action_type="AddComment",
+                target_system="jira",
+                target_id=task_key_2,
+                parameters={"comment": "Please verify"},
+                status=ActionStatus.PENDING_APPROVAL.value,
+                idempotency_key=f"idem-{pending_action_id}",
+                dry_run=True,
+                requested_by="TestUser",
+                requires_approval=True
+            )
+
+            approve_res = await ac.post(
+                f"/actions/{pending_action_id}/approve",
+                json={"approved_by": "LeadPM"}
+            )
+            assert approve_res.status_code == 200
+            app_data = approve_res.json()
+            assert app_data["success"] is True
+
+            # 4. Test rejection on a PENDING_APPROVAL action
+            reject_action_id = str(uuid.uuid4())
+            repo.insert(
+                action_id=reject_action_id,
+                action_type="AddComment",
+                target_system="jira",
+                target_id=task_key_2,
+                parameters={"comment": "Spam comment"},
+                status=ActionStatus.PENDING_APPROVAL.value,
+                idempotency_key=f"idem-{reject_action_id}",
+                dry_run=True,
+                requested_by="TestUser",
+                requires_approval=True
+            )
+
+            reject_res = await ac.post(
+                f"/actions/{reject_action_id}/reject",
+                json={"rejected_by": "LeadPM", "reason": "Spam comment"}
+            )
+            assert reject_res.status_code == 200
+            assert reject_res.json()["status"] == "REJECTED"
+
+    finally:
+        settings.DRY_RUN = orig_dry
+
+
+

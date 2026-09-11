@@ -23,6 +23,8 @@ class DiscordWebhookConnector(BaseConnector):
         return {
             Capability.SEND_NOTIFICATION,
             Capability.SEND_EMBED,
+            Capability.SEND_DM,
+            Capability.SEND_CHANNEL_MESSAGE,
         }
 
     def _get_client(self) -> httpx.AsyncClient:
