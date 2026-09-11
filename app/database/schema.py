@@ -189,6 +189,225 @@ CREATE TABLE IF NOT EXISTS daily_report_history (
 );
 
 CREATE INDEX IF NOT EXISTS idx_daily_report_history_date ON daily_report_history(team_group, report_date);
+
+-- Performance Analysis Runs (Immutable analysis metadata for auditing)
+CREATE TABLE IF NOT EXISTS performance_analysis_runs (
+    analysis_run_id TEXT PRIMARY KEY,
+    calculated_at TEXT NOT NULL,
+    analysis_window_start TEXT NOT NULL,
+    analysis_window_end TEXT NOT NULL,
+    requested_history_days INTEGER NOT NULL DEFAULT 365,
+    actual_available_history_days INTEGER NOT NULL DEFAULT 0,
+    algorithm_version TEXT NOT NULL DEFAULT '1.0.0',
+    team_group TEXT,
+    resources_analyzed INTEGER NOT NULL DEFAULT 0,
+    tasks_analyzed INTEGER NOT NULL DEFAULT 0,
+    unresolved_employees_count INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'COMPLETED',
+    error_message TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_perf_runs_date ON performance_analysis_runs(calculated_at);
+CREATE INDEX IF NOT EXISTS idx_perf_runs_team ON performance_analysis_runs(team_group);
+
+-- Authoritative Employee Role & Designation Assignments
+CREATE TABLE IF NOT EXISTS employee_role_assignments (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    designation TEXT NOT NULL,
+    role_category TEXT NOT NULL,
+    effective_from TEXT,
+    effective_to TEXT,
+    source TEXT NOT NULL DEFAULT 'authoritative_seed',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_emp_role_acc ON employee_role_assignments(account_id);
+CREATE INDEX IF NOT EXISTS idx_emp_role_cat ON employee_role_assignments(role_category);
+
+-- Resource Performance Profiles (Deterministic summary per resource & analysis run)
+CREATE TABLE IF NOT EXISTS resource_performance_profiles (
+    id TEXT PRIMARY KEY,
+    analysis_run_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'Unknown',
+    designation TEXT,
+    role_category TEXT,
+    team_group TEXT,
+    analysis_start TEXT NOT NULL,
+    analysis_end TEXT NOT NULL,
+    history_days INTEGER NOT NULL,
+    requested_history_days INTEGER NOT NULL DEFAULT 365,
+    actual_available_history_days INTEGER NOT NULL DEFAULT 0,
+    completed_tasks INTEGER NOT NULL DEFAULT 0,
+    active_working_days INTEGER NOT NULL DEFAULT 0,
+    total_logged_seconds INTEGER NOT NULL DEFAULT 0,
+    average_logged_hours_per_active_day REAL NOT NULL DEFAULT 0.0,
+    median_logged_hours_per_active_day REAL NOT NULL DEFAULT 0.0,
+    tasks_due INTEGER NOT NULL DEFAULT 0,
+    tasks_completed_on_time INTEGER NOT NULL DEFAULT 0,
+    tasks_completed_late INTEGER NOT NULL DEFAULT 0,
+    on_time_rate REAL NOT NULL DEFAULT 0.0,
+    average_days_late REAL NOT NULL DEFAULT 0.0,
+    median_days_late REAL NOT NULL DEFAULT 0.0,
+    average_task_hours REAL NOT NULL DEFAULT 0.0,
+    median_task_hours REAL NOT NULL DEFAULT 0.0,
+    p25_task_hours REAL NOT NULL DEFAULT 0.0,
+    p75_task_hours REAL NOT NULL DEFAULT 0.0,
+    estimated_tasks INTEGER NOT NULL DEFAULT 0,
+    average_estimated_hours REAL NOT NULL DEFAULT 0.0,
+    average_actual_hours REAL NOT NULL DEFAULT 0.0,
+    estimation_variance_percent REAL NOT NULL DEFAULT 0.0,
+    median_estimation_variance_percent REAL NOT NULL DEFAULT 0.0,
+    reopened_tasks INTEGER NOT NULL DEFAULT 0,
+    reopen_rate REAL NOT NULL DEFAULT 0.0,
+    blocker_count INTEGER NOT NULL DEFAULT 0,
+    blocked_seconds INTEGER NOT NULL DEFAULT 0,
+    average_blocker_hours REAL NOT NULL DEFAULT 0.0,
+    nominal_daily_capacity_hours REAL NOT NULL DEFAULT 6.75,
+    observed_daily_capacity_hours REAL NOT NULL DEFAULT 6.75,
+    forecast_daily_capacity_hours REAL NOT NULL DEFAULT 6.75,
+    current_queue_task_count INTEGER NOT NULL DEFAULT 0,
+    current_queue_expected_hours REAL NOT NULL DEFAULT 0.0,
+    current_queue_review_buffer_hours REAL NOT NULL DEFAULT 0.0,
+    current_queue_total_expected_hours REAL NOT NULL DEFAULT 0.0,
+    available_capacity_hours REAL NOT NULL DEFAULT 0.0,
+    capacity_difference_hours REAL NOT NULL DEFAULT 0.0,
+    forecast_status TEXT NOT NULL DEFAULT 'GREEN',
+    forecast_reason TEXT,
+    projected_queue_completion_date TEXT,
+    confidence_level TEXT NOT NULL DEFAULT 'LOW',
+    raw_profile_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_perf_profiles_acc ON resource_performance_profiles(account_id);
+CREATE INDEX IF NOT EXISTS idx_perf_profiles_run ON resource_performance_profiles(analysis_run_id);
+CREATE INDEX IF NOT EXISTS idx_perf_profiles_team ON resource_performance_profiles(team_group);
+
+-- Resource Effort Statistics (P25, median, mean, P75 segmented metrics)
+CREATE TABLE IF NOT EXISTS resource_effort_statistics (
+    id TEXT PRIMARY KEY,
+    analysis_run_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    segment_type TEXT NOT NULL, -- overall, issue_type, complexity, priority, project
+    segment_key TEXT NOT NULL,
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    mean_hours REAL NOT NULL DEFAULT 0.0,
+    median_hours REAL NOT NULL DEFAULT 0.0,
+    p25_hours REAL NOT NULL DEFAULT 0.0,
+    p75_hours REAL NOT NULL DEFAULT 0.0,
+    min_hours REAL NOT NULL DEFAULT 0.0,
+    max_hours REAL NOT NULL DEFAULT 0.0,
+    confidence TEXT NOT NULL DEFAULT 'LOW',
+    is_fallback INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_perf_effort_acc ON resource_effort_statistics(account_id, segment_type, segment_key);
+CREATE INDEX IF NOT EXISTS idx_perf_effort_run ON resource_effort_statistics(analysis_run_id);
+
+-- Resource Task Classifications (Task complexity and categorization)
+CREATE TABLE IF NOT EXISTS resource_task_classifications (
+    id TEXT PRIMARY KEY,
+    analysis_run_id TEXT NOT NULL,
+    issue_key TEXT NOT NULL,
+    issue_type TEXT,
+    priority TEXT,
+    project_key TEXT,
+    components TEXT,
+    labels TEXT,
+    complexity_score INTEGER NOT NULL DEFAULT 3,
+    complexity_factors TEXT,
+    complexity_confidence TEXT NOT NULL DEFAULT 'MEDIUM',
+    estimated_seconds INTEGER,
+    actual_logged_seconds INTEGER NOT NULL DEFAULT 0,
+    status TEXT,
+    is_completed INTEGER NOT NULL DEFAULT 0,
+    reopen_count INTEGER NOT NULL DEFAULT 0,
+    blocker_detected INTEGER NOT NULL DEFAULT 0,
+    blocker_hours REAL NOT NULL DEFAULT 0.0,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_perf_class_key ON resource_task_classifications(issue_key);
+CREATE INDEX IF NOT EXISTS idx_perf_class_run ON resource_task_classifications(analysis_run_id);
+
+-- Task Delivery Forecasts (Remaining effort, projected completion, risk band)
+CREATE TABLE IF NOT EXISTS task_delivery_forecasts (
+    id TEXT PRIMARY KEY,
+    analysis_run_id TEXT NOT NULL,
+    issue_key TEXT NOT NULL,
+    account_id TEXT,
+    due_date TEXT,
+    jira_remaining_hours REAL,
+    inferred_expected_hours REAL NOT NULL DEFAULT 0.0,
+    inferred_remaining_hours REAL NOT NULL DEFAULT 0.0,
+    expected_base_hours REAL NOT NULL DEFAULT 0.0,
+    review_buffer_hours REAL NOT NULL DEFAULT 0.0,
+    total_expected_hours REAL NOT NULL DEFAULT 0.0,
+    logged_hours REAL NOT NULL DEFAULT 0.0,
+    remaining_hours REAL NOT NULL DEFAULT 0.0,
+    expected_effort_source TEXT NOT NULL,
+    expected_effort_confidence TEXT NOT NULL DEFAULT 'medium',
+    sample_size INTEGER NOT NULL DEFAULT 0,
+    designation TEXT,
+    role_category TEXT,
+    projected_completion_date TEXT,
+    slack_hours REAL NOT NULL DEFAULT 0.0,
+    risk_level TEXT NOT NULL DEFAULT 'GREEN', -- GREEN, YELLOW, ORANGE, RED
+    risk_reason TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_perf_fcst_key ON task_delivery_forecasts(issue_key);
+CREATE INDEX IF NOT EXISTS idx_perf_fcst_acc ON task_delivery_forecasts(account_id);
+CREATE INDEX IF NOT EXISTS idx_perf_fcst_risk ON task_delivery_forecasts(risk_level);
+CREATE INDEX IF NOT EXISTS idx_perf_fcst_run ON task_delivery_forecasts(analysis_run_id);
+
+-- Performance Signals (Deterministic, traceable signals)
+CREATE TABLE IF NOT EXISTS performance_signals (
+    id TEXT PRIMARY KEY,
+    analysis_run_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    signal_type TEXT NOT NULL,
+    signal_value REAL,
+    threshold_value REAL,
+    evidence_text TEXT NOT NULL,
+    confidence TEXT NOT NULL DEFAULT 'MEDIUM',
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_perf_signals_acc ON performance_signals(account_id);
+CREATE INDEX IF NOT EXISTS idx_perf_signals_type ON performance_signals(signal_type);
+CREATE INDEX IF NOT EXISTS idx_perf_signals_run ON performance_signals(analysis_run_id);
+
+-- Performance Evidence (Immutable, auditable evidence ledger)
+CREATE TABLE IF NOT EXISTS performance_evidence (
+    evidence_id TEXT PRIMARY KEY,
+    analysis_run_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    issue_key TEXT,
+    evidence_type TEXT NOT NULL,
+    observed_value REAL,
+    expected_value REAL,
+    difference REAL,
+    source TEXT NOT NULL,
+    confidence TEXT NOT NULL DEFAULT 'MEDIUM',
+    explanation TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    snapshot_date TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_perf_evidence_acc ON performance_evidence(account_id);
+CREATE INDEX IF NOT EXISTS idx_perf_evidence_type ON performance_evidence(evidence_type);
+CREATE INDEX IF NOT EXISTS idx_perf_evidence_run ON performance_evidence(analysis_run_id);
+CREATE INDEX IF NOT EXISTS idx_perf_evidence_issue ON performance_evidence(issue_key);
 """
 
 
@@ -279,11 +498,229 @@ def _migrate_actions(conn) -> None:
             conn.execute(f"ALTER TABLE actions ADD COLUMN {col_name} {col_type}")
 
 
+def _migrate_performance_tables(conn) -> None:
+    """Idempotently ensure performance tables contain all required columns."""
+    # 1. resource_performance_profiles
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='resource_performance_profiles'"
+    )
+    if cursor.fetchone():
+        cursor = conn.execute("PRAGMA table_info(resource_performance_profiles)")
+        rows = cursor.fetchall()
+        existing = {
+            row["name"] if hasattr(row, "keys") and "name" in row.keys() else row[1]
+            for row in rows
+        }
+        profile_expected = {
+            "forecast_daily_capacity_hours": "REAL NOT NULL DEFAULT 6.75",
+            "analysis_run_id": "TEXT NOT NULL DEFAULT ''",
+            "designation": "TEXT",
+            "role_category": "TEXT",
+            "requested_history_days": "INTEGER NOT NULL DEFAULT 365",
+            "actual_available_history_days": "INTEGER NOT NULL DEFAULT 0",
+            "raw_profile_json": "TEXT",
+        }
+        for col_name, col_type in profile_expected.items():
+            if col_name not in existing:
+                logger.info(f"Migrating database: adding '{col_name}' to resource_performance_profiles...")
+                conn.execute(f"ALTER TABLE resource_performance_profiles ADD COLUMN {col_name} {col_type}")
+
+    # 2. task_delivery_forecasts
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='task_delivery_forecasts'"
+    )
+    if cursor.fetchone():
+        cursor = conn.execute("PRAGMA table_info(task_delivery_forecasts)")
+        rows = cursor.fetchall()
+        existing = {
+            row["name"] if hasattr(row, "keys") and "name" in row.keys() else row[1]
+            for row in rows
+        }
+        fcst_expected = {
+            "jira_remaining_hours": "REAL",
+            "inferred_expected_hours": "REAL NOT NULL DEFAULT 0.0",
+            "inferred_remaining_hours": "REAL NOT NULL DEFAULT 0.0",
+            "expected_effort_confidence": "TEXT NOT NULL DEFAULT 'medium'",
+            "sample_size": "INTEGER NOT NULL DEFAULT 0",
+            "designation": "TEXT",
+            "role_category": "TEXT",
+        }
+        for col_name, col_type in fcst_expected.items():
+            if col_name not in existing:
+                logger.info(f"Migrating database: adding '{col_name}' to task_delivery_forecasts...")
+                conn.execute(f"ALTER TABLE task_delivery_forecasts ADD COLUMN {col_name} {col_type}")
+
+    # 3. performance_analysis_runs
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='performance_analysis_runs'"
+    )
+    if cursor.fetchone():
+        cursor = conn.execute("PRAGMA table_info(performance_analysis_runs)")
+        rows = cursor.fetchall()
+        existing = {
+            row["name"] if hasattr(row, "keys") and "name" in row.keys() else row[1]
+            for row in rows
+        }
+        run_expected = {
+            "requested_history_days": "INTEGER NOT NULL DEFAULT 365",
+            "actual_available_history_days": "INTEGER NOT NULL DEFAULT 0",
+            "unresolved_employees_count": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for col_name, col_type in run_expected.items():
+            if col_name not in existing:
+                logger.info(f"Migrating database: adding '{col_name}' to performance_analysis_runs...")
+                conn.execute(f"ALTER TABLE performance_analysis_runs ADD COLUMN {col_name} {col_type}")
+
+
+# Authoritative 18 employee designations seeded by exact account_id and exact designation
+AUTHORITATIVE_EMPLOYEE_ROLES = [
+    {
+        "account_id": "712020:8bc58bcd-fe17-4f1b-9825-c5251cb6b1de",
+        "display_name": "Ahsan Amin",
+        "designation": "Senior WordPress Developer",
+        "role_category": "WordPress Development",
+    },
+    {
+        "account_id": "63da2ba4f1475ad42c584247",
+        "display_name": "Ahsan Iftikhar",
+        "designation": "Senior BA",
+        "role_category": "Business Analysis",
+    },
+    {
+        "account_id": "712020:0eca0fb9-4f12-4532-a435-4c178f2d90e8",
+        "display_name": "Nauman Sadiq",
+        "designation": "Senior BA",
+        "role_category": "Business Analysis",
+    },
+    {
+        "account_id": "712020:a6d04898-c6d8-4a39-a521-103e4b8bfe7c",
+        "display_name": "Muhammad Shahmeer Khan",
+        "designation": "Junior BA",
+        "role_category": "Business Analysis",
+    },
+    {
+        "account_id": "712020:c12d2371-1e5b-4797-a888-369c0c9c5a65",
+        "display_name": "Muhammad Sufiyan",
+        "designation": "Senior QA Engineer",
+        "role_category": "QA",
+    },
+    {
+        "account_id": "712020:32e5be05-80c9-4ece-ac19-301da7c9487d",
+        "display_name": "shoaib hassan askari",
+        "designation": "Senior QA",
+        "role_category": "QA",
+    },
+    {
+        "account_id": "712020:12e1da4b-147f-4f91-9d2d-965b66e19b61",
+        "display_name": "Muhammad Bilal Khan",
+        "designation": "Mid-level QA",
+        "role_category": "QA",
+    },
+    {
+        "account_id": "63e362bd790148a180977179",
+        "display_name": "Daniyal Raza",
+        "designation": "Mid-level WordPress Developer",
+        "role_category": "WordPress Development",
+    },
+    {
+        "account_id": "5fb3d908facfd6007697c25a",
+        "display_name": "Muhammad Hamza",
+        "designation": "Mid-level WordPress Developer",
+        "role_category": "WordPress Development",
+    },
+    {
+        "account_id": "606570150a6b3f00698f9430",
+        "display_name": "Muneeb Jalal",
+        "designation": "Senior WordPress Developer",
+        "role_category": "WordPress Development",
+    },
+    {
+        "account_id": "61ee41431c42100069344a09",
+        "display_name": "Syed ali",
+        "designation": "Senior WordPress Developer",
+        "role_category": "WordPress Development",
+    },
+    {
+        "account_id": "638855b85fce844d606bb422",
+        "display_name": "Tahir Ali",
+        "designation": "Senior Content Writer / Marketing Strategist",
+        "role_category": "Content / Marketing",
+    },
+    {
+        "account_id": "638490c75fce844d606a16ef",
+        "display_name": "Hamza Hanif",
+        "designation": "SEO",
+        "role_category": "SEO",
+    },
+    {
+        "account_id": "712020:e268bcd8-d981-4b4d-992d-d5694745df8b",
+        "display_name": "Mubashir Butt",
+        "designation": "Customer Support Engineer",
+        "role_category": "Customer Support",
+    },
+    {
+        "account_id": "712020:fb8608cb-6393-48a7-a3ab-1ad744a2b7f6",
+        "display_name": "Muhammad Usama Azad",
+        "designation": "Front End Developer",
+        "role_category": "Frontend Development",
+    },
+    {
+        "account_id": "712020:2783ea21-c611-402d-9adb-0529f5b7066d",
+        "display_name": "Muhammad Ali Siddiqui",
+        "designation": "Junior Content Writer",
+        "role_category": "Content",
+    },
+    {
+        "account_id": "712020:bb2e5830-7156-4852-bba8-75fa773fc55d",
+        "display_name": "Talha Bukhari",
+        "designation": "Content Producer",
+        "role_category": "Content",
+    },
+    {
+        "account_id": "712020:1ddac8e3-e006-48e7-b4c9-ee941efc8e6e",
+        "display_name": "Azain Hassan",
+        "designation": "Designer",
+        "role_category": "Design",
+    },
+]
+
+
+def _seed_authoritative_roles(conn) -> None:
+    """Idempotently seed the authoritative employee designation and role mappings."""
+    now_iso = "2026-09-12T00:00:00Z"
+    for r in AUTHORITATIVE_EMPLOYEE_ROLES:
+        rec_id = f"role:{r['account_id']}"
+        conn.execute(
+            """
+            INSERT INTO employee_role_assignments (
+                id, account_id, display_name, designation, role_category,
+                effective_from, effective_to, source, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'authoritative_seed', ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                display_name = excluded.display_name,
+                designation = excluded.designation,
+                role_category = excluded.role_category,
+                updated_at = excluded.updated_at
+            """,
+            (
+                rec_id,
+                r["account_id"],
+                r["display_name"],
+                r["designation"],
+                r["role_category"],
+                "2026-01-01",
+                now_iso,
+                now_iso,
+            ),
+        )
+
+
 def _apply_migrations(conn) -> None:
     """Execute all registered schema migrations safely and idempotently."""
     _migrate_jira_issue_state(conn)
     _migrate_jira_worklogs(conn)
     _migrate_actions(conn)
+    _migrate_performance_tables(conn)
 
 
 def _ensure_post_migration_indexes(conn) -> None:
@@ -294,7 +731,15 @@ def _ensure_post_migration_indexes(conn) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_jira_worklogs_team ON jira_worklogs(team_group)"
     )
-
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_perf_profiles_run ON resource_performance_profiles(analysis_run_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_emp_role_acc ON employee_role_assignments(account_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_emp_role_cat ON employee_role_assignments(role_category)"
+    )
 
 
 def init_db(manager: Optional[DatabaseManager] = None) -> None:
@@ -313,4 +758,8 @@ def init_db(manager: Optional[DatabaseManager] = None) -> None:
 
         # 4. Create post-migration indexes now that all columns are guaranteed to exist
         _ensure_post_migration_indexes(conn)
+
+        # 5. Seed authoritative employee role assignments
+        _seed_authoritative_roles(conn)
     logger.info("Database schema initialized successfully.")
+

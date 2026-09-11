@@ -16,6 +16,7 @@ from app.connectors.discord.formatter import DiscordFormatter
 from app.core.actions.types import create_send_notification_action
 from app.core.actions.engine import action_engine
 from app.config.settings import settings
+from app.core.performance.roles import resolve_canonical_account_id
 from app.utils.time import utc_now, utc_now_iso
 from app.utils.logger import logger
 
@@ -222,10 +223,15 @@ class DailyWorklogReportGenerator:
         )
 
         for w in worklogs:
-            author_id = w.get("author_account_id")
-            author_name = w.get("author_display_name") or author_id or "Unknown"
+            raw_author_id = w.get("author_account_id")
+            author_name = w.get("author_display_name") or raw_author_id or "Unknown"
 
             # Check exclusion: excluded users MUST NOT contribute to anything
+            if raw_author_id and raw_author_id in excluded_ids:
+                continue
+
+            # Deterministically resolve canonical account ID for legacy usernames/aliases
+            author_id = resolve_canonical_account_id(raw_author_id, display_name=author_name) or raw_author_id
             if author_id and author_id in excluded_ids:
                 continue
 

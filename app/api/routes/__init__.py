@@ -9,6 +9,7 @@ from app.api.routes.reports import router as reports_router
 from app.api.routes.mappings import router as mappings_router
 from app.api.routes.jira_poll import router as jira_poll_router
 from app.api.routes.test_notifications import router as test_notifications_router
+from app.api.routes.performance import router as performance_router
 
 __all__ = [
     "health_router",
@@ -20,4 +21,6 @@ __all__ = [
     "mappings_router",
     "jira_poll_router",
     "test_notifications_router",
+    "performance_router",
 ]
+

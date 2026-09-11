@@ -1144,3 +1144,835 @@ class DailyReportHistoryRepository:
                 (rec_id, team_group, clean_date, report_type, utc_now_iso(), json.dumps(payload))
             )
 
+
+class PerformanceRepository:
+    """Repository for managing performance foundation runs, profiles, statistics, forecasts, signals, and evidence."""
+
+    def __init__(self, manager: Optional[DatabaseManager] = None):
+        self.mgr = manager or db_manager
+
+    def record_analysis_run(self, run: Dict[str, Any]) -> None:
+        """Insert or update a performance analysis run metadata record."""
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO performance_analysis_runs (
+                    analysis_run_id, calculated_at, analysis_window_start, analysis_window_end,
+                    requested_history_days, actual_available_history_days,
+                    algorithm_version, team_group, resources_analyzed, tasks_analyzed,
+                    unresolved_employees_count, duration_ms, status, error_message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(analysis_run_id) DO UPDATE SET
+                    resources_analyzed = excluded.resources_analyzed,
+                    tasks_analyzed = excluded.tasks_analyzed,
+                    unresolved_employees_count = excluded.unresolved_employees_count,
+                    duration_ms = excluded.duration_ms,
+                    status = excluded.status,
+                    error_message = excluded.error_message
+                """,
+                (
+                    run["analysis_run_id"],
+                    run["calculated_at"],
+                    run["analysis_window_start"],
+                    run["analysis_window_end"],
+                    run.get("requested_history_days", 365),
+                    run.get("actual_available_history_days", 0),
+                    run.get("algorithm_version", "1.0.0"),
+                    run.get("team_group"),
+                    run.get("resources_analyzed", 0),
+                    run.get("tasks_analyzed", 0),
+                    run.get("unresolved_employees_count", 0),
+                    run.get("duration_ms", 0),
+                    run.get("status", "COMPLETED"),
+                    run.get("error_message"),
+                ),
+            )
+
+    def get_latest_analysis_run(self, team_group: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Fetch the most recent completed performance analysis run."""
+        with self.mgr.session() as conn:
+            if team_group:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM performance_analysis_runs
+                    WHERE team_group = ? AND status = 'COMPLETED'
+                    ORDER BY calculated_at DESC LIMIT 1
+                    """,
+                    (team_group,),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM performance_analysis_runs
+                    WHERE status = 'COMPLETED'
+                    ORDER BY calculated_at DESC LIMIT 1
+                    """
+                )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def upsert_profile(self, p: Dict[str, Any]) -> None:
+        """Insert or update a ResourcePerformanceProfile record."""
+        rec_id = f"perf:{p['account_id']}:{p['analysis_run_id']}"
+        raw_json = json.dumps(p)
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO resource_performance_profiles (
+                    id, analysis_run_id, account_id, display_name, role, designation, role_category, team_group,
+                    analysis_start, analysis_end, history_days, requested_history_days, actual_available_history_days,
+                    completed_tasks, active_working_days, total_logged_seconds,
+                    average_logged_hours_per_active_day, median_logged_hours_per_active_day,
+                    tasks_due, tasks_completed_on_time, tasks_completed_late, on_time_rate,
+                    average_days_late, median_days_late, average_task_hours, median_task_hours,
+                    p25_task_hours, p75_task_hours, estimated_tasks, average_estimated_hours,
+                    average_actual_hours, estimation_variance_percent, median_estimation_variance_percent,
+                    reopened_tasks, reopen_rate, blocker_count, blocked_seconds, average_blocker_hours,
+                    nominal_daily_capacity_hours, observed_daily_capacity_hours, forecast_daily_capacity_hours,
+                    current_queue_task_count, current_queue_expected_hours, current_queue_review_buffer_hours,
+                    current_queue_total_expected_hours, available_capacity_hours, capacity_difference_hours,
+                    forecast_status, forecast_reason, projected_queue_completion_date,
+                    confidence_level, raw_profile_json, created_at, updated_at
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?, ?
+                )
+                ON CONFLICT(id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    role = excluded.role,
+                    designation = excluded.designation,
+                    role_category = excluded.role_category,
+                    team_group = excluded.team_group,
+                    analysis_start = excluded.analysis_start,
+                    analysis_end = excluded.analysis_end,
+                    history_days = excluded.history_days,
+                    requested_history_days = excluded.requested_history_days,
+                    actual_available_history_days = excluded.actual_available_history_days,
+                    completed_tasks = excluded.completed_tasks,
+                    active_working_days = excluded.active_working_days,
+                    total_logged_seconds = excluded.total_logged_seconds,
+                    average_logged_hours_per_active_day = excluded.average_logged_hours_per_active_day,
+                    median_logged_hours_per_active_day = excluded.median_logged_hours_per_active_day,
+                    tasks_due = excluded.tasks_due,
+                    tasks_completed_on_time = excluded.tasks_completed_on_time,
+                    tasks_completed_late = excluded.tasks_completed_late,
+                    on_time_rate = excluded.on_time_rate,
+                    average_days_late = excluded.average_days_late,
+                    median_days_late = excluded.median_days_late,
+                    average_task_hours = excluded.average_task_hours,
+                    median_task_hours = excluded.median_task_hours,
+                    p25_task_hours = excluded.p25_task_hours,
+                    p75_task_hours = excluded.p75_task_hours,
+                    estimated_tasks = excluded.estimated_tasks,
+                    average_estimated_hours = excluded.average_estimated_hours,
+                    average_actual_hours = excluded.average_actual_hours,
+                    estimation_variance_percent = excluded.estimation_variance_percent,
+                    median_estimation_variance_percent = excluded.median_estimation_variance_percent,
+                    reopened_tasks = excluded.reopened_tasks,
+                    reopen_rate = excluded.reopen_rate,
+                    blocker_count = excluded.blocker_count,
+                    blocked_seconds = excluded.blocked_seconds,
+                    average_blocker_hours = excluded.average_blocker_hours,
+                    nominal_daily_capacity_hours = excluded.nominal_daily_capacity_hours,
+                    observed_daily_capacity_hours = excluded.observed_daily_capacity_hours,
+                    forecast_daily_capacity_hours = excluded.forecast_daily_capacity_hours,
+                    current_queue_task_count = excluded.current_queue_task_count,
+                    current_queue_expected_hours = excluded.current_queue_expected_hours,
+                    current_queue_review_buffer_hours = excluded.current_queue_review_buffer_hours,
+                    current_queue_total_expected_hours = excluded.current_queue_total_expected_hours,
+                    available_capacity_hours = excluded.available_capacity_hours,
+                    capacity_difference_hours = excluded.capacity_difference_hours,
+                    forecast_status = excluded.forecast_status,
+                    forecast_reason = excluded.forecast_reason,
+                    projected_queue_completion_date = excluded.projected_queue_completion_date,
+                    confidence_level = excluded.confidence_level,
+                    raw_profile_json = excluded.raw_profile_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    rec_id,
+                    p["analysis_run_id"],
+                    p["account_id"],
+                    p["display_name"],
+                    p.get("role", "Unknown"),
+                    p.get("designation"),
+                    p.get("role_category"),
+                    p.get("team_group"),
+                    p["analysis_start"],
+                    p["analysis_end"],
+                    p.get("history_days", 365),
+                    p.get("requested_history_days", 365),
+                    p.get("actual_available_history_days", 0),
+                    p.get("completed_tasks", 0),
+                    p.get("active_working_days", 0),
+                    p.get("total_logged_seconds", 0),
+                    p.get("average_logged_hours_per_active_day", 0.0),
+                    p.get("median_logged_hours_per_active_day", 0.0),
+                    p.get("tasks_due", 0),
+                    p.get("tasks_completed_on_time", 0),
+                    p.get("tasks_completed_late", 0),
+                    p.get("on_time_rate", 0.0),
+                    p.get("average_days_late", 0.0),
+                    p.get("median_days_late", 0.0),
+                    p.get("average_task_hours", 0.0),
+                    p.get("median_task_hours", 0.0),
+                    p.get("p25_task_hours", 0.0),
+                    p.get("p75_task_hours", 0.0),
+                    p.get("estimated_tasks", 0),
+                    p.get("average_estimated_hours", 0.0),
+                    p.get("average_actual_hours", 0.0),
+                    p.get("estimation_variance_percent", 0.0),
+                    p.get("median_estimation_variance_percent", 0.0),
+                    p.get("reopened_tasks", 0),
+                    p.get("reopen_rate", 0.0),
+                    p.get("blocker_count", 0),
+                    p.get("blocked_seconds", 0),
+                    p.get("average_blocker_hours", 0.0),
+                    p.get("nominal_daily_capacity_hours", 6.75),
+                    p.get("observed_daily_capacity_hours", 6.75),
+                    p.get("forecast_daily_capacity_hours", 6.75),
+                    p.get("current_queue_task_count", 0),
+                    p.get("current_queue_expected_hours", 0.0),
+                    p.get("current_queue_review_buffer_hours", 0.0),
+                    p.get("current_queue_total_expected_hours", 0.0),
+                    p.get("available_capacity_hours", 0.0),
+                    p.get("capacity_difference_hours", 0.0),
+                    p.get("forecast_status", "GREEN"),
+                    p.get("forecast_reason"),
+                    p.get("projected_queue_completion_date"),
+                    p.get("confidence_level", "LOW"),
+                    raw_json,
+                    p.get("created_at", ""),
+                    p.get("updated_at", ""),
+                ),
+            )
+
+    def get_profile(self, account_id: str, run_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Retrieve latest or run-specific ResourcePerformanceProfile for a resource."""
+        with self.mgr.session() as conn:
+            if run_id:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM resource_performance_profiles
+                    WHERE account_id = ? AND analysis_run_id = ?
+                    """,
+                    (account_id, run_id),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM resource_performance_profiles
+                    WHERE account_id = ?
+                    ORDER BY updated_at DESC LIMIT 1
+                    """,
+                    (account_id,),
+                )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            res = dict(row)
+            if res.get("raw_profile_json"):
+                try:
+                    res["profile"] = json.loads(res["raw_profile_json"])
+                except Exception:
+                    pass
+            return res
+
+    def list_profiles(
+        self,
+        team_group: Optional[str] = None,
+        run_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """List profiles for a team group or run."""
+        with self.mgr.session() as conn:
+            if run_id:
+                if team_group:
+                    cursor = conn.execute(
+                        """
+                        SELECT * FROM resource_performance_profiles
+                        WHERE team_group = ? AND analysis_run_id = ?
+                        ORDER BY display_name ASC
+                        """,
+                        (team_group, run_id),
+                    )
+                else:
+                    cursor = conn.execute(
+                        """
+                        SELECT * FROM resource_performance_profiles
+                        WHERE analysis_run_id = ?
+                        ORDER BY display_name ASC
+                        """,
+                        (run_id,),
+                    )
+            else:
+                # Get most recent profile per account_id
+                if team_group:
+                    cursor = conn.execute(
+                        """
+                        SELECT p.* FROM resource_performance_profiles p
+                        INNER JOIN (
+                            SELECT account_id, MAX(updated_at) as max_up
+                            FROM resource_performance_profiles
+                            WHERE team_group = ?
+                            GROUP BY account_id
+                        ) latest ON p.account_id = latest.account_id AND p.updated_at = latest.max_up
+                        ORDER BY p.display_name ASC
+                        """,
+                        (team_group,),
+                    )
+                else:
+                    cursor = conn.execute(
+                        """
+                        SELECT p.* FROM resource_performance_profiles p
+                        INNER JOIN (
+                            SELECT account_id, MAX(updated_at) as max_up
+                            FROM resource_performance_profiles
+                            GROUP BY account_id
+                        ) latest ON p.account_id = latest.account_id AND p.updated_at = latest.max_up
+                        ORDER BY p.display_name ASC
+                        """
+                    )
+            rows = cursor.fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                if d.get("raw_profile_json"):
+                    try:
+                        d["profile"] = json.loads(d["raw_profile_json"])
+                    except Exception:
+                        pass
+                out.append(d)
+            return out
+
+    def upsert_effort_statistics_batch(self, stats: List[Dict[str, Any]]) -> None:
+        """Insert or replace effort statistics records in batch."""
+        if not stats:
+            return
+        with self.mgr.session() as conn:
+            for s in stats:
+                rec_id = f"eff:{s['account_id']}:{s['segment_type']}:{s['segment_key']}:{s['analysis_run_id']}"
+                conn.execute(
+                    """
+                    INSERT INTO resource_effort_statistics (
+                        id, analysis_run_id, account_id, segment_type, segment_key,
+                        sample_count, mean_hours, median_hours, p25_hours, p75_hours,
+                        min_hours, max_hours, confidence, is_fallback, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        sample_count = excluded.sample_count,
+                        mean_hours = excluded.mean_hours,
+                        median_hours = excluded.median_hours,
+                        p25_hours = excluded.p25_hours,
+                        p75_hours = excluded.p75_hours,
+                        min_hours = excluded.min_hours,
+                        max_hours = excluded.max_hours,
+                        confidence = excluded.confidence,
+                        is_fallback = excluded.is_fallback,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        rec_id,
+                        s["analysis_run_id"],
+                        s["account_id"],
+                        s["segment_type"],
+                        s["segment_key"],
+                        s.get("sample_count", 0),
+                        s.get("mean_hours", 0.0),
+                        s.get("median_hours", 0.0),
+                        s.get("p25_hours", 0.0),
+                        s.get("p75_hours", 0.0),
+                        s.get("min_hours", 0.0),
+                        s.get("max_hours", 0.0),
+                        s.get("confidence", "LOW"),
+                        1 if s.get("is_fallback") else 0,
+                        s.get("updated_at", ""),
+                    ),
+                )
+
+    def get_effort_statistics(
+        self,
+        account_id: str,
+        run_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Retrieve effort statistics for an account."""
+        with self.mgr.session() as conn:
+            if run_id:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM resource_effort_statistics
+                    WHERE account_id = ? AND analysis_run_id = ?
+                    ORDER BY segment_type ASC, segment_key ASC
+                    """,
+                    (account_id, run_id),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM resource_effort_statistics
+                    WHERE account_id = ?
+                    ORDER BY updated_at DESC, segment_type ASC
+                    """,
+                    (account_id,),
+                )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def upsert_task_classifications_batch(self, classifications: List[Dict[str, Any]]) -> None:
+        """Insert or replace task classification records."""
+        if not classifications:
+            return
+        with self.mgr.session() as conn:
+            for c in classifications:
+                rec_id = f"class:{c['issue_key']}:{c['analysis_run_id']}"
+                conn.execute(
+                    """
+                    INSERT INTO resource_task_classifications (
+                        id, analysis_run_id, issue_key, issue_type, priority, project_key,
+                        components, labels, complexity_score, complexity_factors,
+                        complexity_confidence, estimated_seconds, actual_logged_seconds,
+                        status, is_completed, reopen_count, blocker_detected,
+                        blocker_hours, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        issue_type = excluded.issue_type,
+                        priority = excluded.priority,
+                        project_key = excluded.project_key,
+                        components = excluded.components,
+                        labels = excluded.labels,
+                        complexity_score = excluded.complexity_score,
+                        complexity_factors = excluded.complexity_factors,
+                        complexity_confidence = excluded.complexity_confidence,
+                        estimated_seconds = excluded.estimated_seconds,
+                        actual_logged_seconds = excluded.actual_logged_seconds,
+                        status = excluded.status,
+                        is_completed = excluded.is_completed,
+                        reopen_count = excluded.reopen_count,
+                        blocker_detected = excluded.blocker_detected,
+                        blocker_hours = excluded.blocker_hours,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        rec_id,
+                        c["analysis_run_id"],
+                        c["issue_key"],
+                        c.get("issue_type"),
+                        c.get("priority"),
+                        c.get("project_key"),
+                        json.dumps(c.get("components", [])) if isinstance(c.get("components"), list) else c.get("components"),
+                        json.dumps(c.get("labels", [])) if isinstance(c.get("labels"), list) else c.get("labels"),
+                        c.get("complexity_score", 3),
+                        json.dumps(c.get("complexity_factors", [])) if isinstance(c.get("complexity_factors"), list) else c.get("complexity_factors"),
+                        c.get("complexity_confidence", "MEDIUM"),
+                        c.get("estimated_seconds"),
+                        c.get("actual_logged_seconds", 0),
+                        c.get("status"),
+                        1 if c.get("is_completed") else 0,
+                        c.get("reopen_count", 0),
+                        1 if c.get("blocker_detected") else 0,
+                        c.get("blocker_hours", 0.0),
+                        c.get("updated_at", ""),
+                    ),
+                )
+
+    def upsert_task_forecasts_batch(self, forecasts: List[Dict[str, Any]]) -> None:
+        """Insert or replace task delivery forecasts."""
+        if not forecasts:
+            return
+        with self.mgr.session() as conn:
+            for f in forecasts:
+                rec_id = f"fcst:{f['issue_key']}:{f['analysis_run_id']}"
+                conn.execute(
+                    """
+                    INSERT INTO task_delivery_forecasts (
+                        id, analysis_run_id, issue_key, account_id, due_date,
+                        jira_remaining_hours, inferred_expected_hours, inferred_remaining_hours,
+                        expected_base_hours, review_buffer_hours, total_expected_hours,
+                        logged_hours, remaining_hours, expected_effort_source,
+                        expected_effort_confidence, sample_size, designation, role_category,
+                        projected_completion_date, slack_hours, risk_level,
+                        risk_reason, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        account_id = excluded.account_id,
+                        due_date = excluded.due_date,
+                        jira_remaining_hours = excluded.jira_remaining_hours,
+                        inferred_expected_hours = excluded.inferred_expected_hours,
+                        inferred_remaining_hours = excluded.inferred_remaining_hours,
+                        expected_base_hours = excluded.expected_base_hours,
+                        review_buffer_hours = excluded.review_buffer_hours,
+                        total_expected_hours = excluded.total_expected_hours,
+                        logged_hours = excluded.logged_hours,
+                        remaining_hours = excluded.remaining_hours,
+                        expected_effort_source = excluded.expected_effort_source,
+                        expected_effort_confidence = excluded.expected_effort_confidence,
+                        sample_size = excluded.sample_size,
+                        designation = excluded.designation,
+                        role_category = excluded.role_category,
+                        projected_completion_date = excluded.projected_completion_date,
+                        slack_hours = excluded.slack_hours,
+                        risk_level = excluded.risk_level,
+                        risk_reason = excluded.risk_reason,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        rec_id,
+                        f["analysis_run_id"],
+                        f["issue_key"],
+                        f.get("account_id"),
+                        f.get("due_date"),
+                        f.get("jira_remaining_hours"),
+                        f.get("inferred_expected_hours", 0.0),
+                        f.get("inferred_remaining_hours", 0.0),
+                        f.get("expected_base_hours", 0.0),
+                        f.get("review_buffer_hours", 0.0),
+                        f.get("total_expected_hours", 0.0),
+                        f.get("logged_hours", 0.0),
+                        f.get("remaining_hours", 0.0),
+                        f.get("expected_effort_source", "deterministic_fallback"),
+                        f.get("expected_effort_confidence", "medium"),
+                        f.get("sample_size", 0),
+                        f.get("designation"),
+                        f.get("role_category"),
+                        f.get("projected_completion_date"),
+                        f.get("slack_hours", 0.0),
+                        f.get("risk_level", "GREEN"),
+                        f.get("risk_reason"),
+                        f.get("updated_at", ""),
+                    ),
+                )
+
+    def get_task_forecasts(
+        self,
+        account_id: Optional[str] = None,
+        run_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Retrieve task delivery forecasts."""
+        with self.mgr.session() as conn:
+            if account_id and run_id:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM task_delivery_forecasts
+                    WHERE account_id = ? AND analysis_run_id = ?
+                    ORDER BY projected_completion_date ASC
+                    """,
+                    (account_id, run_id),
+                )
+            elif account_id:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM task_delivery_forecasts
+                    WHERE account_id = ?
+                    ORDER BY updated_at DESC, projected_completion_date ASC
+                    """,
+                    (account_id,),
+                )
+            elif run_id:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM task_delivery_forecasts
+                    WHERE analysis_run_id = ?
+                    ORDER BY projected_completion_date ASC
+                    """,
+                    (run_id,),
+                )
+            else:
+                cursor = conn.execute("SELECT * FROM task_delivery_forecasts ORDER BY updated_at DESC")
+            return [dict(r) for r in cursor.fetchall()]
+
+    def upsert_signals_batch(self, signals: List[Dict[str, Any]]) -> None:
+        """Insert or replace performance signals."""
+        if not signals:
+            return
+        with self.mgr.session() as conn:
+            for s in signals:
+                sig_type = s["signal_type"] if isinstance(s["signal_type"], str) else s["signal_type"].value
+                rec_id = f"sig:{s['account_id']}:{sig_type}:{s['analysis_run_id']}"
+                conn.execute(
+                    """
+                    INSERT INTO performance_signals (
+                        id, analysis_run_id, account_id, signal_type, signal_value,
+                        threshold_value, evidence_text, confidence, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        signal_value = excluded.signal_value,
+                        threshold_value = excluded.threshold_value,
+                        evidence_text = excluded.evidence_text,
+                        confidence = excluded.confidence,
+                        created_at = excluded.created_at
+                    """,
+                    (
+                        rec_id,
+                        s["analysis_run_id"],
+                        s["account_id"],
+                        sig_type,
+                        s.get("signal_value"),
+                        s.get("threshold_value"),
+                        s.get("evidence_text", ""),
+                        s.get("confidence", "MEDIUM"),
+                        s.get("created_at", ""),
+                    ),
+                )
+
+    def get_signals(
+        self,
+        account_id: Optional[str] = None,
+        run_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Retrieve performance signals."""
+        with self.mgr.session() as conn:
+            if account_id and run_id:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM performance_signals
+                    WHERE account_id = ? AND analysis_run_id = ?
+                    ORDER BY created_at DESC
+                    """,
+                    (account_id, run_id),
+                )
+            elif account_id:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM performance_signals
+                    WHERE account_id = ?
+                    ORDER BY created_at DESC
+                    """,
+                    (account_id,),
+                )
+            else:
+                cursor = conn.execute("SELECT * FROM performance_signals ORDER BY created_at DESC")
+            return [dict(r) for r in cursor.fetchall()]
+
+    def insert_evidence_batch(self, evidence_list: List[Dict[str, Any]]) -> None:
+        """Insert evidence records idempotently."""
+        if not evidence_list:
+            return
+        with self.mgr.session() as conn:
+            for e in evidence_list:
+                conn.execute(
+                    """
+                    INSERT INTO performance_evidence (
+                        evidence_id, analysis_run_id, account_id, issue_key, evidence_type,
+                        observed_value, expected_value, difference, source,
+                        confidence, explanation, timestamp, snapshot_date
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(evidence_id) DO NOTHING
+                    """,
+                    (
+                        e["evidence_id"],
+                        e["analysis_run_id"],
+                        e["account_id"],
+                        e.get("issue_key"),
+                        e["evidence_type"],
+                        e.get("observed_value"),
+                        e.get("expected_value"),
+                        e.get("difference"),
+                        e.get("source", "jira"),
+                        e.get("confidence", "MEDIUM"),
+                        e.get("explanation", ""),
+                        e.get("timestamp", ""),
+                        e.get("snapshot_date", ""),
+                    ),
+                )
+
+    def get_evidence(
+        self,
+        account_id: Optional[str] = None,
+        issue_key: Optional[str] = None,
+        run_id: Optional[str] = None,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """Query evidence ledger."""
+        with self.mgr.session() as conn:
+            clauses = []
+            params = []
+            if account_id:
+                clauses.append("account_id = ?")
+                params.append(account_id)
+            if issue_key:
+                clauses.append("issue_key = ?")
+                params.append(issue_key)
+            if run_id:
+                clauses.append("analysis_run_id = ?")
+                params.append(run_id)
+
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            params.append(limit)
+            cursor = conn.execute(
+                f"SELECT * FROM performance_evidence {where} ORDER BY timestamp DESC LIMIT ?",
+                params,
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+
+class EmployeeRoleRepository:
+    """Repository for authoritative employee designations and role category assignments."""
+
+    def __init__(self, manager: Optional[DatabaseManager] = None):
+        self.mgr = manager or db_manager
+
+    def get_by_account_id(self, account_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve authoritative designation/role assignment by Jira account_id (or legacy alias)."""
+        if not account_id:
+            return None
+        # Canonical legacy aliases mapping
+        legacy_map = {
+            "ahsan.amin": "712020:8bc58bcd-fe17-4f1b-9825-c5251cb6b1de",
+            "jira-user-ahsan": "712020:8bc58bcd-fe17-4f1b-9825-c5251cb6b1de",
+        }
+        target_id = legacy_map.get(str(account_id).strip().lower(), str(account_id).strip())
+
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                """
+                SELECT * FROM employee_role_assignments
+                WHERE account_id = ?
+                LIMIT 1
+                """,
+                (target_id,),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_by_display_name(self, display_name: str) -> Optional[Dict[str, Any]]:
+        """Retrieve authoritative designation/role assignment by exact or normalized display_name."""
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                """
+                SELECT * FROM employee_role_assignments
+                WHERE LOWER(display_name) = LOWER(?)
+                LIMIT 1
+                """,
+                (display_name.strip(),),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def list_assignments(self) -> List[Dict[str, Any]]:
+        """List all authoritative employee role assignments."""
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                """
+                SELECT * FROM employee_role_assignments
+                ORDER BY display_name ASC
+                """
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def upsert_assignment(
+        self,
+        account_id: str,
+        display_name: str,
+        designation: str,
+        role_category: str,
+        effective_from: Optional[str] = None,
+        effective_to: Optional[str] = None,
+        source: str = "manual_admin",
+    ) -> None:
+        """Insert or update an employee role assignment."""
+        now_str = utc_now_iso()
+        rec_id = f"role:{account_id}"
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO employee_role_assignments (
+                    id, account_id, display_name, designation, role_category,
+                    effective_from, effective_to, source, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    designation = excluded.designation,
+                    role_category = excluded.role_category,
+                    effective_from = excluded.effective_from,
+                    effective_to = excluded.effective_to,
+                    source = excluded.source,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    rec_id,
+                    account_id,
+                    display_name,
+                    designation,
+                    role_category,
+                    effective_from,
+                    effective_to,
+                    source,
+                    now_str,
+                    now_str,
+                ),
+            )
+
+    def get_unresolved_employees(
+        self, active_resources: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Dict[str, Any]]:
+        """Find active team members who lack an authoritative role assignment."""
+        legacy_map = {
+            "ahsan.amin": "712020:8bc58bcd-fe17-4f1b-9825-c5251cb6b1de",
+            "jira-user-ahsan": "712020:8bc58bcd-fe17-4f1b-9825-c5251cb6b1de",
+        }
+        with self.mgr.session() as conn:
+            cursor = conn.execute("SELECT account_id, display_name FROM employee_role_assignments")
+            rows = cursor.fetchall()
+            known_ids = {row["account_id"] for row in rows}
+            known_names = {row["display_name"].strip().lower() for row in rows}
+
+        if active_resources is None:
+            active_resources = []
+            with self.mgr.session() as conn:
+                cur = conn.execute(
+                    """
+                    SELECT DISTINCT author_account_id as account_id, author_display_name as display_name, team_group
+                    FROM jira_worklogs
+                    WHERE author_account_id IS NOT NULL
+                    """
+                )
+                active_resources.extend([dict(r) for r in cur.fetchall()])
+                cur2 = conn.execute(
+                    """
+                    SELECT DISTINCT raw_reference, assignee, team_group
+                    FROM jira_issue_state
+                    WHERE assignee IS NOT NULL
+                    """
+                )
+                for r in cur2.fetchall():
+                    raw = json.loads(r["raw_reference"]) if r["raw_reference"] else {}
+                    aid = raw.get("fields", {}).get("assignee", {}).get("accountId") or raw.get("assignee_account_id") or r["assignee"]
+                    active_resources.append({"account_id": aid, "display_name": r["assignee"], "team_group": r["team_group"]})
+
+        unresolved = []
+        seen = set()
+        for res in active_resources:
+            raw_id = res.get("account_id")
+            d_name = res.get("display_name", "").strip()
+            if not raw_id:
+                continue
+
+            can_id = legacy_map.get(str(raw_id).strip().lower(), str(raw_id).strip())
+            if can_id in known_ids or (d_name and d_name.lower() in known_names) or can_id in seen or raw_id in seen:
+                continue
+
+            seen.add(can_id)
+            seen.add(raw_id)
+            unresolved.append(
+                {
+                    "account_id": raw_id,
+                    "display_name": d_name or "Unknown",
+                    "team_group": res.get("team_group"),
+                    "resolved": False,
+                    "reason": "No authoritative designation found in employee_role_assignments",
+                }
+            )
+        return unresolved
+
+
+

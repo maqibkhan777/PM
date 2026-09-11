@@ -96,6 +96,35 @@ class Settings(BaseSettings):
     PM_ATTENTION_DIGEST_TIMEZONE: str = "Asia/Karachi"
     PM_ATTENTION_DIGEST_CHANNEL: Optional[str] = None  # None falls back to PM_DISCORD_CHANNEL
 
+    # Performance Data Foundation (Phase A v1.0)
+    PERFORMANCE_ANALYSIS_ENABLED: bool = True
+    PERFORMANCE_HISTORY_DAYS: int = 365
+    PERFORMANCE_MIN_HISTORY_DAYS: int = 30
+    PERFORMANCE_WORKDAY_HOURS: float = 6.75
+    PERFORMANCE_WORKDAY_MIN_HOURS: float = 6.5
+    PERFORMANCE_WORKDAY_MAX_HOURS: float = 7.0
+    PERFORMANCE_REVIEW_BUFFER_PERCENT: float = 15.0
+    PERFORMANCE_DEFAULT_CONFIDENCE: str = "LOW"
+    PERFORMANCE_TIMEZONE: str = "Asia/Karachi"
+    PERFORMANCE_MIN_SEGMENT_SAMPLES: int = 5
+    PERFORMANCE_ANALYSIS_INTERVAL_MINUTES: int = 60
+    PERFORMANCE_RISK_GREEN_BUFFER_DAYS: float = 2.0
+    PERFORMANCE_RISK_YELLOW_BUFFER_DAYS: float = 1.0
+    PERFORMANCE_RISK_ORANGE_BUFFER_DAYS: float = 0.0
+    PERFORMANCE_RISK_RED_DAYS_LATE: float = 1.0
+    PERFORMANCE_CONFIDENCE_HIGH_DAYS: int = 90
+    PERFORMANCE_CONFIDENCE_HIGH_TASKS: int = 30
+    PERFORMANCE_CONFIDENCE_MEDIUM_DAYS: int = 60
+    PERFORMANCE_CONFIDENCE_MEDIUM_TASKS: int = 15
+    PERFORMANCE_ROLE_MAPPINGS: str = ""  # Comma-separated account_id:role or display_name:role
+
+    # Deterministic Fallback Hours per Complexity Score (1 to 5)
+    PERFORMANCE_FALLBACK_HOURS_COMPLEXITY_1: float = 1.5
+    PERFORMANCE_FALLBACK_HOURS_COMPLEXITY_2: float = 3.0
+    PERFORMANCE_FALLBACK_HOURS_COMPLEXITY_3: float = 5.0
+    PERFORMANCE_FALLBACK_HOURS_COMPLEXITY_4: float = 8.0
+    PERFORMANCE_FALLBACK_HOURS_COMPLEXITY_5: float = 14.0
+
     # Scheduler Settings
     SCHEDULER_ENABLED: bool = True
     SCHEDULER_INTERVAL_MINUTES: int = 15
@@ -195,8 +224,8 @@ class Settings(BaseSettings):
         encoded_jql = urllib.parse.quote(jql, safe="")
         return f"{base}/issues/?jql={encoded_jql}"
 
-    def get_daily_worklog_excluded_account_ids(self) -> Set[str]:
-        """Return the set of Jira account IDs excluded from daily worklog reporting."""
+    def get_canonical_excluded_account_ids(self) -> Set[str]:
+        """Return the canonical single-source-of-truth set of Jira account IDs excluded globally."""
         if not self.DAILY_WORKLOG_EXCLUDED_ACCOUNT_IDS:
             return set()
         return {
@@ -204,6 +233,40 @@ class Settings(BaseSettings):
             for x in self.DAILY_WORKLOG_EXCLUDED_ACCOUNT_IDS.split(",")
             if x.strip()
         }
+
+    def get_daily_worklog_excluded_account_ids(self) -> Set[str]:
+        """Alias to canonical excluded account IDs for backward compatibility."""
+        return self.get_canonical_excluded_account_ids()
+
+    def is_canonical_excluded(self, account_id: Optional[str], display_name: Optional[str] = None) -> bool:
+        """Check whether a given Jira account_id or display_name is globally excluded."""
+        excluded_ids = self.get_canonical_excluded_account_ids()
+        if account_id and str(account_id).strip() in excluded_ids:
+            return True
+        return False
+
+    def get_fallback_hours_for_complexity(self, complexity_score: int) -> float:
+        """Return configurable deterministic fallback hours for a given complexity score (1 to 5)."""
+        fallback_map = {
+            1: float(self.PERFORMANCE_FALLBACK_HOURS_COMPLEXITY_1),
+            2: float(self.PERFORMANCE_FALLBACK_HOURS_COMPLEXITY_2),
+            3: float(self.PERFORMANCE_FALLBACK_HOURS_COMPLEXITY_3),
+            4: float(self.PERFORMANCE_FALLBACK_HOURS_COMPLEXITY_4),
+            5: float(self.PERFORMANCE_FALLBACK_HOURS_COMPLEXITY_5),
+        }
+        return fallback_map.get(complexity_score, float(self.PERFORMANCE_FALLBACK_HOURS_COMPLEXITY_3))
+
+    def get_performance_role_mappings(self) -> dict:
+        """Return explicit account_id/name -> role mapping dictionary."""
+        if not self.PERFORMANCE_ROLE_MAPPINGS:
+            return {}
+        mappings = {}
+        for pair in self.PERFORMANCE_ROLE_MAPPINGS.split(","):
+            if ":" in pair:
+                k, v = pair.split(":", 1)
+                if k.strip() and v.strip():
+                    mappings[k.strip().lower()] = v.strip()
+        return mappings
 
 
 # Global settings instance

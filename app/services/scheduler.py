@@ -30,6 +30,7 @@ class PeriodicScheduler:
         self._polling_task: Optional[asyncio.Task] = None
         self._interval_minutes = settings.SCHEDULER_INTERVAL_MINUTES
         self._polling_interval_minutes = settings.JIRA_POLLING_INTERVAL_MINUTES
+        self._last_performance_analysis_at: Optional[datetime] = None
 
     @property
     def is_running(self) -> bool:
@@ -157,12 +158,22 @@ class PeriodicScheduler:
         except Exception as e:
             logger.error(f"Error during Daily PM Attention Digest evaluation: {e}", exc_info=True)
 
+        # 6. Evaluate Scheduled Performance Foundation Analysis
+        perf_analysis_status = None
+        try:
+            perf_analysis_res = await self._evaluate_performance_analysis()
+            if perf_analysis_res:
+                perf_analysis_status = perf_analysis_res.get("status")
+        except Exception as e:
+            logger.error(f"Error during Performance Foundation Analysis evaluation: {e}", exc_info=True)
+
         logger.info(
             f"Scheduler cycle complete. Evaluated: {stale_evaluated} stale, "
             f"{overdue_evaluated} overdue. Actions dispatched: {actions_dispatched}. "
             f"Daily worklog status: {daily_report_status or 'idle'}, "
             f"Daily overdue status: {daily_overdue_status or 'idle'}, "
-            f"Daily attention status: {daily_attention_status or 'idle'}"
+            f"Daily attention status: {daily_attention_status or 'idle'}, "
+            f"Performance analysis status: {perf_analysis_status or 'idle'}"
         )
         return {
             "timestamp": utc_now_iso(),
@@ -172,6 +183,7 @@ class PeriodicScheduler:
             "daily_report_status": daily_report_status,
             "daily_overdue_status": daily_overdue_status,
             "daily_attention_status": daily_attention_status,
+            "performance_analysis_status": perf_analysis_status,
         }
 
     def _sync_recent_events_to_projection(self) -> None:
@@ -363,6 +375,27 @@ class PeriodicScheduler:
                     record_history=True
                 )
         return None
+
+    async def _evaluate_performance_analysis(self) -> Optional[Dict[str, Any]]:
+        """Run performance data foundation analysis if enabled and interval elapsed."""
+        if not settings.PERFORMANCE_ANALYSIS_ENABLED:
+            return None
+
+        now = utc_now()
+        interval_minutes = settings.PERFORMANCE_ANALYSIS_INTERVAL_MINUTES
+        if self._last_performance_analysis_at:
+            elapsed = (now - self._last_performance_analysis_at).total_seconds() / 60.0
+            if elapsed < interval_minutes:
+                return None
+
+        from app.core.performance.engine import PerformanceAnalysisEngine
+        engine = PerformanceAnalysisEngine(manager=self.mgr)
+        team_group = settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else None
+
+        logger.info(f"Triggering scheduled performance analysis (team_group={team_group})...")
+        run_res = engine.run_analysis(team_group=team_group)
+        self._last_performance_analysis_at = now
+        return {"status": run_res.status, "analysis_run_id": run_res.analysis_run_id}
 
 
 # Global scheduler instance
