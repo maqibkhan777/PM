@@ -1,0 +1,20 @@
+{
+  "test_id": "RT-MM-002",
+  "run_id": "QA-20260911-235447",
+  "tier": "DRY_RUN_E2E",
+  "status": "PASS",
+  "category": "Mattermost Identity",
+  "title": "Unresolved User Mapping Rejection & Zero-Guessing Guarantee",
+  "target_issue": "TREN-378",
+  "jira_assignee": "unmapped_user_999",
+  "event_id": null,
+  "action_id": "act_mm_unmapped_blocked",
+  "idempotency_key": null,
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "expected": "System refuses to deliver DM to unmapped user; records USER_MAPPING_REQUIRED; never guesses.",
+  "actual": "ActionEngine blocked delivery with status USER_MAPPING_REQUIRED; zero random DMs sent.",
+  "timestamp": "2026-09-11T23:54:47.768296+00:00",
+  "duration_ms": 0.01,
+  "metadata": {}
+}

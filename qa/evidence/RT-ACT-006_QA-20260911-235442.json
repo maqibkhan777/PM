@@ -1,0 +1,26 @@
+{
+  "test_id": "RT-ACT-006",
+  "run_id": "QA-20260911-235442",
+  "tier": "DRY_RUN_E2E",
+  "status": "PASS",
+  "category": "Action Engine & Idempotency",
+  "title": "Action Execution & Idempotency: SEND_MESSAGE",
+  "target_issue": "TREN-378",
+  "jira_assignee": null,
+  "event_id": null,
+  "action_id": "act_52abf1cf",
+  "idempotency_key": "idem_qa_send_message_TREN-378_QA-20260911-235442",
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "expected": "Action 'SEND_MESSAGE' validated, capability checked, executed, and repeated calls deduplicated.",
+  "actual": "Action validated; idempotency key persisted; audit record generated.",
+  "timestamp": "2026-09-11T23:54:42.049970+00:00",
+  "duration_ms": 0.02,
+  "metadata": {
+    "action_type": "SEND_MESSAGE",
+    "parameters": {
+      "user": "mubashir.butt",
+      "message": "QA Direct Message Verification"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "test_id": "RT-MM-001",
+  "run_id": "QA-20260911-235442",
+  "tier": "DRY_RUN_E2E",
+  "status": "PASS",
+  "category": "Mattermost Identity",
+  "title": "Authoritative Exact Identity Resolution",
+  "target_issue": "TREN-378",
+  "jira_assignee": "Mubashir Butt",
+  "event_id": null,
+  "action_id": null,
+  "idempotency_key": null,
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "expected": "Valid Jira account ID resolves deterministically to mapped Mattermost username.",
+  "actual": "Resolved account 712020:e268bcd8-d981-4b4d-992d-d5694745df8b -> 'mubashir.butt'.",
+  "timestamp": "2026-09-11T23:54:42.038570+00:00",
+  "duration_ms": 0.0,
+  "metadata": {}
+}

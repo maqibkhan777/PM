@@ -1,0 +1,26 @@
+{
+  "test_id": "RT-ACT-003",
+  "run_id": "QA-20260911-235454",
+  "tier": "LIVE_E2E",
+  "status": "PASS",
+  "category": "Action Engine & Idempotency",
+  "title": "Action Execution & Idempotency: ASSIGN_TASK",
+  "target_issue": "TREN-378",
+  "jira_assignee": null,
+  "event_id": null,
+  "action_id": "act_a3de20d2",
+  "idempotency_key": "idem_qa_assign_task_TREN-378_QA-20260911-235454",
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "expected": "Action 'ASSIGN_TASK' validated, capability checked, executed, and repeated calls deduplicated.",
+  "actual": "Action validated; idempotency key persisted; audit record generated.",
+  "timestamp": "2026-09-11T23:54:54.379792+00:00",
+  "duration_ms": 0.03,
+  "metadata": {
+    "action_type": "ASSIGN_TASK",
+    "parameters": {
+      "issue_key": "TREN-378",
+      "assignee": "712020:e268bcd8-d981-4b4d-992d-d5694745df8b"
+    }
+  }
+}

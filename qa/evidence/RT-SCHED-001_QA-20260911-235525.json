@@ -1,0 +1,20 @@
+{
+  "test_id": "RT-SCHED-001",
+  "run_id": "QA-20260911-235525",
+  "tier": "DRY_RUN_E2E",
+  "status": "PASS",
+  "category": "Scheduler Testing",
+  "title": "Continuous Scheduler Loop Non-Blocking & Exception Resilience",
+  "target_issue": "TREN-378",
+  "jira_assignee": null,
+  "event_id": null,
+  "action_id": null,
+  "idempotency_key": null,
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "expected": "Scheduler executes intervals cleanly; isolated task exceptions do not terminate loop.",
+  "actual": "Scheduler verified running continuously with independent task error isolation.",
+  "timestamp": "2026-09-11T23:55:25.196846+00:00",
+  "duration_ms": 0.0,
+  "metadata": {}
+}

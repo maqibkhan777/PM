@@ -1,0 +1,23 @@
+{
+  "test_id": "RT-PERF-001",
+  "run_id": "QA-20260911-235525",
+  "tier": "DRY_RUN_E2E",
+  "status": "PASS",
+  "category": "Performance Foundation",
+  "title": "Performance Foundation Data Integrity & Zero Score / Zero Ranking Audit",
+  "target_issue": "TREN-378",
+  "jira_assignee": null,
+  "event_id": null,
+  "action_id": null,
+  "idempotency_key": null,
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "expected": "18 authoritative roles seeded; dynamic history coverage; strict NO ranking or overall score.",
+  "actual": "PerformanceValidator recommendation=READY_WITH_DATA_QUALITY_LIMITATIONS, zero_score_guaranteed=True",
+  "timestamp": "2026-09-11T23:55:30.035740+00:00",
+  "duration_ms": 4836.95,
+  "metadata": {
+    "validation_id": "val_20260911_235525_c4338a",
+    "recommendation": "ValidationRecommendation.READY_WITH_DATA_QUALITY_LIMITATIONS"
+  }
+}

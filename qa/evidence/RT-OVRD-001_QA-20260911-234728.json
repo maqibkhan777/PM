@@ -1,0 +1,20 @@
+{
+  "test_id": "RT-OVRD-001",
+  "run_id": "QA-20260911-234728",
+  "tier": "DRY_RUN_E2E",
+  "status": "PASS",
+  "category": "Due Date / Overdue",
+  "title": "Overdue Task Evaluation & Daily Digest Inclusion",
+  "target_issue": "TREN-378",
+  "jira_assignee": "Mubashir Butt",
+  "event_id": null,
+  "action_id": null,
+  "idempotency_key": null,
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "expected": "Incomplete task past due date identified as overdue; formatted in daily 09:00 digest.",
+  "actual": "Projection due date evaluated; completion removes task from overdue candidates.",
+  "timestamp": "2026-09-11T23:47:28.219461+00:00",
+  "duration_ms": 0.0,
+  "metadata": {}
+}

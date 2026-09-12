@@ -1975,4 +1975,129 @@ class EmployeeRoleRepository:
         return unresolved
 
 
+class PerformanceValidationRepository:
+    """Repository for persisting and retrieving Data Quality & Analytics Validation reports."""
+
+    def __init__(self, manager: Optional[DatabaseManager] = None):
+        self.mgr = manager or db_manager
+
+    def upsert_report(
+        self,
+        validation_id: str,
+        analysis_run_id: str,
+        recommendation: str,
+        summary: Dict[str, Any],
+        raw_report: Dict[str, Any],
+        team_group: Optional[str] = None,
+        created_at: Optional[str] = None,
+    ) -> None:
+        """Persist a validation report snapshot."""
+        now_str = created_at or utc_now_iso()
+        summary_json = json.dumps(summary)
+        raw_report_json = json.dumps(raw_report)
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO performance_validation_reports (
+                    id, analysis_run_id, team_group, recommendation, summary_json, raw_report_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    analysis_run_id = excluded.analysis_run_id,
+                    team_group = excluded.team_group,
+                    recommendation = excluded.recommendation,
+                    summary_json = excluded.summary_json,
+                    raw_report_json = excluded.raw_report_json
+                """,
+                (
+                    validation_id,
+                    analysis_run_id,
+                    team_group,
+                    recommendation,
+                    summary_json,
+                    raw_report_json,
+                    now_str,
+                ),
+            )
+
+    def get_by_id(self, validation_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a validation report by its unique ID."""
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM performance_validation_reports WHERE id = ?",
+                (validation_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            if d.get("summary_json"):
+                d["summary"] = json.loads(d["summary_json"])
+            if d.get("raw_report_json"):
+                d["report"] = json.loads(d["raw_report_json"])
+            return d
+
+    def get_latest(self, team_group: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Retrieve the latest validation report, optionally filtered by team group."""
+        with self.mgr.session() as conn:
+            if team_group:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM performance_validation_reports
+                    WHERE team_group = ?
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (team_group,),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM performance_validation_reports
+                    ORDER BY created_at DESC LIMIT 1
+                    """
+                )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            if d.get("summary_json"):
+                d["summary"] = json.loads(d["summary_json"])
+            if d.get("raw_report_json"):
+                d["report"] = json.loads(d["raw_report_json"])
+            return d
+
+    def list_reports(self, limit: int = 10, team_group: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List validation reports in reverse chronological order."""
+        with self.mgr.session() as conn:
+            if team_group:
+                cursor = conn.execute(
+                    """
+                    SELECT id, analysis_run_id, team_group, recommendation, summary_json, created_at
+                    FROM performance_validation_reports
+                    WHERE team_group = ?
+                    ORDER BY created_at DESC LIMIT ?
+                    """,
+                    (team_group, limit),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT id, analysis_run_id, team_group, recommendation, summary_json, created_at
+                    FROM performance_validation_reports
+                    ORDER BY created_at DESC LIMIT ?
+                    """,
+                    (limit,),
+                )
+            rows = cursor.fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                if d.get("summary_json"):
+                    try:
+                        d["summary"] = json.loads(d["summary_json"])
+                    except Exception:
+                        pass
+                out.append(d)
+            return out
+
+
 

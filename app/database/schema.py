@@ -408,6 +408,20 @@ CREATE INDEX IF NOT EXISTS idx_perf_evidence_acc ON performance_evidence(account
 CREATE INDEX IF NOT EXISTS idx_perf_evidence_type ON performance_evidence(evidence_type);
 CREATE INDEX IF NOT EXISTS idx_perf_evidence_run ON performance_evidence(analysis_run_id);
 CREATE INDEX IF NOT EXISTS idx_perf_evidence_issue ON performance_evidence(issue_key);
+
+-- Performance Validation Reports (Data Quality & Analytics Validation)
+CREATE TABLE IF NOT EXISTS performance_validation_reports (
+    id TEXT PRIMARY KEY,
+    analysis_run_id TEXT NOT NULL,
+    team_group TEXT,
+    recommendation TEXT NOT NULL,
+    summary_json TEXT NOT NULL,
+    raw_report_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_perf_val_run ON performance_validation_reports(analysis_run_id);
+CREATE INDEX IF NOT EXISTS idx_perf_val_team ON performance_validation_reports(team_group);
 """
 
 
@@ -570,6 +584,23 @@ def _migrate_performance_tables(conn) -> None:
             if col_name not in existing:
                 logger.info(f"Migrating database: adding '{col_name}' to performance_analysis_runs...")
                 conn.execute(f"ALTER TABLE performance_analysis_runs ADD COLUMN {col_name} {col_type}")
+
+    # 4. performance_validation_reports
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS performance_validation_reports (
+            id TEXT PRIMARY KEY,
+            analysis_run_id TEXT NOT NULL,
+            team_group TEXT,
+            recommendation TEXT NOT NULL,
+            summary_json TEXT NOT NULL,
+            raw_report_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_perf_val_run ON performance_validation_reports(analysis_run_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_perf_val_team ON performance_validation_reports(team_group)")
 
 
 # Authoritative 18 employee designations seeded by exact account_id and exact designation

@@ -1,0 +1,23 @@
+{
+  "test_id": "RT-STAT-005",
+  "run_id": "QA-20260911-235419",
+  "tier": "DRY_RUN_E2E",
+  "status": "PASS",
+  "category": "Status Testing",
+  "title": "Transition: Done -> In Progress",
+  "target_issue": "TREN-378",
+  "jira_assignee": "Mubashir Butt",
+  "event_id": "evt_trans_done_in_progress",
+  "action_id": "act_trans_done_in_progress",
+  "idempotency_key": "idem_status_TREN-378_Done_In Progress",
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "expected": "Normalized transition event from 'Done' to 'In Progress' persisted and rule triggered.",
+  "actual": "Event type: TaskReopened, old=Done, new=In Progress",
+  "timestamp": "2026-09-11T23:54:19.852052+00:00",
+  "duration_ms": 0.2,
+  "metadata": {
+    "from": "Done",
+    "to": "In Progress"
+  }
+}

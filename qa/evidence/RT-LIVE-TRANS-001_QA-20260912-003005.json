@@ -1,0 +1,62 @@
+{
+  "test_id": "RT-LIVE-TRANS-001",
+  "run_id": "QA-20260912-003005",
+  "tier": "LIVE_E2E",
+  "category": "Status Testing (Live)",
+  "title": "Live Transition of TREN-378 to 'In Progress'",
+  "status": "PASS",
+  "jira_issue": "TREN-378",
+  "jira_assignee": null,
+  "execution_mode": {
+    "jira": "REAL",
+    "discord": "REAL",
+    "mattermost": "NOT_USED",
+    "database": "REAL",
+    "webhook": "SIMULATED",
+    "polling": "REAL",
+    "scheduler": "NOT_USED",
+    "action_engine": "REAL"
+  },
+  "external_operations": [
+    "JIRA_GET_TRANSITIONS",
+    "JIRA_TRANSITION_MUTATION",
+    "JIRA_GET_ISSUE_POST_TRANSITION",
+    "PM_AGENT_INGEST_EVENT"
+  ],
+  "pre_state": null,
+  "mutation": {
+    "transition_id": "3",
+    "target_status": "In Progress"
+  },
+  "observed_external_state": {
+    "confirmed_status": "In Progress"
+  },
+  "event_id": "40d6c8eb-1e9e-4938-b426-4866b50ace00",
+  "action_id": null,
+  "idempotency_key": null,
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "rule_result": {
+    "rule_evaluated": "StatusChangedRule",
+    "status": "EVALUATED"
+  },
+  "action_result": null,
+  "notification_result": {
+    "delivery": "REAL",
+    "verification": "HUMAN_REQUIRED",
+    "channel": "pm-alerts"
+  },
+  "audit_result": {
+    "persisted": true,
+    "event_id": "40d6c8eb-1e9e-4938-b426-4866b50ace00"
+  },
+  "idempotency_result": null,
+  "expected": "Jira workflow transitions TREN-378 to 'In Progress'.",
+  "actual": "Jira Cloud confirmed new status: 'In Progress'.",
+  "failure_reason": null,
+  "evidence": null,
+  "started_at": "2026-09-12T00:30:24.807963+00:00",
+  "completed_at": "2026-09-12T00:30:26.685569+00:00",
+  "duration_ms": 1877.6,
+  "timestamp": "2026-09-12T00:30:26.685776+00:00"
+}

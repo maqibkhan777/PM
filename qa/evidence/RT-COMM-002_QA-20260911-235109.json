@@ -1,0 +1,20 @@
+{
+  "test_id": "RT-COMM-002",
+  "run_id": "QA-20260911-235109",
+  "tier": "DRY_RUN_E2E",
+  "status": "PASS",
+  "category": "Comment / Mention",
+  "title": "Comment Without PM Mention Ingested Silently (COMMENT_NOTIFY_ALL=False)",
+  "target_issue": "TREN-378",
+  "jira_assignee": "Mubashir Butt",
+  "event_id": "evt_comm_no_mention",
+  "action_id": null,
+  "idempotency_key": null,
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "expected": "General comment ingested into database without generating unnecessary Discord alerts.",
+  "actual": "Zero mentions detected; rule correctly suppressed personal notification.",
+  "timestamp": "2026-09-11T23:51:09.782077+00:00",
+  "duration_ms": 0.13,
+  "metadata": {}
+}

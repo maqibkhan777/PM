@@ -1,0 +1,61 @@
+{
+  "test_id": "RT-LIVE-COMM-001",
+  "run_id": "QA-20260912-003005",
+  "tier": "LIVE_E2E",
+  "category": "Comment / Mention (Live)",
+  "title": "Live Comment on TREN-378 (With PM Mention)",
+  "status": "PASS",
+  "jira_issue": "TREN-378",
+  "jira_assignee": null,
+  "execution_mode": {
+    "jira": "REAL",
+    "discord": "REAL",
+    "mattermost": "NOT_USED",
+    "database": "REAL",
+    "webhook": "SIMULATED",
+    "polling": "REAL",
+    "scheduler": "NOT_USED",
+    "action_engine": "REAL"
+  },
+  "external_operations": [
+    "JIRA_ADD_COMMENT_MUTATION",
+    "PM_AGENT_INGEST_EVENT"
+  ],
+  "pre_state": null,
+  "mutation": {
+    "comment_id": "645312",
+    "body": "[LIVE QA TEST QA-20260912-003005] Review requested [~accountid:712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0]"
+  },
+  "observed_external_state": {
+    "comment_persisted_in_jira": true,
+    "comment_id": "645312"
+  },
+  "event_id": "0c49f02f-06ee-49fa-a97b-5a7ebb049f24",
+  "action_id": null,
+  "idempotency_key": null,
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "rule_result": {
+    "rule_evaluated": "CommentNotificationRule",
+    "is_mentioned": true
+  },
+  "action_result": null,
+  "notification_result": {
+    "delivery": "REAL",
+    "verification": "HUMAN_REQUIRED",
+    "channel": "pm-alerts"
+  },
+  "audit_result": {
+    "persisted": true,
+    "event_id": "0c49f02f-06ee-49fa-a97b-5a7ebb049f24"
+  },
+  "idempotency_result": null,
+  "expected": "Comment added to TREN-378 in Jira Cloud.",
+  "actual": "Comment created in Jira with ID: 645312.",
+  "failure_reason": null,
+  "evidence": null,
+  "started_at": "2026-09-12T00:30:26.691210+00:00",
+  "completed_at": "2026-09-12T00:30:27.557724+00:00",
+  "duration_ms": 866.37,
+  "timestamp": "2026-09-12T00:30:27.557825+00:00"
+}

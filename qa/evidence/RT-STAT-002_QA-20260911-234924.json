@@ -1,0 +1,23 @@
+{
+  "test_id": "RT-STAT-002",
+  "run_id": "QA-20260911-234924",
+  "tier": "DRY_RUN_E2E",
+  "status": "PASS",
+  "category": "Status Testing",
+  "title": "Transition: In Progress -> Blocked",
+  "target_issue": "TREN-378",
+  "jira_assignee": "Mubashir Butt",
+  "event_id": "evt_trans_in_progress_blocked",
+  "action_id": "act_trans_in_progress_blocked",
+  "idempotency_key": "idem_status_TREN-378_In Progress_Blocked",
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "expected": "Normalized transition event from 'In Progress' to 'Blocked' persisted and rule triggered.",
+  "actual": "Event type: TaskStatusChanged, old=In Progress, new=Blocked",
+  "timestamp": "2026-09-11T23:49:24.634402+00:00",
+  "duration_ms": 0.14,
+  "metadata": {
+    "from": "In Progress",
+    "to": "Blocked"
+  }
+}

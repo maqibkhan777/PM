@@ -1,0 +1,22 @@
+{
+  "test_id": "RT-ASSIGN-001",
+  "run_id": "QA-20260911-235419",
+  "tier": "DRY_RUN_E2E",
+  "status": "PASS",
+  "category": "Assignment",
+  "title": "Assignment of TREN-378 to PM (Personal Notification)",
+  "target_issue": "TREN-378",
+  "jira_assignee": "Aqib Khan (PM)",
+  "event_id": "evt_assign_pm_75b6a286",
+  "action_id": "act_assign_pm_781c2862",
+  "idempotency_key": "idem_assign_TREN-378_712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "expected": "TaskAssigned event recognized as assigned to PM; generates personal Discord alert; deduplicated.",
+  "actual": "Event type: TaskAssigned, assigned_to_me=True",
+  "timestamp": "2026-09-11T23:54:19.847393+00:00",
+  "duration_ms": 0.12,
+  "metadata": {
+    "assignee_id": "712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0"
+  }
+}

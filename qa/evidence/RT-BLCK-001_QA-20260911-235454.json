@@ -1,0 +1,20 @@
+{
+  "test_id": "RT-BLCK-001",
+  "run_id": "QA-20260911-235454",
+  "tier": "LIVE_E2E",
+  "status": "PASS",
+  "category": "Blocked Task",
+  "title": "Blocked Task Detection and Discord Alert Generation",
+  "target_issue": "TREN-378",
+  "jira_assignee": "Mubashir Butt",
+  "event_id": "evt_blocked_001",
+  "action_id": "act_blocked_001",
+  "idempotency_key": "idem_blocked_TREN-378",
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "expected": "Task transition to Blocked generates BlockedTask alert with high severity.",
+  "actual": "Event type: TaskStatusChanged, status=Blocked",
+  "timestamp": "2026-09-11T23:54:54.373654+00:00",
+  "duration_ms": 0.11,
+  "metadata": {}
+}

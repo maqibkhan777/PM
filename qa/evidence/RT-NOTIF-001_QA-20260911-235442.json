@@ -1,0 +1,42 @@
+{
+  "test_id": "RT-NOTIF-001",
+  "run_id": "QA-20260911-235442",
+  "tier": "DRY_RUN_E2E",
+  "status": "PASS",
+  "category": "Notification Verification",
+  "title": "Human-Visible Notification Payload Structure & Embed Links",
+  "target_issue": "TREN-378",
+  "jira_assignee": null,
+  "event_id": null,
+  "action_id": null,
+  "idempotency_key": null,
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "expected": "Discord embed contains clickable Jira link, clear issue key, assignee, and status.",
+  "actual": "Embed structure verified: valid=True",
+  "timestamp": "2026-09-11T23:54:42.054032+00:00",
+  "duration_ms": 0.04,
+  "metadata": {
+    "embed": {
+      "title": "Task Assigned: TREN-378",
+      "description": "Task has been assigned to Aqib Khan",
+      "fields": [
+        {
+          "name": "Issue",
+          "value": "[TREN-378](https://objectsws.atlassian.net/browse/TREN-378)",
+          "inline": true
+        },
+        {
+          "name": "Assignee",
+          "value": "Aqib Khan",
+          "inline": true
+        },
+        {
+          "name": "Status",
+          "value": "In Progress",
+          "inline": true
+        }
+      ]
+    }
+  }
+}

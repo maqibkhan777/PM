@@ -1,0 +1,20 @@
+{
+  "test_id": "RT-STALE-002",
+  "run_id": "QA-20260911-234853",
+  "tier": "DRY_RUN_E2E",
+  "status": "PASS",
+  "category": "Stale Task Testing",
+  "title": "Stale Task Mattermost DM Routing Strictly to Current Assignee",
+  "target_issue": "TREN-378",
+  "jira_assignee": "Mubashir Butt (Assignee)",
+  "event_id": null,
+  "action_id": null,
+  "idempotency_key": null,
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "expected": "Mattermost DM routes to Mubashir; PM is NOT messaged as the assignee.",
+  "actual": "DM target resolved strictly from assignee_account_id mapping; PM excluded from assignee DM.",
+  "timestamp": "2026-09-11T23:48:53.784702+00:00",
+  "duration_ms": 0.0,
+  "metadata": {}
+}

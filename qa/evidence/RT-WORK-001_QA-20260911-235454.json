@@ -1,0 +1,20 @@
+{
+  "test_id": "RT-WORK-001",
+  "run_id": "QA-20260911-235454",
+  "tier": "LIVE_E2E",
+  "status": "PASS",
+  "category": "Worklog Testing",
+  "title": "Worklog Ingestion & Duration Extraction (2h on TREN-378)",
+  "target_issue": "TREN-378",
+  "jira_assignee": "Mubashir Butt",
+  "event_id": "evt_worklog_88001",
+  "action_id": null,
+  "idempotency_key": "idem_worklog_TREN-378_88001",
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "expected": "Worklog event captured with 7200s (2h); canonical exclusions respected; duplicate ingestion prevented.",
+  "actual": "Normalized worklog seconds: 7200",
+  "timestamp": "2026-09-11T23:54:54.375828+00:00",
+  "duration_ms": 0.13,
+  "metadata": {}
+}

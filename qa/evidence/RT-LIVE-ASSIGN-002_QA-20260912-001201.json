@@ -1,0 +1,55 @@
+{
+  "test_id": "RT-LIVE-ASSIGN-002",
+  "run_id": "QA-20260912-001201",
+  "tier": "LIVE_E2E",
+  "category": "Assignment (Live)",
+  "title": "Live Assignment of TREN-378 to Mubashir Butt",
+  "status": "PASS",
+  "jira_issue": "TREN-378",
+  "jira_assignee": "Mubashir Butt",
+  "execution_mode": {
+    "jira": "REAL",
+    "discord": "REAL",
+    "mattermost": "NOT_USED",
+    "database": "REAL",
+    "webhook": "SIMULATED",
+    "polling": "REAL",
+    "scheduler": "NOT_USED",
+    "action_engine": "REAL"
+  },
+  "external_operations": [
+    "JIRA_GET_ISSUE_PRE",
+    "JIRA_ASSIGN_ISSUE_MUTATION",
+    "JIRA_GET_ISSUE_POST_CONFIRM"
+  ],
+  "pre_state": {
+    "assignee_id": "712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+    "assignee_name": "Aqib Khan"
+  },
+  "mutation": {
+    "action": "ASSIGN_TASK",
+    "target_account_id": "712020:e268bcd8-d981-4b4d-992d-d5694745df8b"
+  },
+  "observed_external_state": {
+    "confirmed_assignee_id": "712020:e268bcd8-d981-4b4d-992d-d5694745df8b",
+    "confirmed_name": "Mubashir Butt"
+  },
+  "event_id": null,
+  "action_id": null,
+  "idempotency_key": null,
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "rule_result": null,
+  "action_result": null,
+  "notification_result": null,
+  "audit_result": null,
+  "idempotency_result": null,
+  "expected": "Jira reflects assignment to Mubashir Butt (712020:e268bcd8-d981-4b4d-992d-d5694745df8b); verified via Jira API.",
+  "actual": "Jira API verified assignment: observed accountId=712020:e268bcd8-d981-4b4d-992d-d5694745df8b.",
+  "failure_reason": null,
+  "evidence": null,
+  "started_at": "2026-09-12T00:12:03.780132+00:00",
+  "completed_at": "2026-09-12T00:12:05.814249+00:00",
+  "duration_ms": 2033.97,
+  "timestamp": "2026-09-12T00:12:05.814404+00:00"
+}

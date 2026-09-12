@@ -1,0 +1,20 @@
+{
+  "test_id": "RT-REOP-001",
+  "run_id": "QA-20260911-235442",
+  "tier": "DRY_RUN_E2E",
+  "status": "PASS",
+  "category": "Reopened Task",
+  "title": "Reopened Task Detection (Done -> In Progress)",
+  "target_issue": "TREN-378",
+  "jira_assignee": "Mubashir Butt",
+  "event_id": "evt_reopened_001",
+  "action_id": "act_reopened_001",
+  "idempotency_key": "idem_reopen_TREN-378",
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "expected": "Done -> In Progress transition recognized as ReopenedTask with previous/new status in payload.",
+  "actual": "Event type: TaskReopened, old=Done, new=In Progress",
+  "timestamp": "2026-09-11T23:54:42.043190+00:00",
+  "duration_ms": 0.16,
+  "metadata": {}
+}

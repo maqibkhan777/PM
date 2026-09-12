@@ -125,6 +125,14 @@ class Settings(BaseSettings):
     PERFORMANCE_FALLBACK_HOURS_COMPLEXITY_4: float = 8.0
     PERFORMANCE_FALLBACK_HOURS_COMPLEXITY_5: float = 14.0
 
+    # Live QA Framework Settings
+    LIVE_QA_ENABLED: bool = False
+    LIVE_QA_JIRA_ISSUE: str = "TREN-378"
+    LIVE_QA_DISCORD_WEBHOOK: Optional[str] = None
+    LIVE_QA_MATTERMOST_CHANNEL: Optional[str] = None
+    LIVE_QA_STALE_HOURS: int = 1
+    LIVE_QA_EVIDENCE_DIR: str = "qa/evidence"
+
     # Scheduler Settings
     SCHEDULER_ENABLED: bool = True
     SCHEDULER_INTERVAL_MINUTES: int = 15
@@ -267,6 +275,29 @@ class Settings(BaseSettings):
                 if k.strip() and v.strip():
                     mappings[k.strip().lower()] = v.strip()
         return mappings
+
+    def get_live_qa_evidence_dir(self) -> str:
+        """Ensure parent evidence directory exists and return absolute path."""
+        evidence_dir = os.path.abspath(self.LIVE_QA_EVIDENCE_DIR)
+        os.makedirs(evidence_dir, exist_ok=True)
+        return evidence_dir
+
+    def assert_live_qa_safe(self, target_issue: Optional[str] = None) -> None:
+        """Assert that Live QA environment is explicitly enabled and target issue matches the safe fixture."""
+        if not self.LIVE_QA_ENABLED:
+            raise RuntimeError(
+                "Live QA mutation blocked: LIVE_QA_ENABLED is False. "
+                "Set LIVE_QA_ENABLED=true in environment to execute live operations."
+            )
+        if target_issue:
+            clean_target = target_issue.strip().upper()
+            clean_expected = (self.LIVE_QA_JIRA_ISSUE or "TREN-378").strip().upper()
+            if clean_target != clean_expected:
+                raise ValueError(
+                    f"Live QA mutation blocked: target issue '{target_issue}' does not match "
+                    f"configured safe fixture '{self.LIVE_QA_JIRA_ISSUE}'. "
+                    f"Live mutation tests are restricted to '{self.LIVE_QA_JIRA_ISSUE}'."
+                )
 
 
 # Global settings instance

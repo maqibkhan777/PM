@@ -1,0 +1,20 @@
+{
+  "test_id": "RT-DEDUP-001",
+  "run_id": "QA-20260911-235254",
+  "tier": "DRY_RUN_E2E",
+  "status": "PASS",
+  "category": "Polling vs Webhook",
+  "title": "Unified Deduplication Across Jira Webhooks & Poller",
+  "target_issue": "TREN-378",
+  "jira_assignee": null,
+  "event_id": null,
+  "action_id": null,
+  "idempotency_key": null,
+  "discord_message_id": null,
+  "mattermost_message_id": null,
+  "expected": "Identical logical event received via poller and webhook is processed exactly once.",
+  "actual": "Event bus deduplication prevents duplicate rule execution and duplicate alerts.",
+  "timestamp": "2026-09-11T23:52:54.966915+00:00",
+  "duration_ms": 0.0,
+  "metadata": {}
+}

@@ -14,14 +14,22 @@ from app.core.models.performance import (
     TaskDeliveryForecast,
     TeamPerformanceSummary,
 )
+from app.core.models.validation import DataQualityValidationReport
 from app.core.performance.engine import PerformanceAnalysisEngine
-from app.database.repositories import EmployeeRoleRepository, PerformanceRepository
+from app.core.performance.validator import DataQualityValidator
+from app.database.repositories import (
+    EmployeeRoleRepository,
+    PerformanceRepository,
+    PerformanceValidationRepository,
+)
 from app.utils.logger import logger
 
 router = APIRouter(prefix="/performance", tags=["Performance Data Foundation"])
 engine = PerformanceAnalysisEngine()
 perf_repo = PerformanceRepository()
 role_repo = EmployeeRoleRepository()
+val_repo = PerformanceValidationRepository()
+validator = DataQualityValidator(engine=engine, perf_repo=perf_repo, role_repo=role_repo, val_repo=val_repo)
 
 
 class CreateRoleAssignmentRequest(BaseModel):
@@ -169,3 +177,38 @@ async def trigger_performance_analysis(
     logger.info(f"Manual trigger for performance analysis received (team_group={team_group}, history_days={history_days})")
     run_result = engine.run_analysis(team_group=team_group, history_days=history_days)
     return run_result
+
+
+@router.get("/validation/latest", response_model=Dict[str, Any])
+async def get_latest_validation_report(
+    team_group: Optional[str] = Query(None, description="Optional team group filter")
+):
+    """Retrieve the most recent persisted Data Quality and Analytics Validation report."""
+    latest = val_repo.get_latest(team_group=team_group)
+    if not latest:
+        report = validator.validate_team(team_group=team_group)
+        return report.model_dump()
+    return latest.get("report") or latest
+
+
+@router.post("/validation", response_model=DataQualityValidationReport)
+async def trigger_data_validation(
+    team_group: Optional[str] = Query(None, description="Optional team group filter"),
+    history_days: Optional[int] = Query(365, ge=1, le=730, description="Validation window in days"),
+):
+    """Execute a fresh Data Quality & Analytics Validation run and persist the report."""
+    logger.info(f"Triggering fresh data quality validation run (team_group={team_group}, history_days={history_days})")
+    report = validator.validate_team(team_group=team_group, history_days=history_days or 365)
+    return report
+
+
+@router.get("/validation", response_model=Dict[str, Any])
+async def get_validation_report(
+    team_group: Optional[str] = Query(None, description="Optional team group filter")
+):
+    """Retrieve the latest validation report."""
+    latest = val_repo.get_latest(team_group=team_group)
+    if not latest:
+        report = validator.validate_team(team_group=team_group)
+        return report.model_dump()
+    return latest.get("report") or latest
