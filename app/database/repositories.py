@@ -2100,4 +2100,513 @@ class PerformanceValidationRepository:
             return out
 
 
+class HistoricalIntelligenceRepository:
+    """Repository for Phase B v1.1 Historical Intelligence and Evidence Layer."""
 
+    def __init__(self, manager: Optional[DatabaseManager] = None):
+        self.mgr = manager or db_manager
+
+    def save_profiles(self, profiles: List[Any]) -> None:
+        """Persist HistoricalIntelligenceProfile objects across Phase B persistence tables."""
+        if not profiles:
+            return
+
+        with self.mgr.session() as conn:
+            for p in profiles:
+                # Handle pydantic object or dict
+                p_dict = p.model_dump() if hasattr(p, "model_dump") else (p.dict() if hasattr(p, "dict") else p)
+                run_id = p_dict["analysis_run_id"]
+                acc_id = p_dict["account_id"]
+                calc_at = p_dict["calculated_at"]
+                rec_id = f"{run_id}:{acc_id}"
+
+                # 1. Main Profile Snapshot
+                conn.execute(
+                    """
+                    INSERT INTO historical_intelligence_profiles (
+                        id, analysis_run_id, account_id, display_name, designation,
+                        role_category, team_group, requested_history_days,
+                        actual_available_history_days, earliest_record_date, latest_record_date,
+                        total_logged_hours, active_working_days, average_logged_hours_per_active_day,
+                        median_logged_hours_per_active_day, nominal_daily_capacity_hours,
+                        observed_daily_capacity_hours, forecast_daily_capacity_hours,
+                        current_active_tasks_count, current_queue_inferred_remaining_hours,
+                        capacity_difference_hours, workload_pressure_level,
+                        workload_pressure_explanation, data_quality_json,
+                        investigation_signals_json, profile_json, calculated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        display_name = excluded.display_name,
+                        designation = excluded.designation,
+                        role_category = excluded.role_category,
+                        team_group = excluded.team_group,
+                        actual_available_history_days = excluded.actual_available_history_days,
+                        total_logged_hours = excluded.total_logged_hours,
+                        active_working_days = excluded.active_working_days,
+                        workload_pressure_level = excluded.workload_pressure_level,
+                        workload_pressure_explanation = excluded.workload_pressure_explanation,
+                        data_quality_json = excluded.data_quality_json,
+                        investigation_signals_json = excluded.investigation_signals_json,
+                        profile_json = excluded.profile_json,
+                        calculated_at = excluded.calculated_at
+                    """,
+                    (
+                        rec_id,
+                        run_id,
+                        acc_id,
+                        p_dict["display_name"],
+                        p_dict.get("designation"),
+                        p_dict.get("role_category"),
+                        p_dict.get("team_group"),
+                        p_dict.get("requested_history_days", 365),
+                        p_dict.get("actual_available_history_days", 0),
+                        p_dict.get("earliest_record_date"),
+                        p_dict.get("latest_record_date"),
+                        p_dict.get("total_logged_hours", 0.0),
+                        p_dict.get("active_working_days", 0),
+                        p_dict.get("average_logged_hours_per_active_day", 0.0),
+                        p_dict.get("median_logged_hours_per_active_day", 0.0),
+                        p_dict.get("nominal_daily_capacity_hours", 6.75),
+                        p_dict.get("observed_daily_capacity_hours", 6.75),
+                        p_dict.get("forecast_daily_capacity_hours", 6.75),
+                        p_dict.get("current_active_tasks_count", 0),
+                        p_dict.get("current_queue_inferred_remaining_hours", 0.0),
+                        p_dict.get("capacity_difference_hours", 0.0),
+                        p_dict.get("workload_pressure", {}).get("pressure_level", "UNKNOWN"),
+                        p_dict.get("workload_pressure", {}).get("explanation", ""),
+                        json.dumps(p_dict.get("data_quality", {})),
+                        json.dumps(p_dict.get("investigation_signals", [])),
+                        json.dumps(p_dict),
+                        calc_at,
+                    ),
+                )
+
+                # 2. Task Mix
+                tm = p_dict.get("task_mix", {})
+                conn.execute(
+                    """
+                    INSERT INTO historical_task_mix (
+                        id, analysis_run_id, account_id, total_tasks, subtask_count,
+                        primary_task_nature, primary_issue_type,
+                        issue_type_distribution_json, task_nature_distribution_json,
+                        complexity_distribution_json, priority_distribution_json,
+                        project_distribution_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        total_tasks = excluded.total_tasks,
+                        subtask_count = excluded.subtask_count,
+                        primary_task_nature = excluded.primary_task_nature,
+                        primary_issue_type = excluded.primary_issue_type,
+                        issue_type_distribution_json = excluded.issue_type_distribution_json,
+                        task_nature_distribution_json = excluded.task_nature_distribution_json,
+                        complexity_distribution_json = excluded.complexity_distribution_json,
+                        priority_distribution_json = excluded.priority_distribution_json,
+                        project_distribution_json = excluded.project_distribution_json
+                    """,
+                    (
+                        rec_id,
+                        run_id,
+                        acc_id,
+                        tm.get("total_tasks", 0),
+                        tm.get("subtask_count", 0),
+                        tm.get("primary_task_nature", "UNKNOWN"),
+                        tm.get("primary_issue_type", "Unknown"),
+                        json.dumps(tm.get("issue_type_distribution", [])),
+                        json.dumps(tm.get("task_nature_distribution", [])),
+                        json.dumps(tm.get("complexity_distribution", [])),
+                        json.dumps(tm.get("priority_distribution", [])),
+                        json.dumps(tm.get("project_distribution", [])),
+                        calc_at,
+                    ),
+                )
+
+                # 3. Effort Benchmarks
+                benchmarks = p_dict.get("effort_benchmarks", [])
+                for b in benchmarks:
+                    b_id = f"{run_id}:{acc_id}:{b.get('segmentation_tier')}:{b.get('segment_key')}"
+                    conn.execute(
+                        """
+                        INSERT INTO historical_effort_benchmarks (
+                            id, analysis_run_id, account_id, segmentation_tier,
+                            segment_type, segment_key, sample_count, mean_hours,
+                            median_hours, p25_hours, p75_hours, min_hours, max_hours,
+                            stddev_hours, confidence, is_fallback, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                            sample_count = excluded.sample_count,
+                            mean_hours = excluded.mean_hours,
+                            median_hours = excluded.median_hours,
+                            p25_hours = excluded.p25_hours,
+                            p75_hours = excluded.p75_hours,
+                            min_hours = excluded.min_hours,
+                            max_hours = excluded.max_hours,
+                            stddev_hours = excluded.stddev_hours,
+                            confidence = excluded.confidence,
+                            is_fallback = excluded.is_fallback
+                        """,
+                        (
+                            b_id,
+                            run_id,
+                            acc_id,
+                            b.get("segmentation_tier", "1"),
+                            b.get("segment_type", "employee"),
+                            b.get("segment_key", "overall"),
+                            b.get("sample_count", 0),
+                            b.get("mean_hours", 0.0),
+                            b.get("median_hours", 0.0),
+                            b.get("p25_hours", 0.0),
+                            b.get("p75_hours", 0.0),
+                            b.get("min_hours", 0.0),
+                            b.get("max_hours", 0.0),
+                            b.get("stddev_hours", 0.0),
+                            b.get("confidence", "LOW"),
+                            1 if b.get("is_fallback") else 0,
+                            calc_at,
+                        ),
+                    )
+
+                # 4. Trends
+                trends = p_dict.get("trends", {})
+                trend_metrics = [
+                    "logged_hours_trend",
+                    "completed_tasks_trend",
+                    "active_queue_trend",
+                    "expected_workload_trend",
+                    "complexity_trend",
+                    "reopen_rate_trend",
+                    "overdue_rate_trend",
+                    "blocker_hours_trend",
+                    "capacity_pressure_trend",
+                ]
+                for tm_name in trend_metrics:
+                    t_item = trends.get(tm_name)
+                    if t_item:
+                        t_id = f"{run_id}:{acc_id}:{t_item.get('metric_name', tm_name)}"
+                        conn.execute(
+                            """
+                            INSERT INTO historical_trends (
+                                id, analysis_run_id, account_id, metric_name,
+                                value_30d, value_90d, value_180d, value_365d,
+                                direction, explanation, created_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(id) DO UPDATE SET
+                                value_30d = excluded.value_30d,
+                                value_90d = excluded.value_90d,
+                                value_180d = excluded.value_180d,
+                                value_365d = excluded.value_365d,
+                                direction = excluded.direction,
+                                explanation = excluded.explanation
+                            """,
+                            (
+                                t_id,
+                                run_id,
+                                acc_id,
+                                t_item.get("metric_name", tm_name),
+                                t_item.get("value_30d", 0.0),
+                                t_item.get("value_90d", 0.0),
+                                t_item.get("value_180d", 0.0),
+                                t_item.get("value_365d", 0.0),
+                                t_item.get("direction", "INSUFFICIENT_DATA"),
+                                t_item.get("explanation", ""),
+                                calc_at,
+                            ),
+                        )
+
+                # 5. Workload Snapshot
+                wp = p_dict.get("workload_pressure", {})
+                pb = p_dict.get("personal_baseline", {})
+                conn.execute(
+                    """
+                    INSERT INTO historical_workload_snapshots (
+                        id, analysis_run_id, account_id, pressure_level,
+                        active_tasks_count, inferred_remaining_workload_hours,
+                        forecast_capacity_hours, capacity_difference_hours,
+                        tasks_due_within_7_days, high_complexity_tasks_count,
+                        active_blockers_count, explanation, baselines_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        pressure_level = excluded.pressure_level,
+                        active_tasks_count = excluded.active_tasks_count,
+                        inferred_remaining_workload_hours = excluded.inferred_remaining_workload_hours,
+                        forecast_capacity_hours = excluded.forecast_capacity_hours,
+                        capacity_difference_hours = excluded.capacity_difference_hours,
+                        tasks_due_within_7_days = excluded.tasks_due_within_7_days,
+                        high_complexity_tasks_count = excluded.high_complexity_tasks_count,
+                        active_blockers_count = excluded.active_blockers_count,
+                        explanation = excluded.explanation,
+                        baselines_json = excluded.baselines_json
+                    """,
+                    (
+                        rec_id,
+                        run_id,
+                        acc_id,
+                        wp.get("pressure_level", "UNKNOWN"),
+                        wp.get("active_tasks_count", 0),
+                        wp.get("inferred_remaining_workload_hours", 0.0),
+                        wp.get("forecast_capacity_hours", 0.0),
+                        wp.get("capacity_difference_hours", 0.0),
+                        wp.get("tasks_due_within_7_days", 0),
+                        wp.get("high_complexity_tasks_count", 0),
+                        wp.get("active_blockers_count", 0),
+                        wp.get("explanation", ""),
+                        json.dumps(pb),
+                        calc_at,
+                    ),
+                )
+
+                # 6. Delivery Context
+                dc = p_dict.get("delivery_context", {})
+                bh = p_dict.get("blocker_history", {})
+                rr = p_dict.get("review_rework", {})
+                conn.execute(
+                    """
+                    INSERT INTO historical_delivery_context (
+                        id, analysis_run_id, account_id, total_completed_tasks,
+                        completed_before_due_date, completed_on_due_date,
+                        completed_after_due_date, currently_overdue,
+                        tasks_without_due_date, due_date_coverage_percent,
+                        average_days_late, correlated_blocker_count,
+                        correlated_missing_estimates_count, total_blocker_events,
+                        total_blocked_hours, reopened_tasks_count,
+                        total_reopen_events, rework_reasons_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        total_completed_tasks = excluded.total_completed_tasks,
+                        completed_before_due_date = excluded.completed_before_due_date,
+                        completed_on_due_date = excluded.completed_on_due_date,
+                        completed_after_due_date = excluded.completed_after_due_date,
+                        currently_overdue = excluded.currently_overdue,
+                        tasks_without_due_date = excluded.tasks_without_due_date,
+                        due_date_coverage_percent = excluded.due_date_coverage_percent,
+                        average_days_late = excluded.average_days_late,
+                        correlated_blocker_count = excluded.correlated_blocker_count,
+                        correlated_missing_estimates_count = excluded.correlated_missing_estimates_count,
+                        total_blocker_events = excluded.total_blocker_events,
+                        total_blocked_hours = excluded.total_blocked_hours,
+                        reopened_tasks_count = excluded.reopened_tasks_count,
+                        total_reopen_events = excluded.total_reopen_events,
+                        rework_reasons_json = excluded.rework_reasons_json
+                    """,
+                    (
+                        rec_id,
+                        run_id,
+                        acc_id,
+                        dc.get("total_completed_tasks", 0),
+                        dc.get("completed_before_due_date", 0),
+                        dc.get("completed_on_due_date", 0),
+                        dc.get("completed_after_due_date", 0),
+                        dc.get("currently_overdue", 0),
+                        dc.get("tasks_without_due_date", 0),
+                        dc.get("due_date_coverage_percent", 0.0),
+                        dc.get("average_days_late", 0.0),
+                        dc.get("correlated_blocker_count", 0),
+                        dc.get("correlated_missing_estimates_count", 0),
+                        bh.get("total_blocker_events", 0),
+                        bh.get("total_blocked_hours", 0.0),
+                        rr.get("reopened_tasks_count", 0),
+                        rr.get("total_reopen_events", 0),
+                        json.dumps(rr.get("rework_reasons_breakdown", {})),
+                        calc_at,
+                    ),
+                )
+
+    def save_evidence_records(self, records: List[Any]) -> None:
+        """Persist immutable historical evidence records."""
+        if not records:
+            return
+
+        now_str = utc_now_iso()
+        with self.mgr.session() as conn:
+            for r in records:
+                r_dict = r.model_dump() if hasattr(r, "model_dump") else (r.dict() if hasattr(r, "dict") else r)
+                conn.execute(
+                    """
+                    INSERT INTO historical_evidence (
+                        id, evidence_id, analysis_run_id, account_id, issue_key,
+                        evidence_type, metric, value, comparison_baseline,
+                        source, confidence, timestamp, explanation, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(evidence_id) DO NOTHING
+                    """,
+                    (
+                        r_dict["evidence_id"],
+                        r_dict["evidence_id"],
+                        r_dict["analysis_run_id"],
+                        r_dict["account_id"],
+                        r_dict.get("issue_key"),
+                        r_dict["evidence_type"],
+                        r_dict["metric"],
+                        r_dict.get("value"),
+                        r_dict.get("comparison_baseline"),
+                        r_dict["source"],
+                        r_dict.get("confidence", "MEDIUM"),
+                        r_dict.get("timestamp", now_str),
+                        r_dict["explanation"],
+                        now_str,
+                    ),
+                )
+
+    def get_latest_run_id(self) -> Optional[str]:
+        """Get the most recent analysis run ID."""
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                "SELECT analysis_run_id FROM historical_intelligence_profiles ORDER BY calculated_at DESC LIMIT 1"
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
+
+    def get_profile(self, account_id: str, run_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Retrieve full AI-ready HistoricalIntelligenceProfile dictionary for an employee."""
+        with self.mgr.session() as conn:
+            if run_id:
+                cursor = conn.execute(
+                    "SELECT * FROM historical_intelligence_profiles WHERE account_id = ? AND analysis_run_id = ?",
+                    (account_id, run_id),
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT * FROM historical_intelligence_profiles WHERE account_id = ? ORDER BY calculated_at DESC LIMIT 1",
+                    (account_id,),
+                )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            if d.get("profile_json"):
+                try:
+                    return json.loads(d["profile_json"])
+                except Exception:
+                    pass
+            return d
+
+    def list_profiles(
+        self,
+        run_id: Optional[str] = None,
+        team_group: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """List profile summaries."""
+        target_run_id = run_id or self.get_latest_run_id()
+        if not target_run_id:
+            return []
+
+        with self.mgr.session() as conn:
+            query = "SELECT * FROM historical_intelligence_profiles WHERE analysis_run_id = ?"
+            params: List[Any] = [target_run_id]
+            if team_group:
+                query += " AND team_group = ?"
+                params.append(team_group)
+            query += " ORDER BY display_name ASC LIMIT ?"
+            params.append(limit)
+
+            cursor = conn.execute(query, tuple(params))
+            rows = cursor.fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                if d.get("profile_json"):
+                    try:
+                        out.append(json.loads(d["profile_json"]))
+                        continue
+                    except Exception:
+                        pass
+                out.append(d)
+            return out
+
+    def get_task_mix(self, account_id: str, run_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Retrieve task mix profile for an employee."""
+        target_run_id = run_id or self.get_latest_run_id()
+        if not target_run_id:
+            return None
+
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM historical_task_mix WHERE account_id = ? AND analysis_run_id = ?",
+                (account_id, target_run_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            for jkey in [
+                "issue_type_distribution_json",
+                "task_nature_distribution_json",
+                "complexity_distribution_json",
+                "priority_distribution_json",
+                "project_distribution_json",
+            ]:
+                clean_key = jkey.replace("_json", "")
+                if d.get(jkey):
+                    try:
+                        d[clean_key] = json.loads(d[jkey])
+                    except Exception:
+                        d[clean_key] = []
+            return d
+
+    def get_effort_benchmarks(
+        self,
+        account_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        segment_type: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve effort benchmarks."""
+        target_run_id = run_id or self.get_latest_run_id()
+        if not target_run_id:
+            return []
+
+        with self.mgr.session() as conn:
+            query = "SELECT * FROM historical_effort_benchmarks WHERE analysis_run_id = ?"
+            params: List[Any] = [target_run_id]
+            if account_id:
+                query += " AND (account_id = ? OR account_id IS NULL)"
+                params.append(account_id)
+            if segment_type:
+                query += " AND segment_type = ?"
+                params.append(segment_type)
+            query += " ORDER BY segmentation_tier ASC"
+
+            cursor = conn.execute(query, tuple(params))
+            return [dict(r) for r in cursor.fetchall()]
+
+    def get_trends(self, account_id: str, run_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Retrieve rolling trend metrics for an employee."""
+        target_run_id = run_id or self.get_latest_run_id()
+        if not target_run_id:
+            return []
+
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM historical_trends WHERE account_id = ? AND analysis_run_id = ? ORDER BY metric_name ASC",
+                (account_id, target_run_id),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def get_evidence_records(
+        self,
+        account_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        evidence_type: Optional[str] = None,
+        issue_key: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve immutable evidence records."""
+        with self.mgr.session() as conn:
+            query = "SELECT * FROM historical_evidence WHERE 1=1"
+            params: List[Any] = []
+            if run_id:
+                query += " AND analysis_run_id = ?"
+                params.append(run_id)
+            if account_id:
+                query += " AND account_id = ?"
+                params.append(account_id)
+            if evidence_type:
+                query += " AND evidence_type = ?"
+                params.append(evidence_type)
+            if issue_key:
+                query += " AND issue_key = ?"
+                params.append(issue_key)
+            query += " ORDER BY created_at DESC LIMIT ?"
+            params.append(limit)
+
+            cursor = conn.execute(query, tuple(params))
+            return [dict(r) for r in cursor.fetchall()]

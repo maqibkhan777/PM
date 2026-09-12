@@ -60,6 +60,60 @@ class RoleCategory(str, Enum):
     UNKNOWN = "Unknown"
 
 
+class JiraIssueState(BaseModel):
+    """Local projection of a Jira issue state."""
+    issue_key: str = Field(default="UNKNOWN", alias="jira_issue_key")
+    summary: Optional[str] = None
+    status: str = "Unknown"
+    status_category: Optional[str] = None
+    assignee: Optional[str] = None
+    assignee_account_id: Optional[str] = None
+    assignee_display_name: Optional[str] = None
+    priority: Optional[str] = "Medium"
+    due_date: Optional[str] = None
+    updated_at: Optional[str] = None
+    created_at: Optional[str] = None
+    resolved_at: Optional[str] = None
+    project_key: Optional[str] = None
+    issue_type: Optional[str] = "Task"
+    description: Optional[str] = None
+    original_estimate_hours: Optional[float] = None
+    time_spent_seconds: Optional[int] = 0
+    complexity_score: Optional[int] = 3
+    complexity_band: Optional[str] = None
+    task_nature: Optional[str] = None
+    reopen_count: Optional[int] = 0
+    blocker_events_count: Optional[int] = 0
+    blocked_seconds: Optional[int] = 0
+    blocker_hours: Optional[float] = 0.0
+    components: List[str] = Field(default_factory=list)
+    labels: List[str] = Field(default_factory=list)
+    team_group: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+
+class JiraWorklog(BaseModel):
+    """Local projection of a Jira worklog."""
+    worklog_id: Optional[str] = None
+    jira_issue_key: Optional[str] = None
+    jira_issue_id: Optional[str] = None
+    author_account_id: Optional[str] = None
+    author_display_name: Optional[str] = None
+    time_spent_seconds: int = 0
+    started_at: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    comment: Optional[str] = None
+    team_group: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+
 class EmployeeRoleAssignment(BaseModel):
     """Authoritative SQLite employee designation and role category assignment."""
     id: str

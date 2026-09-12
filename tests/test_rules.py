@@ -70,8 +70,10 @@ def test_active_work_rule_does_not_trigger_on_in_progress():
 
 def test_stale_task_rule_triggers_on_inactivity():
     """Rule 2: If task is 'In Progress' and inactive >24h -> Discord alert + Mattermost DM."""
-    prev = settings.STALE_TASK_NOTIFY_PM
+    prev_pm = settings.STALE_TASK_NOTIFY_PM
+    prev_assignee = settings.STALE_TASK_NOTIFY_ASSIGNEE
     settings.STALE_TASK_NOTIFY_PM = True
+    settings.STALE_TASK_NOTIFY_ASSIGNEE = True
     try:
         rule = StaleTaskRule(configuration={"threshold_hours": 24})
         event = StaleTask(
@@ -90,7 +92,8 @@ def test_stale_task_rule_triggers_on_inactivity():
         assert action_types["discord"] == ActionType.SEND_NOTIFICATION
         assert action_types["mattermost"] == ActionType.SEND_MESSAGE
     finally:
-        settings.STALE_TASK_NOTIFY_PM = prev
+        settings.STALE_TASK_NOTIFY_PM = prev_pm
+        settings.STALE_TASK_NOTIFY_ASSIGNEE = prev_assignee
 
 
 def test_overdue_rule_triggers_on_past_due():

@@ -422,6 +422,181 @@ CREATE TABLE IF NOT EXISTS performance_validation_reports (
 
 CREATE INDEX IF NOT EXISTS idx_perf_val_run ON performance_validation_reports(analysis_run_id);
 CREATE INDEX IF NOT EXISTS idx_perf_val_team ON performance_validation_reports(team_group);
+
+-- Phase B v1.1 Historical Intelligence & Evidence Tables
+
+-- 1. Historical Intelligence Profiles (AI-ready comprehensive snapshot)
+CREATE TABLE IF NOT EXISTS historical_intelligence_profiles (
+    id TEXT PRIMARY KEY,
+    analysis_run_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    designation TEXT,
+    role_category TEXT,
+    team_group TEXT,
+    requested_history_days INTEGER NOT NULL DEFAULT 365,
+    actual_available_history_days INTEGER NOT NULL DEFAULT 0,
+    earliest_record_date TEXT,
+    latest_record_date TEXT,
+    total_logged_hours REAL NOT NULL DEFAULT 0.0,
+    active_working_days INTEGER NOT NULL DEFAULT 0,
+    average_logged_hours_per_active_day REAL NOT NULL DEFAULT 0.0,
+    median_logged_hours_per_active_day REAL NOT NULL DEFAULT 0.0,
+    nominal_daily_capacity_hours REAL NOT NULL DEFAULT 6.75,
+    observed_daily_capacity_hours REAL NOT NULL DEFAULT 6.75,
+    forecast_daily_capacity_hours REAL NOT NULL DEFAULT 6.75,
+    current_active_tasks_count INTEGER NOT NULL DEFAULT 0,
+    current_queue_inferred_remaining_hours REAL NOT NULL DEFAULT 0.0,
+    capacity_difference_hours REAL NOT NULL DEFAULT 0.0,
+    workload_pressure_level TEXT NOT NULL DEFAULT 'UNKNOWN',
+    workload_pressure_explanation TEXT,
+    data_quality_json TEXT,
+    investigation_signals_json TEXT,
+    profile_json TEXT NOT NULL,
+    calculated_at TEXT NOT NULL,
+    UNIQUE(analysis_run_id, account_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_hist_prof_acc ON historical_intelligence_profiles(account_id);
+CREATE INDEX IF NOT EXISTS idx_hist_prof_run ON historical_intelligence_profiles(analysis_run_id);
+CREATE INDEX IF NOT EXISTS idx_hist_prof_team ON historical_intelligence_profiles(team_group);
+
+-- 2. Historical Task Mix
+CREATE TABLE IF NOT EXISTS historical_task_mix (
+    id TEXT PRIMARY KEY,
+    analysis_run_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    total_tasks INTEGER NOT NULL DEFAULT 0,
+    subtask_count INTEGER NOT NULL DEFAULT 0,
+    primary_task_nature TEXT NOT NULL DEFAULT 'UNKNOWN',
+    primary_issue_type TEXT NOT NULL DEFAULT 'Unknown',
+    issue_type_distribution_json TEXT,
+    task_nature_distribution_json TEXT,
+    complexity_distribution_json TEXT,
+    priority_distribution_json TEXT,
+    project_distribution_json TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(analysis_run_id, account_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_hist_mix_acc ON historical_task_mix(account_id);
+CREATE INDEX IF NOT EXISTS idx_hist_mix_run ON historical_task_mix(analysis_run_id);
+
+-- 3. Historical Effort Benchmarks (11 segmentations)
+CREATE TABLE IF NOT EXISTS historical_effort_benchmarks (
+    id TEXT PRIMARY KEY,
+    analysis_run_id TEXT NOT NULL,
+    account_id TEXT,
+    segmentation_tier TEXT NOT NULL,
+    segment_type TEXT NOT NULL,
+    segment_key TEXT NOT NULL,
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    mean_hours REAL NOT NULL DEFAULT 0.0,
+    median_hours REAL NOT NULL DEFAULT 0.0,
+    p25_hours REAL NOT NULL DEFAULT 0.0,
+    p75_hours REAL NOT NULL DEFAULT 0.0,
+    min_hours REAL NOT NULL DEFAULT 0.0,
+    max_hours REAL NOT NULL DEFAULT 0.0,
+    stddev_hours REAL NOT NULL DEFAULT 0.0,
+    confidence TEXT NOT NULL DEFAULT 'LOW',
+    is_fallback INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_hist_bench_acc ON historical_effort_benchmarks(account_id, segment_type, segment_key);
+CREATE INDEX IF NOT EXISTS idx_hist_bench_run ON historical_effort_benchmarks(analysis_run_id);
+CREATE INDEX IF NOT EXISTS idx_hist_bench_tier ON historical_effort_benchmarks(segmentation_tier);
+
+-- 4. Historical Trends (30d / 90d / 180d / 365d)
+CREATE TABLE IF NOT EXISTS historical_trends (
+    id TEXT PRIMARY KEY,
+    analysis_run_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    metric_name TEXT NOT NULL,
+    value_30d REAL NOT NULL DEFAULT 0.0,
+    value_90d REAL NOT NULL DEFAULT 0.0,
+    value_180d REAL NOT NULL DEFAULT 0.0,
+    value_365d REAL NOT NULL DEFAULT 0.0,
+    direction TEXT NOT NULL DEFAULT 'INSUFFICIENT_DATA',
+    explanation TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(analysis_run_id, account_id, metric_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_hist_trends_acc ON historical_trends(account_id);
+CREATE INDEX IF NOT EXISTS idx_hist_trends_run ON historical_trends(analysis_run_id);
+
+-- 5. Historical Workload Snapshots
+CREATE TABLE IF NOT EXISTS historical_workload_snapshots (
+    id TEXT PRIMARY KEY,
+    analysis_run_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    pressure_level TEXT NOT NULL DEFAULT 'UNKNOWN',
+    active_tasks_count INTEGER NOT NULL DEFAULT 0,
+    inferred_remaining_workload_hours REAL NOT NULL DEFAULT 0.0,
+    forecast_capacity_hours REAL NOT NULL DEFAULT 0.0,
+    capacity_difference_hours REAL NOT NULL DEFAULT 0.0,
+    tasks_due_within_7_days INTEGER NOT NULL DEFAULT 0,
+    high_complexity_tasks_count INTEGER NOT NULL DEFAULT 0,
+    active_blockers_count INTEGER NOT NULL DEFAULT 0,
+    explanation TEXT,
+    baselines_json TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(analysis_run_id, account_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_hist_workload_acc ON historical_workload_snapshots(account_id);
+CREATE INDEX IF NOT EXISTS idx_hist_workload_run ON historical_workload_snapshots(analysis_run_id);
+
+-- 6. Historical Delivery Context
+CREATE TABLE IF NOT EXISTS historical_delivery_context (
+    id TEXT PRIMARY KEY,
+    analysis_run_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    total_completed_tasks INTEGER NOT NULL DEFAULT 0,
+    completed_before_due_date INTEGER NOT NULL DEFAULT 0,
+    completed_on_due_date INTEGER NOT NULL DEFAULT 0,
+    completed_after_due_date INTEGER NOT NULL DEFAULT 0,
+    currently_overdue INTEGER NOT NULL DEFAULT 0,
+    tasks_without_due_date INTEGER NOT NULL DEFAULT 0,
+    due_date_coverage_percent REAL NOT NULL DEFAULT 0.0,
+    average_days_late REAL NOT NULL DEFAULT 0.0,
+    correlated_blocker_count INTEGER NOT NULL DEFAULT 0,
+    correlated_missing_estimates_count INTEGER NOT NULL DEFAULT 0,
+    total_blocker_events INTEGER NOT NULL DEFAULT 0,
+    total_blocked_hours REAL NOT NULL DEFAULT 0.0,
+    reopened_tasks_count INTEGER NOT NULL DEFAULT 0,
+    total_reopen_events INTEGER NOT NULL DEFAULT 0,
+    rework_reasons_json TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(analysis_run_id, account_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_hist_deliv_acc ON historical_delivery_context(account_id);
+CREATE INDEX IF NOT EXISTS idx_hist_deliv_run ON historical_delivery_context(analysis_run_id);
+
+-- 7. Historical Evidence (Expanded immutable evidence ledger)
+CREATE TABLE IF NOT EXISTS historical_evidence (
+    id TEXT PRIMARY KEY,
+    evidence_id TEXT NOT NULL UNIQUE,
+    analysis_run_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    issue_key TEXT,
+    evidence_type TEXT NOT NULL,
+    metric TEXT NOT NULL,
+    value REAL,
+    comparison_baseline TEXT,
+    source TEXT NOT NULL,
+    confidence TEXT NOT NULL DEFAULT 'MEDIUM',
+    timestamp TEXT NOT NULL,
+    explanation TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_hist_ev_acc ON historical_evidence(account_id);
+CREATE INDEX IF NOT EXISTS idx_hist_ev_run ON historical_evidence(analysis_run_id);
+CREATE INDEX IF NOT EXISTS idx_hist_ev_type ON historical_evidence(evidence_type);
+CREATE INDEX IF NOT EXISTS idx_hist_ev_key ON historical_evidence(issue_key);
 """
 
 
@@ -770,6 +945,18 @@ def _ensure_post_migration_indexes(conn) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_emp_role_cat ON employee_role_assignments(role_category)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hist_prof_acc ON historical_intelligence_profiles(account_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hist_prof_run ON historical_intelligence_profiles(analysis_run_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hist_ev_acc ON historical_evidence(account_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hist_ev_run ON historical_evidence(analysis_run_id)"
     )
 
 

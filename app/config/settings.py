@@ -242,6 +242,11 @@ class Settings(BaseSettings):
             if x.strip()
         }
 
+    @property
+    def CANONICAL_EXCLUDED_ACCOUNT_IDS(self) -> Set[str]:
+        """Property returning canonical excluded account IDs."""
+        return self.get_canonical_excluded_account_ids()
+
     def get_daily_worklog_excluded_account_ids(self) -> Set[str]:
         """Alias to canonical excluded account IDs for backward compatibility."""
         return self.get_canonical_excluded_account_ids()
