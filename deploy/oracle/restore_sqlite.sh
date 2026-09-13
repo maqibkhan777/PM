@@ -12,6 +12,8 @@ if [ "$#" -ne 1 ]; then
 fi
 
 INPUT_BACKUP="$1"
+REPO_DIR="${REPO_DIR:-/opt/pm/repository}"
+COMPOSE_FILE="${COMPOSE_FILE:-${REPO_DIR}/docker-compose.yml}"
 DATA_DIR="${DATA_DIR:-/opt/pm/data}"
 TARGET_DB="${DATA_DIR}/pm_operations.db"
 TEMP_RESTORE_DIR=$(mktemp -d)
@@ -51,7 +53,7 @@ else:
 
 # Stop container if running
 echo "[INFO] Ensuring PM container is temporarily paused during database swap..."
-docker compose stop pm-agent || true
+docker compose -f "${COMPOSE_FILE}" stop pm-agent || true
 
 # Preserve existing DB as safety rollback
 if [ -f "${TARGET_DB}" ]; then
@@ -65,9 +67,10 @@ fi
 echo "[INFO] Installing restored database to ${TARGET_DB}..."
 cp "${RESTORE_SRC}" "${TARGET_DB}"
 chmod 644 "${TARGET_DB}"
+chown 10001:10001 "${TARGET_DB}"
 
 # Restart container
 echo "[INFO] Restarting PM Agent service..."
-docker compose up -d pm-agent
+docker compose -f "${COMPOSE_FILE}" up -d pm-agent
 
 echo "[SUCCESS] Restore completed successfully."

@@ -14,7 +14,7 @@ services:
     
     # Secure runtime environment injection from local protected file (/opt/pm/.env)
     env_file:
-      - .env
+      - /opt/pm/.env
       
     environment:
       - APP_ENV=production
@@ -30,7 +30,7 @@ services:
       
     # Persistent SQLite database storage mapping to host filesystem
     volumes:
-      - ./data:/app/data
+      - /opt/pm/data:/app/data
       
     # Security hardening
     security_opt:

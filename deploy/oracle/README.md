@@ -83,6 +83,7 @@ Create the standard production directory structure under `/opt/pm`:
 ```bash
 sudo mkdir -p /opt/pm/data /opt/pm/backups
 sudo chown -R $USER:$USER /opt/pm
+sudo chown -R 10001:10001 /opt/pm/data
 cd /opt/pm
 
 # Clone repository
