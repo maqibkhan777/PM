@@ -128,11 +128,11 @@ async def test_jira_polling_does_not_send_discord_overdue_notifications(temp_db)
 
 
 # ==============================================================================
-# Requirement 3 & 17 & 18: The 09:00 scheduler generates the overdue digest in Asia/Karachi
+# Requirement 3 & 17 & 18: The 08:40 scheduler generates the overdue digest in Asia/Karachi
 # ==============================================================================
 @pytest.mark.asyncio
-async def test_scheduler_0900_generates_overdue_digest(temp_db):
-    """PeriodicScheduler evaluates and generates overdue digest at 09:00 Asia/Karachi."""
+async def test_scheduler_0840_generates_overdue_digest(temp_db):
+    """PeriodicScheduler evaluates and generates overdue digest at 08:40 Asia/Karachi."""
     repo = JiraIssueStateRepository(temp_db)
     repo.upsert(
         jira_issue_key="WPEP-1592",
@@ -145,16 +145,16 @@ async def test_scheduler_0900_generates_overdue_digest(temp_db):
 
     scheduler = PeriodicScheduler(manager=temp_db)
 
-    # Set config to enabled, 09:00, Asia/Karachi
+    # Set config to enabled, 08:40, Asia/Karachi
     prev_enabled = settings.OVERDUE_DIGEST_ENABLED
     prev_time = settings.OVERDUE_DIGEST_TIME
     prev_tz = settings.OVERDUE_DIGEST_TIMEZONE
     settings.OVERDUE_DIGEST_ENABLED = True
-    settings.OVERDUE_DIGEST_TIME = "09:00"
+    settings.OVERDUE_DIGEST_TIME = "08:40"
     settings.OVERDUE_DIGEST_TIMEZONE = "Asia/Karachi"
 
-    # Mock datetime.now to 09:05 Asia/Karachi
-    mock_now = datetime.datetime(2026, 9, 10, 9, 5, tzinfo=zoneinfo.ZoneInfo("Asia/Karachi"))
+    # Mock datetime.now to 08:45 Asia/Karachi
+    mock_now = datetime.datetime(2026, 9, 10, 8, 45, tzinfo=zoneinfo.ZoneInfo("Asia/Karachi"))
 
     try:
         with patch("app.services.scheduler.datetime") as mock_dt, \
@@ -202,7 +202,7 @@ async def test_multiple_overdue_tickets_produce_exactly_one_discord_message(temp
     assert len(dispatched) == 1
     action = dispatched[0]
     assert action.target_system == "discord"
-    assert "🚨" in action.parameters.get("title", "")
+    assert "📋" in action.parameters.get("title", "")
     assert "Mursaleen Cluster — Overdue Tasks" in action.parameters.get("title", "")
 
 
@@ -259,23 +259,25 @@ def test_each_ticket_is_hyperlinked_to_jira_issue():
     base_url = settings.JIRA_BASE_URL.rstrip("/")
     report_data = {
         "team_name": "Mursaleen Cluster",
-        "formatted_date": "September 10, 2026",
+        "date": "2026-09-10",
         "tickets": [
             {
                 "key": "WPEP-1592",
+                "assignee": "Ali Developer",
                 "url": f"{base_url}/browse/WPEP-1592",
-                "due_date": "Sep 08, 2026",
-                "updated_at": "Sep 10, 2026",
+                "due_date": "2026-09-08",
+                "updated_at": "2026-09-10 08:30",
             }
         ],
     }
     embed = DiscordFormatter.format_overdue_digest(report_data)
     desc = embed["embeds"][0]["description"]
 
-    # Verify link syntax in description
-    assert "Open 1 Overdue Tasks in Jira" in desc
-    assert "https://objectsws.atlassian.net" in desc
-
+    # Verify clickable Jira markdown link syntax in description
+    assert f"[{report_data['tickets'][0]['key']}]({base_url}/browse/WPEP-1592)" in desc
+    assert "Ali Developer" in desc
+    assert "2026-09-08" in desc
+    assert "2026-09-10 08:30" in desc
 
 
 # ==============================================================================
@@ -283,7 +285,7 @@ def test_each_ticket_is_hyperlinked_to_jira_issue():
 # ==============================================================================
 @pytest.mark.asyncio
 async def test_due_date_and_last_updated_formatting(temp_db, overdue_generator):
-    """Due Date and Last Updated are formatted as '%b %d, %Y' using Jira's actual timestamps."""
+    """Due Date is formatted as 'YYYY-MM-DD' and Last Updated as 'YYYY-MM-DD HH:MM'."""
     repo = JiraIssueStateRepository(temp_db)
     repo.upsert(
         jira_issue_key="HFCF-757",
@@ -298,8 +300,8 @@ async def test_due_date_and_last_updated_formatting(temp_db, overdue_generator):
     assert digest["overdue_count"] == 1
     ticket = digest["tickets"][0]
 
-    assert ticket["due_date"] == "Sep 05, 2026"
-    assert ticket["updated_at"] == "Sep 08, 2026"
+    assert ticket["due_date"] == "2026-09-05"
+    assert ticket["updated_at"] == "2026-09-08 14:22"
 
 
 # ==============================================================================
@@ -326,34 +328,34 @@ async def test_digest_includes_summary_and_assignee(temp_db, overdue_generator):
     # Verify summary and assignee are included in ticket dictionary
     assert t["summary"] == "Payment Gateway Timeout"
     assert t["assignee"] == "Sara QA"
-    assert t["due_date"] == "Sep 01, 2026"
+    assert t["due_date"] == "2026-09-01"
 
     embed = DiscordFormatter.format_overdue_digest(digest)
     desc = embed["embeds"][0]["description"]
-    assert "Payment Gateway Timeout" in desc
     assert "Sara QA" in desc
-    assert "Summary" in desc
+    assert "Ticket" in desc
     assert "Assignee" in desc
-
+    assert "Due Date" in desc
+    assert "Last Updated" in desc
 
 
 # ==============================================================================
-# Requirement 11: Multiple polls or scheduler cycles before 09:00 do not send digest
+# Requirement 11: Multiple polls or scheduler cycles before 08:40 do not send digest
 # ==============================================================================
 @pytest.mark.asyncio
-async def test_polls_before_0900_do_not_send_digest(temp_db):
-    """Cycles before 09:00 AM do not send the digest."""
+async def test_polls_before_0840_do_not_send_digest(temp_db):
+    """Cycles before 08:40 AM do not send the digest."""
     scheduler = PeriodicScheduler(manager=temp_db)
 
     prev_enabled = settings.OVERDUE_DIGEST_ENABLED
     prev_time = settings.OVERDUE_DIGEST_TIME
     prev_tz = settings.OVERDUE_DIGEST_TIMEZONE
     settings.OVERDUE_DIGEST_ENABLED = True
-    settings.OVERDUE_DIGEST_TIME = "09:00"
+    settings.OVERDUE_DIGEST_TIME = "08:40"
     settings.OVERDUE_DIGEST_TIMEZONE = "Asia/Karachi"
 
-    # Mock time at 08:45 AM Asia/Karachi
-    mock_early = datetime.datetime(2026, 9, 10, 8, 45, tzinfo=zoneinfo.ZoneInfo("Asia/Karachi"))
+    # Mock time at 08:35 AM Asia/Karachi
+    mock_early = datetime.datetime(2026, 9, 10, 8, 35, tzinfo=zoneinfo.ZoneInfo("Asia/Karachi"))
 
     try:
         with patch("app.services.scheduler.datetime") as mock_dt:
@@ -401,19 +403,20 @@ async def test_daily_idempotency_and_restart_persistence(temp_db):
 # ==============================================================================
 @pytest.mark.asyncio
 async def test_no_overdue_tasks_produces_single_concise_message(temp_db, overdue_generator):
-    """When zero overdue tasks exist, send 'No overdue tasks.' with green embed and no table."""
+    """When zero overdue tasks exist, send 'No overdue tasks found.' with green embed and no table."""
     digest = overdue_generator.generate_digest(target_date="2026-09-10")
     assert digest["overdue_count"] == 0
 
     embed = DiscordFormatter.format_overdue_digest(digest)
     embed_obj = embed["embeds"][0]
 
-    assert embed_obj["title"] == f"✅ {settings.JIRA_TEAM_GROUP} — Overdue Tasks"
+    assert embed_obj["title"] == f"📋 {settings.JIRA_TEAM_GROUP} — Overdue Tasks"
     assert embed_obj["color"] == COLOR_GREEN
-    assert "No overdue tasks." in embed_obj["description"]
-    assert "**Date:** September 10, 2026" in embed_obj["description"]
+    assert "No overdue tasks found." in embed_obj["description"]
+    assert "**Date:** 2026-09-10" in embed_obj["description"]
     # No markdown table syntax in description
     assert "| Ticket |" not in embed_obj["description"]
+
 
 
 # ==============================================================================

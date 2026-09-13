@@ -19,7 +19,14 @@ class TaskCreated(BaseEvent):
     assignee_name: Optional[str] = None
     reporter_id: Optional[str] = None
     reporter_name: Optional[str] = None
+    creator_id: Optional[str] = None
+    creator_name: Optional[str] = None
+    creator_email: Optional[str] = None
+    issue_type: Optional[str] = None
+    issue_type_id: Optional[str] = None
     due_date: Optional[str] = None
+    created_at: Optional[str] = None
+    is_initial_sync: bool = False
 
 
 class TaskUpdated(BaseEvent):

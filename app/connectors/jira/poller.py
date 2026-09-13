@@ -98,6 +98,9 @@ class JiraPoller:
 
         # 1. Determine query time window
         checkpoint_iso = self.polling_state_repo.get_checkpoint("jira")
+        is_initial_sync = checkpoint_iso is None
+        checkpoint_dt = parse_iso_datetime(checkpoint_iso) if checkpoint_iso else None
+
         if checkpoint_iso:
             last_poll_dt = parse_iso_datetime(checkpoint_iso) or now_dt
             lookback_delta = datetime.timedelta(minutes=settings.JIRA_POLLING_LOOKBACK_MINUTES)
@@ -111,7 +114,7 @@ class JiraPoller:
         jql_time_str = query_start_dt.strftime("%Y-%m-%d %H:%M")
         team_group = settings.JIRA_TEAM_GROUP.strip()
         jql = f'updated >= "{jql_time_str}" AND assignee in membersOf("{team_group}") ORDER BY updated ASC'
-        logger.info(f"Jira polling scope: assignee in membersOf(\"{team_group}\")")
+        logger.info(f"Jira polling scope: assignee in membersOf(\"{team_group}\") (is_initial_sync={is_initial_sync})")
 
         issues_scanned = 0
         events_generated = 0
@@ -137,7 +140,12 @@ class JiraPoller:
 
                 for issue in issues:
                     issues_scanned += 1
-                    gen, dups = await self._process_issue(issue, query_start_dt)
+                    gen, dups = await self._process_issue(
+                        issue=issue,
+                        query_start_dt=query_start_dt,
+                        is_initial_sync=is_initial_sync,
+                        checkpoint_dt=checkpoint_dt
+                    )
                     events_generated += gen
                     duplicates_skipped += dups
 
@@ -176,7 +184,9 @@ class JiraPoller:
     async def _process_issue(
         self,
         issue: Dict[str, Any],
-        query_start_dt: datetime.datetime
+        query_start_dt: datetime.datetime,
+        is_initial_sync: bool = False,
+        checkpoint_dt: Optional[datetime.datetime] = None,
     ) -> Tuple[int, int]:
         """Detect changes on an issue, emit normalized events, and update state projection."""
         from app.services.orchestrator import orchestrator
@@ -197,6 +207,11 @@ class JiraPoller:
         created_str = fields.get("created")
         project_obj = fields.get("project", {})
         project_key = project_obj.get("key")
+        issuetype_obj = fields.get("issuetype") or {}
+        creator_obj = fields.get("creator") or fields.get("reporter") or {}
+        creator_acc_id = creator_obj.get("accountId") or creator_obj.get("name")
+        creator_disp_name = creator_obj.get("displayName") or creator_obj.get("name")
+        creator_mail = creator_obj.get("emailAddress")
 
         now_str = utc_now_iso()
         cached_state = self.issue_state_repo.get(task_key)
@@ -214,17 +229,18 @@ class JiraPoller:
 
         if cached_state is None:
             # First time seeing this issue
-            # Check if this issue was recently created
+            # If not in bootstrap/initial sync and created_dt is after the live checkpoint, emit TaskCreated
             created_dt = parse_iso_datetime(created_str) if created_str else None
-            if created_dt and created_dt >= query_start_dt:
+            # Emit TaskCreated ONLY if this is a live creation relative to the known checkpoint
+            if not is_initial_sync and created_dt and checkpoint_dt and created_dt >= checkpoint_dt:
                 ext_id = f"jira:{task_key}:created"
                 event = TaskCreated(
                     source="jira",
                     external_event_id=ext_id,
                     timestamp=created_str or now_str,
-                    actor_id=fields.get("creator", {}).get("accountId") or fields.get("reporter", {}).get("accountId"),
-                    actor_name=fields.get("creator", {}).get("displayName") or fields.get("reporter", {}).get("displayName"),
-                    actor_email=fields.get("creator", {}).get("emailAddress"),
+                    actor_id=creator_acc_id,
+                    actor_name=creator_disp_name,
+                    actor_email=creator_mail,
                     project_id=project_obj.get("id"),
                     project_key=project_key,
                     task_id=issue.get("id"),
@@ -237,7 +253,14 @@ class JiraPoller:
                     assignee_name=assignee_name,
                     reporter_id=fields.get("reporter", {}).get("accountId"),
                     reporter_name=fields.get("reporter", {}).get("displayName"),
+                    creator_id=creator_acc_id,
+                    creator_name=creator_disp_name,
+                    creator_email=creator_mail,
+                    issue_type=issuetype_obj.get("name", "Task"),
+                    issue_type_id=str(issuetype_obj.get("id")) if issuetype_obj.get("id") else None,
                     due_date=duedate,
+                    created_at=created_str,
+                    is_initial_sync=is_initial_sync,
                     payload=event_payload
                 )
                 events_to_emit.append(event)

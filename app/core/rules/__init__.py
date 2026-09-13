@@ -10,6 +10,7 @@ from app.core.rules.builtin import (
     CommentNotificationRule,
     AssignmentRule,
 )
+from app.core.rules.mubashir_support_rule import MubashirSupportRule
 from app.core.rules.engine import RulesEngine, rules_engine
 
 __all__ = [
@@ -21,6 +22,8 @@ __all__ = [
     "ReopenedRule",
     "CommentNotificationRule",
     "AssignmentRule",
+    "MubashirSupportRule",
     "RulesEngine",
     "rules_engine",
 ]
+

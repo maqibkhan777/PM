@@ -31,11 +31,11 @@ def build_pm_slash_command_schema() -> Dict[str, Any]:
     """Construct the official Discord Application Command schema for /pm."""
     return {
         "name": "pm",
-        "description": "PM Operations Agent management and status commands",
+        "description": "PM Operations Agent management and reporting commands",
         "options": [
             {
                 "name": "help",
-                "description": "Show available PM commands and usage",
+                "description": "Display help message with all available PM commands",
                 "type": 1,
             },
             {
@@ -48,6 +48,121 @@ def build_pm_slash_command_schema() -> Dict[str, Any]:
                         "description": "Jira ticket key (e.g. WSSS-326)",
                         "type": 3,
                         "required": True,
+                    }
+                ],
+            },
+            {
+                "name": "report",
+                "description": "Generate and display a PM report on demand",
+                "type": 1,
+                "options": [
+                    {
+                        "name": "name",
+                        "description": "Report name to generate",
+                        "type": 3,
+                        "required": True,
+                        "choices": [
+                            {"name": "overdue", "value": "overdue"},
+                            {"name": "worklog", "value": "worklog"},
+                            {"name": "attention", "value": "attention"},
+                            {"name": "activity", "value": "activity"},
+                            {"name": "queue", "value": "queue"},
+                        ],
+                    },
+                    {
+                        "name": "user",
+                        "description": "Optional resource display name, email, or account ID",
+                        "type": 3,
+                        "required": False,
+                    },
+                    {
+                        "name": "date",
+                        "description": "Target date in YYYY-MM-DD format (optional)",
+                        "type": 3,
+                        "required": False,
+                    },
+                ],
+            },
+            {
+                "name": "worklog",
+                "description": "Get daily team or resource worklog report on demand",
+                "type": 1,
+                "options": [
+                    {
+                        "name": "user",
+                        "description": "Optional resource display name, email, or account ID",
+                        "type": 3,
+                        "required": False,
+                    },
+                    {
+                        "name": "date",
+                        "description": "Target date in YYYY-MM-DD format (optional)",
+                        "type": 3,
+                        "required": False,
+                    }
+                ],
+            },
+            {
+                "name": "overdue",
+                "description": "Get overdue tasks report on demand",
+                "type": 1,
+                "options": [
+                    {
+                        "name": "user",
+                        "description": "Optional resource display name, email, or account ID",
+                        "type": 3,
+                        "required": False,
+                    },
+                    {
+                        "name": "date",
+                        "description": "Target date in YYYY-MM-DD format (optional)",
+                        "type": 3,
+                        "required": False,
+                    }
+                ],
+            },
+            {
+                "name": "queue",
+                "description": "Get active Jira queue for a specific resource",
+                "type": 1,
+                "options": [
+                    {
+                        "name": "user",
+                        "description": "Target resource display name, email, or account ID",
+                        "type": 3,
+                        "required": True,
+                    },
+                    {
+                        "name": "date",
+                        "description": "Target date in YYYY-MM-DD format (optional)",
+                        "type": 3,
+                        "required": False,
+                    }
+                ],
+            },
+            {
+                "name": "attention",
+                "description": "Get PM Attention Digest on demand",
+                "type": 1,
+                "options": [
+                    {
+                        "name": "date",
+                        "description": "Target date in YYYY-MM-DD format (optional)",
+                        "type": 3,
+                        "required": False,
+                    }
+                ],
+            },
+            {
+                "name": "activity",
+                "description": "Get Daily PM Activity Report on demand",
+                "type": 1,
+                "options": [
+                    {
+                        "name": "date",
+                        "description": "Target date in YYYY-MM-DD format (optional)",
+                        "type": 3,
+                        "required": False,
                     }
                 ],
             },
@@ -124,6 +239,24 @@ def build_pm_slash_command_schema() -> Dict[str, Any]:
                         "description": "Task summary/title",
                         "type": 3,
                         "required": True,
+                    },
+                    {
+                        "name": "description",
+                        "description": "Task description (optional)",
+                        "type": 3,
+                        "required": False,
+                    },
+                    {
+                        "name": "assignee",
+                        "description": "Assignee display name, account ID, or 'me' (optional)",
+                        "type": 3,
+                        "required": False,
+                    },
+                    {
+                        "name": "comment",
+                        "description": "Initial comment to add after ticket creation (optional)",
+                        "type": 3,
+                        "required": False,
                     },
                 ],
             },
@@ -316,12 +449,19 @@ class DiscordGatewayClient:
 
     async def send_deferred_acknowledgement(self, interaction_id: str, interaction_token: str) -> bool:
         """Immediately acknowledge interaction with Type 5 (DEFERRED_CHANNEL_MESSAGE) to prevent timeout."""
+        if not interaction_id or not interaction_token:
+            return False
         url = f"{DISCORD_API_BASE}/interactions/{interaction_id}/{interaction_token}/callback"
         payload = {"type": INTERACTION_RESPONSE_TYPE_DEFERRED_CHANNEL_MESSAGE}
+        # Interaction callbacks are authenticated via interaction token in URL
+        headers = {"Content-Type": "application/json"}
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                res = await client.post(url, headers=self._get_auth_headers(), json=payload)
-                return res.status_code in (200, 204)
+                res = await client.post(url, headers=headers, json=payload)
+                if res.status_code in (200, 204):
+                    return True
+                logger.warning(f"Discord deferred acknowledgment returned HTTP {res.status_code}: {res.text}")
+                return False
         except Exception as e:
             logger.warning(f"Error sending deferred interaction acknowledgment: {e}")
             return False
@@ -333,12 +473,24 @@ class DiscordGatewayClient:
             logger.warning("Cannot update deferred response: DISCORD_APPLICATION_ID is not configured.")
             return False
 
+        if not interaction_token:
+            return False
+
         url = f"{DISCORD_API_BASE}/webhooks/{app_id}/{interaction_token}/messages/@original"
-        payload = {"content": content}
+        # Ensure message does not exceed Discord's 2000 character limit
+        safe_content = content or "*(No output)*"
+        if len(safe_content) > 2000:
+            safe_content = safe_content[:1950] + "\n\n... *(output truncated)*"
+
+        payload = {"content": safe_content}
+        headers = {"Content-Type": "application/json"}
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                res = await client.patch(url, headers=self._get_auth_headers(), json=payload)
-                return res.status_code in (200, 204)
+                res = await client.patch(url, headers=headers, json=payload)
+                if res.status_code in (200, 204):
+                    return True
+                logger.error(f"Error patching deferred Discord interaction response: HTTP {res.status_code} - {res.text}")
+                return False
         except Exception as e:
             logger.error(f"Error updating deferred Discord interaction response: {e}")
             return False
@@ -548,13 +700,18 @@ class DiscordGatewayClient:
             await self.send_deferred_acknowledgement(interaction_id, interaction_token)
 
             # 2. Extract options and execute subcommand via DiscordSlashCommandHandler
-            subcommand, options = self.slash_handler.parse_interaction_options(data.get("options"))
-            response_text = await self.slash_handler.execute_subcommand(
-                subcommand=subcommand,
-                options=options,
-                discord_user_id=discord_user_id,
-                channel_id=channel_id,
-            )
+            response_text = ""
+            try:
+                subcommand, options = self.slash_handler.parse_interaction_options(data.get("options"))
+                response_text = await self.slash_handler.execute_subcommand(
+                    subcommand=subcommand,
+                    options=options,
+                    discord_user_id=discord_user_id,
+                    channel_id=channel_id,
+                )
+            except Exception as e:
+                logger.error(f"Unhandled error executing /pm slash command in gateway client: {e}", exc_info=True)
+                response_text = "❌ An unexpected error occurred while processing your request."
 
             # 3. Patch the deferred original message with the final result
             await self.update_deferred_response(interaction_token, response_text)

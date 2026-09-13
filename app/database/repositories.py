@@ -954,6 +954,65 @@ class JiraIssueStateRepository:
                 results.append(d)
             return results
 
+    def get_active_issues_for_resource(
+        self,
+        account_id: str,
+        display_name: Optional[str] = None,
+        team_group: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve active assigned issues for a specific resource, matching canonical Active Queue criteria."""
+        from app.core.performance.roles import get_account_aliases
+
+        aliases = get_account_aliases(account_id) if account_id else []
+        if not aliases and account_id:
+            aliases = [account_id]
+
+        done_clause = "lower(status) NOT IN ('done', 'completed', 'resolved', 'closed', 'finished', 'cancelled', 'rejected')"
+
+        with self.mgr.session() as conn:
+            match_clauses = []
+            params = []
+            if aliases:
+                placeholders = ", ".join("?" for _ in aliases)
+                match_clauses.append(f"assignee IN ({placeholders})")
+                params.extend(aliases)
+            if display_name and display_name not in aliases:
+                match_clauses.append("assignee = ?")
+                params.append(display_name)
+
+            if not match_clauses:
+                return []
+
+            user_clause = f"({' OR '.join(match_clauses)})"
+            if team_group:
+                query = f"""
+                    SELECT * FROM jira_issue_state
+                    WHERE {done_clause}
+                      AND {user_clause}
+                      AND team_group = ?
+                    ORDER BY due_date ASC, updated_at DESC, jira_issue_key ASC
+                """
+                params.append(team_group)
+            else:
+                query = f"""
+                    SELECT * FROM jira_issue_state
+                    WHERE {done_clause}
+                      AND {user_clause}
+                    ORDER BY due_date ASC, updated_at DESC, jira_issue_key ASC
+                """
+
+            cursor = conn.execute(query, params)
+            results = []
+            for row in cursor.fetchall():
+                d = dict(row)
+                if d.get("raw_reference"):
+                    try:
+                        d["raw_reference"] = json.loads(d["raw_reference"])
+                    except Exception:
+                        pass
+                results.append(d)
+            return results
+
     def list_all(self, limit: int = 100) -> List[Dict[str, Any]]:
         with self.mgr.session() as conn:
             cursor = conn.execute(
@@ -2610,3 +2669,86 @@ class HistoricalIntelligenceRepository:
 
             cursor = conn.execute(query, tuple(params))
             return [dict(r) for r in cursor.fetchall()]
+
+
+class PluginBoardRepository:
+    """Repository for querying the authoritative Plugin -> Board and Service Management registry."""
+
+    def __init__(self, manager: Optional[DatabaseManager] = None):
+        self.mgr = manager or db_manager
+
+    def get_all(self) -> List[Dict[str, Any]]:
+        """Retrieve all registered plugin board entries."""
+        with self.mgr.session() as conn:
+            cursor = conn.execute("SELECT * FROM plugin_board_registry ORDER BY sr_no ASC")
+            return [dict(r) for r in cursor.fetchall()]
+
+    def get_by_plugin_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Look up registry entry by plugin name (exact or case-insensitive)."""
+        if not name:
+            return None
+        clean_name = name.strip().lower()
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM plugin_board_registry WHERE LOWER(plugin_name) = ? LIMIT 1",
+                (clean_name,)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_by_project_key(self, project_key: str) -> List[Dict[str, Any]]:
+        """Find entries matching a project key across internal, support, or service management boards."""
+        if not project_key:
+            return []
+        key = project_key.strip().upper()
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                """
+                SELECT * FROM plugin_board_registry
+                WHERE internal_project_key = ?
+                   OR support_project_key = ?
+                   OR service_management_project_key = ?
+                ORDER BY sr_no ASC
+                """,
+                (key, key, key),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def is_service_management_project(self, project_key: str) -> bool:
+        """Check if a project key corresponds to an authoritative Service Management board."""
+        if not project_key:
+            return False
+        key = project_key.strip().upper()
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                "SELECT 1 FROM plugin_board_registry WHERE service_management_project_key = ? LIMIT 1",
+                (key,),
+            )
+            return cursor.fetchone() is not None
+
+    def get_service_management_project_keys(self) -> List[str]:
+        """Retrieve all unique configured Service Management project keys."""
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                """
+                SELECT DISTINCT service_management_project_key
+                FROM plugin_board_registry
+                WHERE service_management_project_key IS NOT NULL
+                ORDER BY service_management_project_key ASC
+                """
+            )
+            return [row[0] for row in cursor.fetchall() if row[0]]
+
+    def get_internal_support_project_keys(self) -> List[str]:
+        """Retrieve all unique configured internal support project keys."""
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                """
+                SELECT DISTINCT support_project_key
+                FROM plugin_board_registry
+                WHERE support_project_key IS NOT NULL
+                ORDER BY support_project_key ASC
+                """
+            )
+            return [row[0] for row in cursor.fetchall() if row[0]]
+

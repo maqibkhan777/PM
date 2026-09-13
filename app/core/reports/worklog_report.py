@@ -389,6 +389,103 @@ class DailyWorklogReportGenerator:
             "action_result": res.model_dump()
         }
 
+    async def generate_user_worklog_report(
+        self,
+        account_id: str,
+        display_name: Optional[str] = None,
+        target_date: Optional[str] = None,
+        sync_jira: bool = True,
+    ) -> Dict[str, Any]:
+        """Generate individual-resource worklog metrics for a specific date (YYYY-MM-DD)."""
+        date_str = resolve_report_date(target_date)
+        formatted_date = format_date_human(date_str)
+        team_group = settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else "Team"
+        excluded_ids: Set[str] = settings.get_daily_worklog_excluded_account_ids()
+
+        if account_id in excluded_ids or settings.is_canonical_excluded(account_id, display_name):
+            return {
+                "account_id": account_id,
+                "display_name": display_name or account_id,
+                "date": date_str,
+                "formatted_date": formatted_date,
+                "total_time_seconds": 0,
+                "total_time_human": "0m",
+                "tickets": [],
+                "is_excluded": True,
+            }
+
+        if sync_jira:
+            try:
+                await self.sync_jira_worklogs_for_date(date_str)
+            except Exception as e:
+                logger.warning(f"Could not sync Jira worklogs for user report on {date_str}: {e}")
+
+        worklogs = self.worklog_repo.get_worklogs_for_date(
+            date_str,
+            team_group=team_group if settings.is_jira_team_group_configured() else None
+        )
+
+        from app.core.performance.roles import get_account_aliases
+        aliases = set(get_account_aliases(account_id)) if account_id else set()
+        if account_id:
+            aliases.add(account_id)
+
+        user_ticket_stats: Dict[str, Dict[str, Any]] = defaultdict(
+            lambda: {"seconds": 0, "worklogs_count": 0, "summary": ""}
+        )
+        total_seconds = 0
+
+        for w in worklogs:
+            raw_author_id = w.get("author_account_id")
+            author_name = w.get("author_display_name") or raw_author_id or "Unknown"
+
+            # Check matching user
+            can_id = resolve_canonical_account_id(raw_author_id, display_name=author_name) or raw_author_id
+            is_match = (
+                (can_id and can_id in aliases)
+                or (raw_author_id and raw_author_id in aliases)
+                or (display_name and author_name.strip().lower() == display_name.strip().lower())
+            )
+            if not is_match:
+                continue
+
+            time_secs = int(w.get("time_spent_seconds", 0))
+            tkey = w.get("jira_issue_key")
+            if not tkey:
+                continue
+
+            total_seconds += time_secs
+            user_ticket_stats[tkey]["seconds"] += time_secs
+            user_ticket_stats[tkey]["worklogs_count"] += 1
+            if not user_ticket_stats[tkey]["summary"]:
+                cached_issue = self.issue_state_repo.get(tkey)
+                if cached_issue:
+                    user_ticket_stats[tkey]["summary"] = cached_issue.get("summary") or ""
+
+        tickets_list = [
+            {
+                "key": tkey,
+                "summary": tval["summary"],
+                "url": settings.get_jira_browse_url(tkey),
+                "time_logged_seconds": tval["seconds"],
+                "time_logged_human": format_seconds(tval["seconds"]),
+                "worklogs_count": tval["worklogs_count"],
+            }
+            for tkey, tval in sorted(user_ticket_stats.items(), key=lambda x: x[1]["seconds"], reverse=True)
+        ]
+
+        return {
+            "account_id": account_id,
+            "display_name": display_name or account_id,
+            "date": date_str,
+            "formatted_date": formatted_date,
+            "total_time_seconds": total_seconds,
+            "total_time_human": format_seconds(total_seconds),
+            "tickets_count": len(tickets_list),
+            "tickets": tickets_list,
+            "is_excluded": False,
+        }
+
 
 # Global instance
 daily_worklog_report_generator = DailyWorklogReportGenerator()

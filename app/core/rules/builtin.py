@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 from app.core.rules.base import BaseRule
 from app.core.events.base import BaseEvent
 from app.core.events.types import (
+    TaskCreated,
     TaskCommentAdded,
     TaskWorklogged,
     TaskStatusChanged,
@@ -18,6 +19,10 @@ from app.core.actions.base import BaseAction
 from app.core.actions.types import (
     create_send_notification_action,
     create_send_message_action,
+)
+from app.core.rules.ticket_creation_policy import (
+    TicketCreationPolicy,
+    TicketCreationDecision,
 )
 from app.connectors.discord.formatter import DiscordFormatter
 from app.services.notification_deduplication import notification_dedup_service
@@ -648,6 +653,113 @@ class AssignmentRule(BaseRule):
             condition=condition_key
         )
 
+        return [notif_action]
+
+
+class TicketCreationRule(BaseRule):
+    """Rule 8: Instant Jira Ticket Creation Monitoring.
+
+    Observes Jira issue creation events, evaluates authoritative PM creation policy,
+    and dispatches policy-aware visual Discord notifications with dark pink/red accent.
+    """
+
+    def __init__(self, enabled: bool = True, configuration: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            name="TicketCreation",
+            description="Monitors Jira ticket creation events and dispatches policy-aware alerts to PM.",
+            enabled=enabled,
+            configuration=configuration or {}
+        )
+
+    def evaluate(self, event: BaseEvent, context: Optional[Dict[str, Any]] = None) -> List[BaseAction]:
+        if not self.enabled:
+            return []
+
+        if not settings.TICKET_CREATION_NOTIFY_PM:
+            return []
+
+        if not isinstance(event, TaskCreated):
+            return []
+
+        # Prevent historical import / bootstrap floods
+        if getattr(event, "is_initial_sync", False):
+            return []
+
+        task_key = event.task_key or event.task_id or "Unknown"
+        dedup_condition = "TicketCreated"
+
+        # Check idempotency / deduplication
+        if not notification_dedup_service.should_notify(
+            rule_id=self.name,
+            target_id=task_key,
+            condition=dedup_condition
+        ):
+            return []
+
+        # Evaluate policy
+        creator_id = getattr(event, "creator_id", None) or event.actor_id
+        creator_name = getattr(event, "creator_name", None) or event.actor_name
+        creator_email = getattr(event, "creator_email", None) or getattr(event, "actor_email", None)
+        raw_payload = getattr(event, "payload", {})
+        creator_acc_type = None
+        if isinstance(raw_payload, dict):
+            creator_acc_type = raw_payload.get("user", {}).get("accountType") or raw_payload.get("issue", {}).get("fields", {}).get("creator", {}).get("accountType")
+
+        issue_type = getattr(event, "issue_type", None) or "Task"
+        issue_type_id = getattr(event, "issue_type_id", None)
+        project_key = event.project_key or "N/A"
+        summary = event.title or "Untitled"
+        created_at = getattr(event, "created_at", None) or event.timestamp
+
+        decision, reason, can_id, resolved_creator_name = TicketCreationPolicy.evaluate(
+            creator_account_id=creator_id,
+            creator_display_name=creator_name,
+            creator_email=creator_email,
+            creator_account_type=creator_acc_type,
+            issue_type=issue_type,
+            issue_type_id=issue_type_id,
+            project_key=project_key,
+            raw_payload=raw_payload,
+        )
+
+        # Silently ignore excluded / bot identities
+        if decision == TicketCreationDecision.IGNORE:
+            return []
+
+        # Build Discord visual embed
+        embed_payload = DiscordFormatter.format_ticket_creation_notification(
+            task_key=task_key,
+            summary=summary,
+            creator_name=resolved_creator_name or creator_name or "Unknown Jira User",
+            issue_type=issue_type,
+            project_key=project_key,
+            created_at=created_at,
+            policy_classification=decision.value,
+            policy_reason=reason,
+        )
+
+        title = f"🚨 Ticket Created — {decision.value.title()}" if decision == TicketCreationDecision.EXPECTED else "⚠️ Ticket Created — Review"
+        level = "SUCCESS" if decision == TicketCreationDecision.EXPECTED else "WARNING"
+
+        notif_action = create_send_notification_action(
+            target_system="discord",
+            channel=settings.PM_DISCORD_CHANNEL,
+            title=title,
+            message=f"Ticket {task_key} created by {resolved_creator_name or creator_name}: {reason}",
+            level=level,
+            fields=embed_payload.get("embeds", [{}])[0].get("fields"),
+            requested_by=self.name
+        )
+        notif_action.parameters["embeds"] = embed_payload.get("embeds")
+
+        # Record notification sent to maintain strict idempotency
+        notification_dedup_service.record_notification_sent(
+            rule_id=self.name,
+            target_id=task_key,
+            condition=dedup_condition
+        )
+
+        logger.info(f"Rule [TicketCreation] triggered on {task_key} by {resolved_creator_name} ({decision.value}: {reason})")
         return [notif_action]
 
 

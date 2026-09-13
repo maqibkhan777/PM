@@ -154,6 +154,8 @@ async def test_change_detection_new_issue(temp_db, mock_jira_client):
     with patch("app.connectors.jira.poller.settings", configured_settings), \
          patch("app.services.orchestrator.orchestrator.ingest_polled_event", side_effect=mock_ingest):
         poller = JiraPoller(client=mock_jira_client, manager=temp_db)
+        # Seed checkpoint so this is a live poll relative to checkpoint
+        poller.polling_state_repo.update_checkpoint("jira", format_iso(datetime.now(timezone.utc) - timedelta(minutes=5)))
         result = await poller.poll()
 
         assert result["events_generated"] == 1

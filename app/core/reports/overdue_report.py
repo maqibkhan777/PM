@@ -25,10 +25,10 @@ def format_date_human(date_str: str) -> str:
         return date_str
 
 
-def format_display_date(date_str: Optional[str]) -> str:
-    """Format date string into readable short date (e.g. Sep 08, 2026)."""
+def format_jira_due_date(date_str: Optional[str]) -> str:
+    """Format Jira due date into YYYY-MM-DD or return '—' if unavailable."""
     if not date_str or not str(date_str).strip():
-        return "N/A"
+        return "—"
     s = str(date_str).strip()
     dt = parse_iso_datetime(s)
     if not dt:
@@ -37,7 +37,25 @@ def format_display_date(date_str: Optional[str]) -> str:
         except Exception:
             pass
     if dt:
-        return dt.strftime("%b %d, %Y")
+        return dt.strftime("%Y-%m-%d")
+    return s[:10] if len(s) >= 10 else s
+
+
+# Alias for backward compatibility
+format_display_date = format_jira_due_date
+
+
+
+def format_jira_updated_at(date_str: Optional[str]) -> str:
+    """Format Jira updated timestamp into YYYY-MM-DD HH:MM or YYYY-MM-DD, or return '—' if unavailable."""
+    if not date_str or not str(date_str).strip():
+        return "—"
+    s = str(date_str).strip()
+    dt = parse_iso_datetime(s)
+    if dt:
+        if dt.hour or dt.minute:
+            return dt.strftime("%Y-%m-%d %H:%M")
+        return dt.strftime("%Y-%m-%d")
     return s
 
 
@@ -46,7 +64,7 @@ def resolve_digest_date(target_date: Optional[str] = None) -> str:
     if target_date and target_date.strip():
         return target_date.strip()[:10]
     try:
-        tz = zoneinfo.ZoneInfo(settings.OVERDUE_DIGEST_TIMEZONE)
+        tz = zoneinfo.ZoneInfo(settings.get_report_timezone())
         return datetime.datetime.now(tz).strftime("%Y-%m-%d")
     except Exception:
         return utc_now().strftime("%Y-%m-%d")
@@ -78,19 +96,18 @@ class DailyOverdueReportGenerator:
             due_date_raw = item.get("due_date")
             updated_at_raw = item.get("updated_at")
             summary = item.get("summary") or "No summary"
-            assignee = item.get("assignee") or "Unassigned"
+            assignee = (item.get("assignee") or "").strip() or "—"
 
             tickets.append({
                 "key": tkey,
                 "summary": summary,
                 "assignee": assignee,
                 "url": settings.get_jira_browse_url(tkey),
-                "due_date": format_display_date(due_date_raw),
+                "due_date": format_jira_due_date(due_date_raw),
                 "due_date_raw": due_date_raw,
-                "updated_at": format_display_date(updated_at_raw),
+                "updated_at": format_jira_updated_at(updated_at_raw),
                 "updated_at_raw": updated_at_raw,
             })
-
 
         return {
             "team_name": team_group,
@@ -175,6 +192,85 @@ class DailyOverdueReportGenerator:
                 "status": status_val,
                 "action_id": getattr(action_res, "action_id", None),
             },
+        }
+
+    def generate_user_overdue_digest(
+        self,
+        account_id: str,
+        display_name: Optional[str] = None,
+        target_date: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Generate overdue task digest data for a specific individual resource."""
+        date_str = resolve_digest_date(target_date)
+        formatted_date = format_date_human(date_str)
+        team_group = settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else "Mursaleen Cluster"
+
+        if settings.is_canonical_excluded(account_id, display_name):
+            return {
+                "account_id": account_id,
+                "display_name": display_name or account_id,
+                "team_name": team_group,
+                "date": date_str,
+                "formatted_date": formatted_date,
+                "overdue_count": 0,
+                "tickets": [],
+                "is_excluded": True,
+            }
+
+        from app.core.performance.roles import get_account_aliases, resolve_canonical_account_id
+        aliases = set(get_account_aliases(account_id)) if account_id else set()
+        if account_id:
+            aliases.add(account_id)
+
+        # Single source of truth: consume existing overdue candidate logic
+        candidates = self.issue_state_repo.get_overdue_candidates(team_group=team_group)
+
+        tickets: List[Dict[str, Any]] = []
+        for item in candidates:
+            tkey = item.get("jira_issue_key")
+            if not tkey:
+                continue
+
+            assignee_raw = (item.get("assignee") or "").strip()
+            raw_ref = item.get("raw_reference")
+            assignee_acc = None
+            if isinstance(raw_ref, dict):
+                assignee_acc = raw_ref.get("fields", {}).get("assignee", {}).get("accountId")
+
+            can_assignee = resolve_canonical_account_id(assignee_acc or assignee_raw, display_name=assignee_raw) or assignee_raw
+            is_match = (
+                (can_assignee and can_assignee in aliases)
+                or (assignee_raw and assignee_raw in aliases)
+                or (assignee_acc and assignee_acc in aliases)
+                or (display_name and assignee_raw.lower() == display_name.strip().lower())
+            )
+            if not is_match:
+                continue
+
+            due_date_raw = item.get("due_date")
+            updated_at_raw = item.get("updated_at")
+            summary = item.get("summary") or "No summary"
+
+            tickets.append({
+                "key": tkey,
+                "summary": summary,
+                "assignee": display_name or assignee_raw or "—",
+                "url": settings.get_jira_browse_url(tkey),
+                "due_date": format_jira_due_date(due_date_raw),
+                "due_date_raw": due_date_raw,
+                "updated_at": format_jira_updated_at(updated_at_raw),
+                "updated_at_raw": updated_at_raw,
+            })
+
+        return {
+            "account_id": account_id,
+            "display_name": display_name or account_id,
+            "team_name": team_group,
+            "date": date_str,
+            "formatted_date": formatted_date,
+            "overdue_count": len(tickets),
+            "tickets": tickets,
+            "is_excluded": False,
         }
 
 

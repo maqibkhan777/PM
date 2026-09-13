@@ -201,6 +201,10 @@ class JiraClient:
         res = await self._request("GET", "/rest/api/3/users/search", params={"query": query})
         return res if isinstance(res, list) else []
 
+    async def get_filter(self, filter_id: str) -> Dict[str, Any]:
+        """Fetch saved Jira filter details including JQL via /rest/api/3/filter/{id}."""
+        return await self._request("GET", f"/rest/api/3/filter/{filter_id}")
+
     async def get_transitions(self, issue_key: str) -> List[Dict[str, Any]]:
         """Fetch available status transitions for an issue."""
         res = await self._request("GET", f"/rest/api/3/issue/{issue_key}/transitions")
@@ -282,10 +286,18 @@ class JiraClient:
             "issuetype": {"name": issue_type}
         }
         if description:
+            paragraphs = []
+            for line in str(description).splitlines():
+                if line.strip():
+                    paragraphs.append({"type": "paragraph", "content": [{"type": "text", "text": line}]})
+                else:
+                    paragraphs.append({"type": "paragraph", "content": []})
+            if not paragraphs:
+                paragraphs = [{"type": "paragraph", "content": [{"type": "text", "text": str(description)}]}]
             fields["description"] = {
                 "type": "doc",
                 "version": 1,
-                "content": [{"type": "paragraph", "content": [{"type": "text", "text": description}]}]
+                "content": paragraphs
             }
         if assignee:
             fields["assignee"] = {"accountId": assignee}

@@ -1,16 +1,19 @@
-"""Lightweight in-process asynchronous scheduler for evaluating time-based rules and Jira polling."""
-
 import asyncio
 from datetime import datetime
+import json
 import zoneinfo
 from typing import Any, Dict, List, Optional
 from app.core.events.types import StaleTask, OverdueTask
 from app.core.rules.engine import rules_engine
 from app.core.actions.engine import action_engine
+from app.core.actions.types import create_add_comment_action, create_send_notification_action
 from app.database.repositories import EventRepository, JiraIssueStateRepository
 from app.database.connection import db_manager, DatabaseManager
 from app.config.settings import settings
-from app.utils.time import utc_now, parse_iso_datetime, hours_between, utc_now_iso
+from app.connectors.discord.formatter import DiscordFormatter, COLOR_ATTENTION
+from app.services.notification_deduplication import notification_dedup_service
+from app.services.epic_review_service import EpicReviewService
+from app.utils.time import utc_now, parse_iso_datetime, hours_between, calculate_business_days, utc_now_iso
 from app.utils.logger import logger
 
 
@@ -167,23 +170,47 @@ class PeriodicScheduler:
         except Exception as e:
             logger.error(f"Error during Performance Foundation Analysis evaluation: {e}", exc_info=True)
 
+        # 7. Evaluate Mubashir Stale Support Tickets (3 business days threshold)
+        mubashir_stale_count = 0
+        try:
+            mubashir_actions = await self._evaluate_mubashir_stale_support_tickets()
+            mubashir_stale_count = len(mubashir_actions)
+            for act in mubashir_actions:
+                await action_engine.execute(act)
+                actions_dispatched += 1
+        except Exception as e:
+            logger.error(f"Error during Mubashir stale support ticket evaluation: {e}", exc_info=True)
+
+        # 8. Evaluate Scheduled Active Epic Review
+        epic_review_status = None
+        try:
+            epic_review_res = await self._evaluate_active_epic_review()
+            if epic_review_res:
+                epic_review_status = epic_review_res.get("status")
+        except Exception as e:
+            logger.error(f"Error during Active Epic review evaluation: {e}", exc_info=True)
+
         logger.info(
             f"Scheduler cycle complete. Evaluated: {stale_evaluated} stale, "
-            f"{overdue_evaluated} overdue. Actions dispatched: {actions_dispatched}. "
+            f"{overdue_evaluated} overdue, {mubashir_stale_count} mubashir stale. "
+            f"Actions dispatched: {actions_dispatched}. "
             f"Daily worklog status: {daily_report_status or 'idle'}, "
             f"Daily overdue status: {daily_overdue_status or 'idle'}, "
             f"Daily attention status: {daily_attention_status or 'idle'}, "
-            f"Performance analysis status: {perf_analysis_status or 'idle'}"
+            f"Performance analysis status: {perf_analysis_status or 'idle'}, "
+            f"Epic review status: {epic_review_status or 'idle'}"
         )
         return {
             "timestamp": utc_now_iso(),
             "stale_actions": stale_evaluated,
             "overdue_actions": overdue_evaluated,
+            "mubashir_stale_actions": mubashir_stale_count,
             "actions_dispatched": actions_dispatched,
             "daily_report_status": daily_report_status,
             "daily_overdue_status": daily_overdue_status,
             "daily_attention_status": daily_attention_status,
             "performance_analysis_status": perf_analysis_status,
+            "epic_review_status": epic_review_status,
         }
 
     def _sync_recent_events_to_projection(self) -> None:
@@ -278,12 +305,13 @@ class PeriodicScheduler:
         return actions
 
     async def _evaluate_daily_worklog_report(self) -> Optional[Dict[str, Any]]:
-        """Check if daily worklog report should be triggered based on scheduled time."""
+        """Check if daily worklog report should be triggered based on scheduled time (23:59 Asia/Karachi)."""
         if not settings.DAILY_WORKLOG_REPORT_ENABLED:
             return None
 
         try:
-            tz = zoneinfo.ZoneInfo(settings.DAILY_WORKLOG_REPORT_TIMEZONE)
+            tz_str = settings.DAILY_WORKLOG_REPORT_TIMEZONE or settings.get_report_timezone()
+            tz = zoneinfo.ZoneInfo(tz_str)
             now_tz = datetime.now(tz)
         except Exception:
             now_tz = datetime.now()
@@ -291,7 +319,7 @@ class PeriodicScheduler:
         today_str = now_tz.strftime("%Y-%m-%d")
         current_time_str = now_tz.strftime("%H:%M")
 
-        scheduled_time = (settings.DAILY_WORKLOG_REPORT_TIME or "18:00").strip()
+        scheduled_time = (settings.DAILY_WORKLOG_REPORT_TIME or settings.get_worklog_report_time()).strip()
         if current_time_str >= scheduled_time:
             from app.core.reports.worklog_report import DailyWorklogReportGenerator
             generator = DailyWorklogReportGenerator(manager=self.mgr)
@@ -311,12 +339,13 @@ class PeriodicScheduler:
         return None
 
     async def _evaluate_daily_overdue_digest(self) -> Optional[Dict[str, Any]]:
-        """Check if daily overdue digest should be triggered based on scheduled time."""
+        """Check if daily overdue digest should be triggered based on scheduled time (08:40 Asia/Karachi)."""
         if not settings.OVERDUE_DIGEST_ENABLED:
             return None
 
         try:
-            tz = zoneinfo.ZoneInfo(settings.OVERDUE_DIGEST_TIMEZONE)
+            tz_str = settings.OVERDUE_DIGEST_TIMEZONE or settings.get_report_timezone()
+            tz = zoneinfo.ZoneInfo(tz_str)
             now_tz = datetime.now(tz)
         except Exception:
             now_tz = datetime.now()
@@ -324,7 +353,7 @@ class PeriodicScheduler:
         today_str = now_tz.strftime("%Y-%m-%d")
         current_time_str = now_tz.strftime("%H:%M")
 
-        scheduled_time = (settings.OVERDUE_DIGEST_TIME or "09:00").strip()
+        scheduled_time = (settings.OVERDUE_DIGEST_TIME or settings.get_default_report_time()).strip()
         if current_time_str >= scheduled_time:
             from app.core.reports.overdue_report import DailyOverdueReportGenerator
             generator = DailyOverdueReportGenerator(manager=self.mgr)
@@ -344,12 +373,13 @@ class PeriodicScheduler:
         return None
 
     async def _evaluate_daily_pm_attention_digest(self) -> Optional[Dict[str, Any]]:
-        """Check if daily PM Attention Digest should be triggered based on scheduled time."""
+        """Check if daily PM Attention Digest should be triggered based on scheduled time (08:40 Asia/Karachi)."""
         if not settings.PM_ATTENTION_DIGEST_ENABLED:
             return None
 
         try:
-            tz = zoneinfo.ZoneInfo(settings.PM_ATTENTION_DIGEST_TIMEZONE)
+            tz_str = settings.PM_ATTENTION_DIGEST_TIMEZONE or settings.get_report_timezone()
+            tz = zoneinfo.ZoneInfo(tz_str)
             now_tz = datetime.now(tz)
         except Exception:
             now_tz = datetime.now()
@@ -357,7 +387,7 @@ class PeriodicScheduler:
         today_str = now_tz.strftime("%Y-%m-%d")
         current_time_str = now_tz.strftime("%H:%M")
 
-        scheduled_time = (settings.PM_ATTENTION_DIGEST_TIME or "09:00").strip()
+        scheduled_time = (settings.PM_ATTENTION_DIGEST_TIME or settings.get_default_report_time()).strip()
         if current_time_str >= scheduled_time:
             from app.core.reports.attention_report import DailyPMAttentionReportGenerator
             generator = DailyPMAttentionReportGenerator(manager=self.mgr)
@@ -397,7 +427,129 @@ class PeriodicScheduler:
         self._last_performance_analysis_at = now
         return {"status": run_res.status, "analysis_run_id": run_res.analysis_run_id}
 
+    async def _evaluate_mubashir_stale_support_tickets(self) -> List[Any]:
+        """Find internal Support tickets created by Mubashir in eligible statuses inactive for >= 3 business days."""
+        self._sync_recent_events_to_projection()
+        actions = []
+        now_tz = datetime.now(zoneinfo.ZoneInfo("Asia/Karachi"))
+
+        # Target statuses: To Do, Support team review, Awaiting client feedback
+        eligible_statuses = {"to do", "support team review", "awaiting client feedback"}
+        mubashir_account_id = "712020:e268bcd8-d981-4b4d-992d-d5694745df8b"
+
+        # Search candidates in Jira directly if client is available or local projection
+        candidate_issues: List[Dict[str, Any]] = []
+
+        # 1. Try Live Jira query if configured
+        try:
+            if settings.is_jira_configured():
+                from app.connectors.jira.client import JiraClient
+                jclient = JiraClient()
+                jql = (
+                    f'creator = "{mubashir_account_id}" '
+                    f'AND issuetype in (Support, "Support Ticket", "Customer Support", "helpdesk") '
+                    f'AND status in ("To Do", "Support team review", "Awaiting client feedback") '
+                    f'ORDER BY updated ASC'
+                )
+                res = await jclient.search_issues(jql=jql, max_results=50, fields=["summary", "status", "creator", "updated", "issuetype", "assignee"])
+                candidate_issues = res.get("issues", []) if isinstance(res, dict) else []
+        except Exception as e:
+            logger.debug(f"Live Jira search for Mubashir stale support tickets notice: {e}")
+
+        # 2. Fallback to local jira_issue_state projection cache
+        if not candidate_issues:
+            with self.mgr.session() as conn:
+                cur = conn.execute("SELECT * FROM jira_issue_state")
+                for r in cur.fetchall():
+                    d = dict(r)
+                    raw = json.loads(d["raw_reference"]) if d.get("raw_reference") else {}
+                    fields = raw.get("fields", {}) if isinstance(raw, dict) else {}
+                    creator = fields.get("creator") or raw.get("creator") or {}
+                    creator_id = creator.get("accountId") or creator.get("name") if isinstance(creator, dict) else str(creator)
+                    itype = fields.get("issuetype", {}).get("name", "") if isinstance(fields.get("issuetype"), dict) else str(raw.get("issue_type", ""))
+
+                    if creator_id == mubashir_account_id and itype.lower() in ("support", "support ticket", "customer support", "helpdesk"):
+                        st_name = d.get("status", "").strip().lower()
+                        if st_name in eligible_statuses:
+                            candidate_issues.append({
+                                "key": d["jira_issue_key"],
+                                "fields": {
+                                    "summary": d.get("summary", "Support Ticket"),
+                                    "status": {"name": d.get("status")},
+                                    "updated": d.get("last_activity_at") or d.get("updated_at"),
+                                    "creator": creator,
+                                },
+                                "last_activity_at": d.get("last_activity_at") or d.get("updated_at")
+                            })
+
+        for item in candidate_issues:
+            task_key = item.get("key")
+            fields = item.get("fields", {})
+            summary = fields.get("summary", "Support Ticket")
+            status_name = fields.get("status", {}).get("name", "Unknown") if isinstance(fields.get("status"), dict) else str(fields.get("status", "Unknown"))
+
+            if not task_key or status_name.lower() not in eligible_statuses:
+                continue
+
+            last_act_str = item.get("last_activity_at") or fields.get("updated")
+            if not last_act_str:
+                continue
+
+            last_act_dt = parse_iso_datetime(last_act_str)
+            if not last_act_dt:
+                continue
+
+            business_days = calculate_business_days(last_act_dt, now_tz, tz_name="Asia/Karachi")
+            if business_days >= 3.0:
+                # Idempotency key based on issue key and last activity timestamp
+                dedup_condition = f"mubashir_support_stale:{task_key}:{last_act_str}"
+                if not notification_dedup_service.should_notify(
+                    rule_id="MubashirStaleSupport",
+                    target_id=task_key,
+                    condition=dedup_condition
+                ):
+                    continue
+
+                comment_body = (
+                    f"[~accountid:{mubashir_account_id}] Automated Stale Update Reminder:\n"
+                    f"This Support ticket ({task_key}) has had no meaningful activity for {business_days:.1f} business days "
+                    f"(current status: **{status_name}**).\n"
+                    f"Please provide a status update or follow up with the client."
+                )
+
+                comment_action = create_add_comment_action(
+                    target_system="jira",
+                    task_key=task_key,
+                    comment_body=comment_body,
+                    task_title=summary,
+                    requested_by="MubashirStaleSupport"
+                )
+                actions.append(comment_action)
+
+                # Record deduplication
+                notification_dedup_service.record_notification_sent(
+                    rule_id="MubashirStaleSupport",
+                    target_id=task_key,
+                    condition=dedup_condition
+                )
+                logger.info(f"Generated stale update reminder for Mubashir Support ticket {task_key} ({business_days:.1f} business days inactive)")
+
+        return actions
+
+    async def _evaluate_active_epic_review(self) -> Optional[Dict[str, Any]]:
+        """Run scheduled review of active Epics assigned to or reported by PM."""
+        if not settings.is_jira_configured():
+            return None
+        try:
+            epic_service = EpicReviewService(manager=self.mgr)
+            results = await epic_service.run_review()
+            return {"status": "completed", "epics_reviewed": len(results), "details": results}
+        except Exception as e:
+            logger.error(f"Error during Active Epic review: {e}", exc_info=True)
+            return {"status": "error", "error": str(e)}
+
 
 # Global scheduler instance
 periodic_scheduler = PeriodicScheduler()
+
 

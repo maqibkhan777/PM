@@ -67,13 +67,23 @@ class Settings(BaseSettings):
     STALE_TASK_NOTIFY_PM: bool = False  # Stale detection kept, Discord notification muted
     OVERDUE_NOTIFY_PM: bool = False      # Overdue detection kept, Discord notification muted
     WORKFLOW_VIOLATION_NOTIFY_PM: bool = True
+    TICKET_CREATION_NOTIFY_PM: bool = True
     NOTIFICATION_COOLDOWN_MINUTES: int = 60
+
+    # Active Queue Filter Settings (Jira Cloud source of truth)
+    JIRA_ACTIVE_QUEUE_FILTER_ID: Optional[str] = None
+    JIRA_ACTIVE_QUEUE_JQL: Optional[str] = None
     COMMENT_NOTIFY_ALL: bool = False     # False = only notify when mentioned; customer/support replies stored silently
     ASSIGNMENT_NOTIFY_TEAM: bool = True  # True = notify on team member assignment for awareness
 
+    # Centralized Reporting Configuration (Reports v1.2)
+    REPORT_TIMEZONE: str = "Asia/Karachi"
+    REPORT_DEFAULT_TIME: str = "08:40"  # 08:40 AM PKT for all standard reports
+    WORKLOG_REPORT_TIME: str = "23:59"  # 11:59 PM PKT for Daily Worklog Report
+
     # Daily Worklog Reporting Settings
     DAILY_WORKLOG_REPORT_ENABLED: bool = True
-    DAILY_WORKLOG_REPORT_TIME: str = "18:00"  # HH:MM format
+    DAILY_WORKLOG_REPORT_TIME: str = "23:59"  # HH:MM format
     DAILY_WORKLOG_REPORT_TIMEZONE: str = "Asia/Karachi"
     DAILY_WORKLOG_REPORT_CHANNEL: str = "pm-alerts"
     DAILY_WORKLOG_EXCLUDED_ACCOUNT_IDS: str = (
@@ -86,15 +96,21 @@ class Settings(BaseSettings):
 
     # Daily Overdue Digest Settings
     OVERDUE_DIGEST_ENABLED: bool = False
-    OVERDUE_DIGEST_TIME: str = "09:00"  # HH:MM format
+    OVERDUE_DIGEST_TIME: str = "08:40"  # HH:MM format
     OVERDUE_DIGEST_TIMEZONE: str = "Asia/Karachi"
     OVERDUE_DIGEST_CHANNEL: Optional[str] = None  # None falls back to PM_DISCORD_CHANNEL
 
     # Daily PM Attention Digest Settings
     PM_ATTENTION_DIGEST_ENABLED: bool = False
-    PM_ATTENTION_DIGEST_TIME: str = "09:00"  # HH:MM format
+    PM_ATTENTION_DIGEST_TIME: str = "08:40"  # HH:MM format
     PM_ATTENTION_DIGEST_TIMEZONE: str = "Asia/Karachi"
     PM_ATTENTION_DIGEST_CHANNEL: Optional[str] = None  # None falls back to PM_DISCORD_CHANNEL
+
+    # Daily Activity Report Settings
+    DAILY_ACTIVITY_REPORT_ENABLED: bool = False
+    DAILY_ACTIVITY_REPORT_TIME: str = "08:40"  # HH:MM format
+    DAILY_ACTIVITY_REPORT_TIMEZONE: str = "Asia/Karachi"
+    DAILY_ACTIVITY_REPORT_CHANNEL: Optional[str] = None
 
     # Performance Data Foundation (Phase A v1.0)
     PERFORMANCE_ANALYSIS_ENABLED: bool = True
@@ -303,6 +319,51 @@ class Settings(BaseSettings):
                     f"configured safe fixture '{self.LIVE_QA_JIRA_ISSUE}'. "
                     f"Live mutation tests are restricted to '{self.LIVE_QA_JIRA_ISSUE}'."
                 )
+
+    def get_report_timezone(self) -> str:
+        """Get centralized report timezone."""
+        return self.REPORT_TIMEZONE or "Asia/Karachi"
+
+    def get_default_report_time(self) -> str:
+        """Get default scheduled dispatch time for standard reports (08:40 AM PKT)."""
+        return self.REPORT_DEFAULT_TIME or "08:40"
+
+    def get_worklog_report_time(self) -> str:
+        """Get scheduled dispatch time for Daily Worklog Report (11:59 PM PKT)."""
+        return self.WORKLOG_REPORT_TIME or "23:59"
+
+    def get_active_queue_jql(
+        self,
+        assignee_account_id: Optional[str] = None,
+        assignee_display_name: Optional[str] = None,
+    ) -> str:
+        """Derive the canonical Jira Active Queue JQL query, optionally parameterized for a resource.
+        
+        Preserves existing Jira Active Queue filter source of truth:
+        1. If JIRA_ACTIVE_QUEUE_FILTER_ID is set, uses saved filter constraint: filter = <id>
+        2. If JIRA_ACTIVE_QUEUE_JQL is set, uses explicit filter JQL: (<jql>)
+        3. Default canonical active queue filter: statusCategory != Done AND assignee in membersOf("<team_group>")
+        """
+        team_group = (self.JIRA_TEAM_GROUP or "").strip()
+        if self.JIRA_ACTIVE_QUEUE_FILTER_ID:
+            base_jql = f"filter = {self.JIRA_ACTIVE_QUEUE_FILTER_ID}"
+        elif self.JIRA_ACTIVE_QUEUE_JQL:
+            base_jql = f"({self.JIRA_ACTIVE_QUEUE_JQL})"
+        elif team_group:
+            base_jql = f'statusCategory != Done AND assignee in membersOf("{team_group}")'
+        else:
+            base_jql = "statusCategory != Done"
+
+        if assignee_account_id or assignee_display_name:
+            user_clauses = []
+            if assignee_account_id:
+                user_clauses.append(f'assignee = "{assignee_account_id}"')
+            if assignee_display_name and assignee_display_name != assignee_account_id:
+                user_clauses.append(f'assignee = "{assignee_display_name}"')
+            user_condition = " OR ".join(user_clauses)
+            return f"({base_jql}) AND ({user_condition}) ORDER BY duedate ASC, updated DESC"
+
+        return f"{base_jql} ORDER BY duedate ASC, updated DESC"
 
 
 # Global settings instance

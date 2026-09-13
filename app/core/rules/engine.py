@@ -10,7 +10,9 @@ from app.core.rules.builtin import (
     ReopenedRule,
     CommentNotificationRule,
     AssignmentRule,
+    TicketCreationRule,
 )
+from app.core.rules.mubashir_support_rule import MubashirSupportRule
 from app.core.events.base import BaseEvent
 from app.core.actions.base import BaseAction
 from app.database.repositories import RuleRepository
@@ -37,6 +39,8 @@ class RulesEngine:
             ReopenedRule(),
             CommentNotificationRule(),
             AssignmentRule(),
+            TicketCreationRule(),
+            MubashirSupportRule(self.mgr),
         ]
         for r in defaults:
             self.register_rule(r)

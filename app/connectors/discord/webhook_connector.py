@@ -4,7 +4,13 @@ import asyncio
 from typing import Any, Dict, Optional, Set
 import httpx
 from app.connectors.base.connector import BaseConnector
-from app.connectors.discord.formatter import DiscordFormatter, COLOR_BLUE, COLOR_RED, COLOR_AMBER, COLOR_GREEN
+from app.connectors.discord.formatter import (
+    DiscordFormatter,
+    COLOR_NOTIFICATION,
+    COLOR_OVERDUE,
+    COLOR_ATTENTION,
+    COLOR_ASSIGNMENT,
+)
 from app.core.models.enums import Capability
 from app.core.models.domain import HealthStatus
 from app.config.settings import settings
@@ -77,13 +83,13 @@ class DiscordWebhookConnector(BaseConnector):
             title = params.get("title", "PM Notification")
             desc = params.get("message") or params.get("text", "")
             level = params.get("level", "INFO").upper()
-            color = COLOR_BLUE
+            color = COLOR_NOTIFICATION
             if level in ("WARNING", "WARN"):
-                color = COLOR_AMBER
+                color = COLOR_ATTENTION
             elif level in ("ERROR", "VIOLATION"):
-                color = COLOR_RED
+                color = COLOR_OVERDUE
             elif level == "SUCCESS":
-                color = COLOR_GREEN
+                color = COLOR_ASSIGNMENT
 
             payload = DiscordFormatter.format_embed(
                 title=title,

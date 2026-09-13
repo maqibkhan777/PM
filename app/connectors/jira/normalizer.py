@@ -67,23 +67,30 @@ class JiraEventNormalizer:
         elif task_key and webhook_event:
             external_event_id = f"jira:{webhook_event}:{task_key}:{timestamp}"
 
-        # Assignee & Reporter
+        # Assignee, Reporter, Creator, IssueType
         assignee = fields.get("assignee") or {}
         reporter = fields.get("reporter") or {}
+        creator = fields.get("creator") or user or reporter or {}
         status_obj = fields.get("status") or {}
         priority_obj = fields.get("priority") or {}
+        issuetype_obj = fields.get("issuetype") or {}
 
         # ----------------------------------------------------------------------
         # 1. Issue Created
         # ----------------------------------------------------------------------
-        if webhook_event == "jira:issue_created":
+        if webhook_event in ("jira:issue_created", "issue_created"):
+            created_time = fields.get("created") or event_time
+            creator_acc_id = creator.get("accountId") or creator.get("name") or actor_id
+            creator_disp_name = creator.get("displayName") or creator.get("name") or actor_name
+            creator_mail = creator.get("emailAddress") or actor_email
+
             return TaskCreated(
                 source="jira",
                 external_event_id=external_event_id,
                 timestamp=event_time,
-                actor_id=actor_id,
-                actor_name=actor_name,
-                actor_email=actor_email,
+                actor_id=creator_acc_id,
+                actor_name=creator_disp_name,
+                actor_email=creator_mail,
                 project_id=project_id,
                 project_key=project_key,
                 task_id=task_id,
@@ -96,7 +103,13 @@ class JiraEventNormalizer:
                 assignee_name=assignee.get("displayName"),
                 reporter_id=reporter.get("accountId"),
                 reporter_name=reporter.get("displayName"),
+                creator_id=creator_acc_id,
+                creator_name=creator_disp_name,
+                creator_email=creator_mail,
+                issue_type=issuetype_obj.get("name", "Task"),
+                issue_type_id=str(issuetype_obj.get("id")) if issuetype_obj.get("id") else None,
                 due_date=fields.get("duedate"),
+                created_at=created_time,
                 payload=payload
             )
 
