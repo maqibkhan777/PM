@@ -27,6 +27,10 @@ class Settings(BaseSettings):
 
     # SQLite Database
     DB_PATH: str = "data/pm_operations.db"
+    DATABASE_PATH: Optional[str] = None  # Optional alias for DB_PATH
+
+    # API Documentation Exposure
+    DOCS_ENABLED: bool = True
 
     # Jira Cloud Connector
     JIRA_BASE_URL: str = "https://your-domain.atlassian.net"
@@ -160,9 +164,14 @@ class Settings(BaseSettings):
 
     def get_database_path(self) -> str:
         """Ensure parent directory exists and return absolute database path."""
-        db_dir = os.path.dirname(os.path.abspath(self.DB_PATH))
+        effective_path = self.DATABASE_PATH or self.DB_PATH
+        db_dir = os.path.dirname(os.path.abspath(effective_path))
         os.makedirs(db_dir, exist_ok=True)
-        return os.path.abspath(self.DB_PATH)
+        return os.path.abspath(effective_path)
+
+    def is_production(self) -> bool:
+        """Check if running in production environment."""
+        return str(self.APP_ENV).strip().lower() == "production"
 
     def is_jira_configured(self) -> bool:
         """Check if Jira credentials are meaningfully configured."""

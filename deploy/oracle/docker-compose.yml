@@ -1,0 +1,54 @@
+# ==============================================================================
+# PM Operations Agent — Oracle Always Free ARM64 Docker Compose
+# Deployment Root: /opt/pm
+# ==============================================================================
+
+services:
+  pm-agent:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: pm-operations-agent:v1.2.2
+    container_name: pm-agent
+    restart: unless-stopped
+    
+    # Secure runtime environment injection from local protected file (/opt/pm/.env)
+    env_file:
+      - .env
+      
+    environment:
+      - APP_ENV=production
+      - HOST=0.0.0.0
+      - PORT=8000
+      - DB_PATH=/app/data/pm_operations.db
+      - PYTHONUNBUFFERED=1
+      
+    # Bind port ONLY to local loopback interface (127.0.0.1) for reverse proxy (Nginx / Cloudflare)
+    # NEVER expose 0.0.0.0:8000 directly to the public internet!
+    ports:
+      - "127.0.0.1:8000:8000"
+      
+    # Persistent SQLite database storage mapping to host filesystem
+    volumes:
+      - ./data:/app/data
+      
+    # Security hardening
+    security_opt:
+      - no-new-privileges:true
+      
+    # Resource constraints tailored for Oracle Always Free ARM64 (Ampere A1)
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1024M
+        reservations:
+          memory: 256M
+          
+    # Container healthcheck
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').getcode() == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

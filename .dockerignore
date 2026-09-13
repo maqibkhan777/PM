@@ -1,0 +1,46 @@
+# Version control
+.git
+.gitignore
+
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+
+# Local databases, storage, and backups
+data/
+backups/
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Logs
+logs/
+*.log
+
+# Caches and virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+.deepeval/
+.coverage
+htmlcov/
+
+# Tests & development artifacts
+tests/
+scratch/
+qa/evidence/
+scratch_seed_gen.py
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

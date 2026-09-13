@@ -45,7 +45,10 @@ def create_app() -> FastAPI:
         title="PM Operations Agent",
         description="Local-first connector-based automation platform for Project Managers",
         version="0.1.0",
-        lifespan=lifespan
+        lifespan=lifespan,
+        docs_url="/docs" if settings.DOCS_ENABLED else None,
+        redoc_url="/redoc" if settings.DOCS_ENABLED else None,
+        openapi_url="/openapi.json" if settings.DOCS_ENABLED else None,
     )
 
     # Global Exception Handler

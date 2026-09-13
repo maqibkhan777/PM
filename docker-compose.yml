@@ -1,0 +1,39 @@
+# ==============================================================================
+# PM Operations Agent — Standard Docker Compose Configuration
+# ==============================================================================
+
+services:
+  pm-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pm-operations-agent:v1.2.2
+    container_name: pm-agent
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - APP_ENV=production
+      - HOST=0.0.0.0
+      - PORT=8000
+      - DB_PATH=/app/data/pm_operations.db
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1024M
+        reservations:
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').getcode() == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
