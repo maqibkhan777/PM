@@ -1,6 +1,7 @@
 """Domain enums for PM Operations Agent."""
 
 from enum import Enum
+from typing import Optional
 
 
 class TaskStatus(str, Enum):

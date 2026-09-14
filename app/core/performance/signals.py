@@ -5,7 +5,7 @@ Phase A must NOT generate overall performance scores, employee ratings, or PIP/r
 Only produce measurable facts, signals, confidence levels, and traceable evidence records.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from app.core.models.performance import (
     PerformanceSignal,
     PerformanceEvidence,

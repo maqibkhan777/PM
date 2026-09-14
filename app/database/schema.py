@@ -1,6 +1,6 @@
 """SQLite database schema and table initialization."""
 
-from typing import Optional
+from typing import Any, Dict, List, Optional
 from app.database.connection import db_manager, DatabaseManager
 from app.utils.logger import logger
 
