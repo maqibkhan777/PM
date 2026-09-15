@@ -118,9 +118,9 @@ class TestSlashCommandOrdering:
         assert schema["name"] == "pm"
         opt_names = [o["name"] for o in schema["options"]]
         expected = [
-            "help", "status", "report", "worklog", "overdue", "queue",
+            "help", "status", "worklog", "overdue", "queue",
             "attention", "activity", "transition", "assign", "comment",
-            "create", "update", "notify", "message"
+            "create", "update", "notify", "report", "message"
         ]
         assert opt_names == expected
         assert len(opt_names) == 15
@@ -530,7 +530,24 @@ class TestMubashirStaleSupport:
 
         actions = await scheduler._evaluate_mubashir_stale_support_tickets()
         assert len(actions) == 1
-        assert "Automated Stale Update Reminder" in actions[0].parameters["comment"]
+        comment_text = actions[0].parameters["comment"]
+        assert "This Support ticket has had no meaningful update for 3 business days." in comment_text
+        assert "Please update the ticket with the current status or next action." in comment_text
+        assert "Automated Stale Update Reminder" not in comment_text
+        assert MUBASHIR_CANONICAL_ACCOUNT_ID in comment_text
+
+        # Verify ADF translation
+        from app.connectors.jira.client import text_to_adf_doc
+        adf = text_to_adf_doc(comment_text)
+        assert adf["type"] == "doc"
+        assert len(adf["content"]) >= 2
+        # First paragraph must contain the mention node
+        p1 = adf["content"][0]
+        assert p1["type"] == "paragraph"
+        mention_node = p1["content"][0]
+        assert mention_node["type"] == "mention"
+        assert mention_node["attrs"]["id"] == MUBASHIR_CANONICAL_ACCOUNT_ID
+        assert mention_node["attrs"]["text"] == "@Mubashir Butt"
 
         # Duplicate run with same activity timestamp -> idempotent (0 actions)
         actions2 = await scheduler._evaluate_mubashir_stale_support_tickets()

@@ -52,38 +52,6 @@ def build_pm_slash_command_schema() -> Dict[str, Any]:
                 ],
             },
             {
-                "name": "report",
-                "description": "Generate and display a PM report on demand",
-                "type": 1,
-                "options": [
-                    {
-                        "name": "name",
-                        "description": "Report name to generate",
-                        "type": 3,
-                        "required": True,
-                        "choices": [
-                            {"name": "overdue", "value": "overdue"},
-                            {"name": "worklog", "value": "worklog"},
-                            {"name": "attention", "value": "attention"},
-                            {"name": "activity", "value": "activity"},
-                            {"name": "queue", "value": "queue"},
-                        ],
-                    },
-                    {
-                        "name": "user",
-                        "description": "Optional resource display name, email, or account ID",
-                        "type": 3,
-                        "required": False,
-                    },
-                    {
-                        "name": "date",
-                        "description": "Target date in YYYY-MM-DD format (optional)",
-                        "type": 3,
-                        "required": False,
-                    },
-                ],
-            },
-            {
                 "name": "worklog",
                 "description": "Get daily team or resource worklog report on demand",
                 "type": 1,
@@ -305,8 +273,40 @@ def build_pm_slash_command_schema() -> Dict[str, Any]:
                 ],
             },
             {
+                "name": "report",
+                "description": "[Deprecated] Generate a PM report on demand (use /pm <name> directly)",
+                "type": 1,
+                "options": [
+                    {
+                        "name": "name",
+                        "description": "Report name to generate",
+                        "type": 3,
+                        "required": True,
+                        "choices": [
+                            {"name": "worklog", "value": "worklog"},
+                            {"name": "overdue", "value": "overdue"},
+                            {"name": "queue", "value": "queue"},
+                            {"name": "attention", "value": "attention"},
+                            {"name": "activity", "value": "activity"},
+                        ],
+                    },
+                    {
+                        "name": "user",
+                        "description": "Optional resource display name, email, or account ID",
+                        "type": 3,
+                        "required": False,
+                    },
+                    {
+                        "name": "date",
+                        "description": "Target date in YYYY-MM-DD format (optional)",
+                        "type": 3,
+                        "required": False,
+                    },
+                ],
+            },
+            {
                 "name": "message",
-                "description": "Send a direct message to a user",
+                "description": "[Deprecated] Send a direct message to a user (use /pm notify instead)",
                 "type": 1,
                 "options": [
                     {

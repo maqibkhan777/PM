@@ -35,9 +35,8 @@ ALLOWED_UPDATE_FIELDS = {
 PM_HELP_TEXT = """**PM Commands**
 
 `/pm status <ticket>`
-`/pm report <name> [user] [date]`
-`/pm overdue [user] [date]`
 `/pm worklog [user] [date]`
+`/pm overdue [user] [date]`
 `/pm queue <user> [date]`
 `/pm attention [date]`
 `/pm activity [date]`
@@ -69,6 +68,21 @@ class DiscordSlashCommandHandler:
             return self._action_engine
         from app.core.actions.engine import action_engine
         return action_engine
+
+    def _validate_target_date(self, target_date: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+        """Validate date format (YYYY-MM-DD) and calendar validity."""
+        if not target_date or not str(target_date).strip():
+            return None, None
+        clean_date = str(target_date).strip()
+        import re
+        import datetime
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", clean_date):
+            return None, f"❌ Invalid date format '{target_date}'. Expected `YYYY-MM-DD` (e.g. `2026-09-12`)."
+        try:
+            datetime.datetime.strptime(clean_date, "%Y-%m-%d")
+        except ValueError:
+            return None, f"❌ Invalid calendar date '{target_date}'. Expected a valid date in `YYYY-MM-DD` format."
+        return clean_date, None
 
     async def resolve_jira_resource(self, user_query: str, jira_client: Optional[Any] = None) -> Tuple[Optional[str], Optional[str], str]:
         """Safely resolve a Jira user query to (account_id, display_name, status).
@@ -190,6 +204,22 @@ class DiscordSlashCommandHandler:
             return acc_id, disp_name
         return None, None
 
+    def _is_authorized_pm(self, discord_user_id: Optional[str]) -> bool:
+        """Verify whether a Discord user is permitted to execute /pm commands."""
+        if not settings.DISCORD_PM_COMMAND_ENABLED:
+            return False
+        allowed = settings.DISCORD_PM_ALLOWED_USERS.strip()
+        if not allowed or allowed == "*":
+            return True
+        allowed_list = [u.strip() for u in allowed.split(",") if u.strip()]
+        if not discord_user_id:
+            return False
+        return str(discord_user_id).strip() in allowed_list
+
+    # =========================================================================
+    # Canonical Subcommand Handlers (Single Source of Truth)
+    # =========================================================================
+
     async def handle_status_command(self, ticket: str, jira_connector: Optional[Any] = None) -> str:
         """Handle read-only /pm status command."""
         if not ticket or not ticket.strip():
@@ -213,17 +243,355 @@ class DiscordSlashCommandHandler:
                 return f"❌ Ticket {clean_ticket} not found."
             return f"❌ Could not retrieve status for {clean_ticket}: {e}"
 
-    def _is_authorized_pm(self, discord_user_id: Optional[str]) -> bool:
-        """Verify whether a Discord user is permitted to execute /pm commands."""
-        if not settings.DISCORD_PM_COMMAND_ENABLED:
-            return False
-        allowed = settings.DISCORD_PM_ALLOWED_USERS.strip()
-        if not allowed or allowed == "*":
-            return True
-        allowed_list = [u.strip() for u in allowed.split(",") if u.strip()]
-        if not discord_user_id:
-            return False
-        return str(discord_user_id).strip() in allowed_list
+    async def handle_worklog_command(
+        self,
+        user_input: Optional[str] = None,
+        target_date: Optional[str] = None
+    ) -> Union[str, Dict[str, Any]]:
+        """Handle /pm worklog command (canonical handler for team and resource worklogs)."""
+        try:
+            from app.core.reports.worklog_report import DailyWorklogReportGenerator
+            from app.connectors.discord.formatter import DiscordFormatter
+            gen = DailyWorklogReportGenerator(manager=self.mgr)
+            if user_input:
+                acc_id, disp_name, res_status = await self.resolve_jira_resource(str(user_input))
+                if res_status == "EXCLUDED":
+                    return "❌ This resource is not available for PM reporting."
+                elif res_status == "AMBIGUOUS":
+                    return "❌ Multiple users match. Please use the exact Jira display name."
+                elif res_status == "NOT_FOUND" or not acc_id:
+                    return "❌ Resource not found."
+                data = await gen.generate_user_worklog_report(account_id=acc_id, display_name=disp_name, target_date=target_date, sync_jira=False)
+                return DiscordFormatter.format_user_worklog_text(data)
+            else:
+                # On-demand: sync worklogs if Jira is active
+                try:
+                    if settings.is_jira_configured() and settings.is_jira_team_group_configured():
+                        import datetime
+                        resolved_date = target_date or datetime.datetime.now().strftime("%Y-%m-%d")
+                        await gen.sync_jira_worklogs_for_date(resolved_date)
+                except Exception as e:
+                    logger.warning(f"On-demand worklog Jira sync encountered notice: {e}")
+                data = await gen.generate_report(target_date=target_date, sync_jira=False)
+                return DiscordFormatter.format_daily_worklog_embed(data)
+        except Exception as e:
+            logger.error(f"Error generating worklog report: {e}", exc_info=True)
+            return "❌ Unable to generate the worklog report right now."
+
+    async def handle_overdue_command(
+        self,
+        user_input: Optional[str] = None,
+        target_date: Optional[str] = None
+    ) -> str:
+        """Handle /pm overdue command (canonical handler for overdue digest)."""
+        try:
+            from app.core.reports.overdue_report import DailyOverdueReportGenerator
+            from app.connectors.discord.formatter import DiscordFormatter
+            gen = DailyOverdueReportGenerator(manager=self.mgr)
+            if user_input:
+                acc_id, disp_name, res_status = await self.resolve_jira_resource(str(user_input))
+                if res_status == "EXCLUDED":
+                    return "❌ This resource is not available for PM reporting."
+                elif res_status == "AMBIGUOUS":
+                    return "❌ Multiple users match. Please use the exact Jira display name."
+                elif res_status == "NOT_FOUND" or not acc_id:
+                    return "❌ Resource not found."
+                data = gen.generate_user_overdue_digest(account_id=acc_id, display_name=disp_name, target_date=target_date)
+                return DiscordFormatter.format_user_overdue_digest_text(data)
+            else:
+                data = gen.generate_digest(target_date=target_date)
+                return DiscordFormatter.format_overdue_digest_text(data)
+        except Exception as e:
+            logger.error(f"Error generating overdue report: {e}", exc_info=True)
+            return "❌ Unable to generate the overdue report right now."
+
+    async def handle_queue_command(
+        self,
+        user_input: Optional[str] = None,
+        target_date: Optional[str] = None
+    ) -> str:
+        """Handle /pm queue command (canonical handler for active queue report)."""
+        if not user_input:
+            return "❌ Target resource is required for active queue report. Example: `/pm queue user:\"Ahsan Amin\"`"
+        try:
+            acc_id, disp_name, res_status = await self.resolve_jira_resource(str(user_input))
+            if res_status == "EXCLUDED":
+                return "❌ This resource is not available for PM reporting."
+            elif res_status == "AMBIGUOUS":
+                return "❌ Multiple users match. Please use the exact Jira display name."
+            elif res_status == "NOT_FOUND" or not acc_id:
+                return "❌ Resource not found."
+
+            from app.core.reports.queue_report import ResourceQueueReportGenerator
+            from app.connectors.discord.formatter import DiscordFormatter
+            gen = ResourceQueueReportGenerator(manager=self.mgr)
+            data = gen.generate_user_queue_report(account_id=acc_id, display_name=disp_name, target_date=target_date)
+            return DiscordFormatter.format_user_active_queue_text(data)
+        except Exception as e:
+            logger.error(f"Error generating active queue report: {e}", exc_info=True)
+            return "❌ Unable to generate the active queue report right now."
+
+    async def handle_attention_command(self, target_date: Optional[str] = None) -> str:
+        """Handle /pm attention command (canonical handler for PM attention digest)."""
+        try:
+            from app.core.reports.attention_report import DailyPMAttentionReportGenerator
+            from app.connectors.discord.formatter import DiscordFormatter
+            gen = DailyPMAttentionReportGenerator(manager=self.mgr)
+            data = gen.generate_digest(target_date=target_date)
+            return DiscordFormatter.format_pm_attention_text(data)
+        except Exception as e:
+            logger.error(f"Error generating attention report: {e}", exc_info=True)
+            return "❌ Unable to generate the attention report right now."
+
+    async def handle_activity_command(self, target_date: Optional[str] = None) -> str:
+        """Handle /pm activity command (canonical handler for Daily PM activity report)."""
+        try:
+            from app.core.reports.daily_report import DailyActivityReportGenerator
+            from app.connectors.discord.formatter import DiscordFormatter
+            gen = DailyActivityReportGenerator(manager=self.mgr)
+            data = gen.generate_report(target_date=target_date)
+            return DiscordFormatter.format_daily_report_text(data)
+        except Exception as e:
+            logger.error(f"Error generating daily activity report: {e}", exc_info=True)
+            return "❌ Unable to generate the daily activity report right now."
+
+    async def handle_report_command(
+        self,
+        report_name: str,
+        user_input: Optional[str] = None,
+        target_date: Optional[str] = None
+    ) -> Union[str, Dict[str, Any]]:
+        """Handle deprecated /pm report compatibility shim, dispatching to canonical handlers."""
+        rname = (report_name or "").strip().lower()
+        if not rname:
+            return (
+                "❌ Please specify a report name: `overdue`, `worklog`, `attention`, `activity`, or `queue`.\n"
+                "Example: `/pm report name:overdue` or `/pm overdue`"
+            )
+
+        if rname in ("worklog", "worklogs", "daily_worklog"):
+            return await self.handle_worklog_command(user_input=user_input, target_date=target_date)
+        elif rname in ("overdue", "overdues"):
+            return await self.handle_overdue_command(user_input=user_input, target_date=target_date)
+        elif rname in ("queue", "active_queue"):
+            return await self.handle_queue_command(user_input=user_input, target_date=target_date)
+        elif rname in ("attention", "pm_attention", "digest"):
+            return await self.handle_attention_command(target_date=target_date)
+        elif rname in ("activity", "daily", "daily_activity"):
+            return await self.handle_activity_command(target_date=target_date)
+        else:
+            return f"❌ Unknown report '{report_name}'. Available reports: `overdue`, `worklog`, `attention`, `activity`, `queue`."
+
+    async def handle_transition_command(self, ticket: str, target_status: str, actor: str) -> str:
+        """Handle /pm transition command."""
+        clean_ticket = (ticket or "").strip().upper()
+        clean_status = (target_status or "").strip()
+        if not clean_ticket or not clean_status:
+            return "❌ Both `ticket` and `status` are required. Example: `/pm transition WSSS-326 Done`"
+
+        action = create_transition_task_action(
+            target_system="jira",
+            task_key=clean_ticket,
+            target_status=clean_status,
+            requested_by=actor
+        )
+        res = await self.get_action_engine().execute(action)
+        if res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED:
+            return f"🧪 DRY RUN\nWould transition {clean_ticket} to {clean_status}."
+        if res.success:
+            return f"✅ {clean_ticket} transitioned to {clean_status}."
+        return f"❌ Could not transition {clean_ticket} to {clean_status}.\nReason: {res.error_message or 'Action failed'}"
+
+    async def handle_assign_command(self, ticket: str, user_input: str, actor: str) -> str:
+        """Handle /pm assign command."""
+        clean_ticket = (ticket or "").strip().upper()
+        if not clean_ticket or not user_input:
+            return "❌ Both `ticket` and `user` are required. Example: `/pm assign WSSS-326 Aqib`"
+
+        account_id, display_name = await self.resolve_jira_user(str(user_input))
+        if not account_id:
+            return "❌ I couldn't safely identify that Jira user."
+
+        action = create_assign_task_action(
+            task_key=clean_ticket,
+            assignee=account_id,
+            assignee_name=display_name,
+            target_system="jira",
+            requested_by=actor
+        )
+        res = await self.get_action_engine().execute(action)
+        target_name = display_name or user_input
+        if res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED:
+            return f"🧪 DRY RUN\nWould assign {clean_ticket} to {target_name}."
+        if res.success:
+            return f"✅ Assigned {clean_ticket} to {target_name}."
+        return f"❌ Could not assign {clean_ticket}.\nReason: {res.error_message or 'Action failed'}"
+
+    async def handle_comment_command(self, ticket: str, comment_text: str, actor: str) -> str:
+        """Handle /pm comment command."""
+        clean_ticket = (ticket or "").strip().upper()
+        clean_comment = str(comment_text or "").strip()
+        if not clean_ticket or not clean_comment:
+            return "❌ Both `ticket` and `comment` are required. Example: `/pm comment WSSS-326 \"Please verify this.\"`"
+
+        action = create_add_comment_action(
+            target_system="jira",
+            task_key=clean_ticket,
+            comment_body=clean_comment,
+            requested_by=actor
+        )
+        res = await self.get_action_engine().execute(action)
+        if res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED:
+            return f"🧪 DRY RUN\nWould add comment to {clean_ticket}:\n{clean_comment}"
+        if res.success:
+            return f"✅ Comment added to {clean_ticket}."
+        return f"❌ Could not add comment to {clean_ticket}.\nReason: {res.error_message or 'Action failed'}"
+
+    async def handle_create_command(
+        self,
+        project: str,
+        summary: str,
+        description: Optional[str] = None,
+        assignee_input: Optional[str] = None,
+        comment_text: Optional[str] = None,
+        priority: Optional[str] = None,
+        labels: Optional[Union[str, List[str]]] = None,
+        issue_type: str = "Task",
+        actor: str = "discord:user"
+    ) -> str:
+        """Handle /pm create command."""
+        clean_project = str(project or "").strip().upper()
+        clean_summary = str(summary or "").strip()
+        if not clean_project or not clean_summary:
+            return "❌ Both `project` and `summary` are required. Example: `/pm create project:WSSS summary:\"Fix login issue\"`"
+
+        clean_desc = str(description).strip() if description is not None and str(description).strip() else None
+
+        resolved_assignee = None
+        if assignee_input:
+            acc_id, disp_name, res_status = await self.resolve_jira_resource(str(assignee_input))
+            if res_status == "EXCLUDED":
+                return f"❌ User '{assignee_input}' is excluded from Jira assignments."
+            elif res_status != "OK" or not acc_id:
+                return "Could not resolve that Jira user. Please use an exact Jira display name or `me`."
+            resolved_assignee = acc_id
+
+        parsed_labels = None
+        if isinstance(labels, str):
+            parsed_labels = [l.strip() for l in labels.split(",") if l.strip()]
+        elif isinstance(labels, list):
+            parsed_labels = labels
+
+        action = create_create_task_action(
+            project_key=clean_project,
+            summary=clean_summary,
+            description=clean_desc,
+            issue_type=issue_type or "Task",
+            assignee=resolved_assignee,
+            priority=priority,
+            labels=parsed_labels,
+            target_system="jira",
+            requested_by=actor
+        )
+        res = await self.get_action_engine().execute(action)
+        if not res.success and not (res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED):
+            return f"❌ Could not create task in {clean_project}.\nReason: {res.error_message or 'Action failed'}"
+
+        created_key = res.result_data.get("key") or res.result_data.get("issue_key") or f"{clean_project}-SIMULATED"
+        jira_url = settings.get_jira_browse_url(created_key)
+
+        if comment_text and str(comment_text).strip():
+            clean_comment = str(comment_text).strip()
+            comment_action = create_add_comment_action(
+                target_system="jira",
+                task_key=created_key,
+                comment_body=clean_comment,
+                requested_by=actor
+            )
+            comment_res = await self.get_action_engine().execute(comment_action)
+            if comment_res.success:
+                if res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED:
+                    return f"🧪 DRY RUN\nCreated {created_key} successfully and added the comment.\n{jira_url}"
+                return f"Created {created_key} successfully and added the comment.\n{jira_url}"
+            else:
+                if res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED:
+                    return f"🧪 DRY RUN\nCreated {created_key} successfully, but the requested comment could not be added.\n{jira_url}"
+                return f"Created {created_key} successfully, but the requested comment could not be added.\n{jira_url}"
+        else:
+            if res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED:
+                return f"🧪 DRY RUN\nCreated {created_key} successfully.\n{jira_url}"
+            return f"Created {created_key} successfully.\n{jira_url}"
+
+    async def handle_update_command(self, ticket: str, field: str, value: Any, actor: str) -> str:
+        """Handle /pm update command."""
+        clean_ticket = str(ticket or "").strip().upper()
+        clean_field = str(field or "").strip().lower()
+        if not clean_ticket or not clean_field or value is None:
+            return "❌ `ticket`, `field`, and `value` are required. Example: `/pm update WSSS-326 priority High`"
+
+        if clean_field not in ALLOWED_UPDATE_FIELDS:
+            return f"❌ Field '{clean_field}' is not permitted for update. Allowed fields: {sorted(list(ALLOWED_UPDATE_FIELDS))}."
+
+        fields_payload: Dict[str, Any] = {}
+        if clean_field == "labels" and isinstance(value, str):
+            fields_payload["labels"] = [l.strip() for l in value.split(",") if l.strip()]
+        else:
+            fields_payload[clean_field] = value
+
+        action = create_update_task_action(
+            task_key=clean_ticket,
+            fields=fields_payload,
+            target_system="jira",
+            requested_by=actor
+        )
+        res = await self.get_action_engine().execute(action)
+        if res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED:
+            return f"🧪 DRY RUN\nWould update {clean_ticket}: {clean_field} = {value}."
+        if res.success:
+            return f"✅ Updated {clean_ticket}."
+        return f"❌ Could not update {clean_ticket}.\nReason: {res.error_message or 'Action failed'}"
+
+    async def handle_notify_command(self, target: str, message: str, actor: str) -> str:
+        """Handle /pm notify command."""
+        if not message or not str(message).strip():
+            return "❌ `message` is required for notify. Example: `/pm notify Aqib \"WSSS-326 needs attention\"`"
+
+        user_or_channel = target or settings.PM_DISCORD_CHANNEL
+        action = create_send_notification_action(
+            target_system="discord",
+            channel=str(user_or_channel),
+            message=str(message),
+            title="PM Notification",
+            requested_by=actor
+        )
+        res = await self.get_action_engine().execute(action)
+        if res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED:
+            return f"🧪 DRY RUN\nWould send notification to {user_or_channel}: {message}."
+        if res.success:
+            return f"✅ Notification sent to {user_or_channel}."
+        return f"❌ Could not send notification.\nReason: {res.error_message or 'Action failed'}"
+
+    async def handle_message_command(self, recipient: str, message: str, actor: str) -> str:
+        """Handle deprecated /pm message command (direct message)."""
+        if not recipient or not message:
+            return "❌ Both `user` and `message` are required. Example: `/pm message Aqib \"Can you check WSSS-326?\"`"
+
+        action = create_send_message_action(
+            target_system="discord",
+            target_id=str(recipient),
+            text=str(message),
+            requested_by=actor
+        )
+        res = await self.get_action_engine().execute(action)
+        if res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED:
+            return f"🧪 DRY RUN\nWould send message to {recipient}: {message}."
+        if res.success:
+            return f"✅ Message sent to {recipient}."
+        return f"❌ Could not send message.\nReason: {res.error_message or 'Action failed'}"
+
+    # =========================================================================
+    # Main Dispatcher
+    # =========================================================================
 
     async def execute_subcommand(
         self,
@@ -240,7 +608,6 @@ class DiscordSlashCommandHandler:
             return "❌ You are not authorized to use PM commands."
 
         sub = (subcommand or "help").strip().lower()
-        engine = self.get_action_engine()
 
         # 2. Help command
         if sub in ("help", "commands"):
@@ -251,336 +618,89 @@ class DiscordSlashCommandHandler:
             ticket = options.get("ticket") or options.get("task_key") or options.get("issue_key", "")
             return await self.handle_status_command(ticket=ticket)
 
-        # 4. Read-only Report commands (on-demand report generation)
-        if sub in ("report", "overdue", "worklog", "worklogs", "daily_worklog", "attention", "activity", "queue"):
-            report_name = ""
-            target_date = options.get("date")
-            user_input = options.get("user") or options.get("resource")
+        # 4. Date validation for date-bearing commands
+        target_date = options.get("date")
+        if target_date:
+            clean_date, date_err = self._validate_target_date(str(target_date))
+            if date_err:
+                return date_err
+            target_date = clean_date
 
-            # Validate date format and valid calendar date if provided
-            if target_date:
-                clean_date = str(target_date).strip()
-                import re
-                import datetime
-                if not re.match(r"^\d{4}-\d{2}-\d{2}$", clean_date):
-                    return f"❌ Invalid date format '{target_date}'. Expected `YYYY-MM-DD` (e.g. `2026-09-12`)."
-                try:
-                    datetime.datetime.strptime(clean_date, "%Y-%m-%d")
-                except ValueError:
-                    return f"❌ Invalid calendar date '{target_date}'. Expected a valid date in `YYYY-MM-DD` format."
-                target_date = clean_date
+        user_input = options.get("user") or options.get("resource")
 
-            if sub == "report":
-                report_name = (options.get("name") or options.get("report") or options.get("type") or "").strip().lower()
-                if not report_name:
-                    return (
-                        "❌ Please specify a report name: `overdue`, `worklog`, `attention`, `activity`, or `queue`.\n"
-                        "Example: `/pm report name:overdue` or `/pm overdue`"
-                    )
-            else:
-                report_name = sub
+        # 5. Canonical Read-only Report commands
+        if sub in ("worklog", "worklogs", "daily_worklog"):
+            return await self.handle_worklog_command(user_input=user_input, target_date=target_date)
 
-            if report_name in ("queue", "active_queue"):
-                if not user_input:
-                    return "❌ Target resource is required for active queue report. Example: `/pm queue user:\"Ahsan Amin\"`"
-                try:
-                    acc_id, disp_name, res_status = await self.resolve_jira_resource(str(user_input))
-                    if res_status == "EXCLUDED":
-                        return "❌ This resource is not available for PM reporting."
-                    elif res_status == "AMBIGUOUS":
-                        return "❌ Multiple users match. Please use the exact Jira display name."
-                    elif res_status == "NOT_FOUND" or not acc_id:
-                        return "❌ Resource not found."
+        if sub in ("overdue", "overdues"):
+            return await self.handle_overdue_command(user_input=user_input, target_date=target_date)
 
-                    from app.core.reports.queue_report import ResourceQueueReportGenerator
-                    from app.connectors.discord.formatter import DiscordFormatter
-                    gen = ResourceQueueReportGenerator(manager=self.mgr)
-                    data = gen.generate_user_queue_report(account_id=acc_id, display_name=disp_name, target_date=target_date)
-                    return DiscordFormatter.format_user_active_queue_text(data)
-                except Exception as e:
-                    logger.error(f"Error generating active queue report: {e}", exc_info=True)
-                    return "❌ Unable to generate the active queue report right now."
+        if sub in ("queue", "active_queue"):
+            return await self.handle_queue_command(user_input=user_input, target_date=target_date)
 
-            elif report_name in ("overdue", "overdues"):
-                try:
-                    from app.core.reports.overdue_report import DailyOverdueReportGenerator
-                    from app.connectors.discord.formatter import DiscordFormatter
-                    gen = DailyOverdueReportGenerator(manager=self.mgr)
-                    if user_input:
-                        acc_id, disp_name, res_status = await self.resolve_jira_resource(str(user_input))
-                        if res_status == "EXCLUDED":
-                            return "❌ This resource is not available for PM reporting."
-                        elif res_status == "AMBIGUOUS":
-                            return "❌ Multiple users match. Please use the exact Jira display name."
-                        elif res_status == "NOT_FOUND" or not acc_id:
-                            return "❌ Resource not found."
-                        data = gen.generate_user_overdue_digest(account_id=acc_id, display_name=disp_name, target_date=target_date)
-                        return DiscordFormatter.format_user_overdue_digest_text(data)
-                    else:
-                        data = gen.generate_digest(target_date=target_date)
-                        return DiscordFormatter.format_overdue_digest_text(data)
-                except Exception as e:
-                    logger.error(f"Error generating overdue report: {e}", exc_info=True)
-                    return "❌ Unable to generate the overdue report right now."
+        if sub in ("attention", "pm_attention", "digest"):
+            return await self.handle_attention_command(target_date=target_date)
 
-            elif report_name in ("worklog", "worklogs", "daily_worklog"):
-                try:
-                    from app.core.reports.worklog_report import DailyWorklogReportGenerator
-                    from app.connectors.discord.formatter import DiscordFormatter
-                    gen = DailyWorklogReportGenerator(manager=self.mgr)
-                    if user_input:
-                        acc_id, disp_name, res_status = await self.resolve_jira_resource(str(user_input))
-                        if res_status == "EXCLUDED":
-                            return "❌ This resource is not available for PM reporting."
-                        elif res_status == "AMBIGUOUS":
-                            return "❌ Multiple users match. Please use the exact Jira display name."
-                        elif res_status == "NOT_FOUND" or not acc_id:
-                            return "❌ Resource not found."
-                        data = await gen.generate_user_worklog_report(account_id=acc_id, display_name=disp_name, target_date=target_date, sync_jira=False)
-                        return DiscordFormatter.format_user_worklog_text(data)
-                    else:
-                        # On-demand: sync worklogs if Jira is active
-                        try:
-                            if settings.is_jira_configured() and settings.is_jira_team_group_configured():
-                                import datetime
-                                resolved_date = target_date or datetime.datetime.now().strftime("%Y-%m-%d")
-                                await gen.sync_jira_worklogs_for_date(resolved_date)
-                        except Exception as e:
-                            logger.warning(f"On-demand worklog Jira sync encountered notice: {e}")
-                        data = await gen.generate_report(target_date=target_date, sync_jira=False)
-                        return DiscordFormatter.format_daily_worklog_embed(data)
-                except Exception as e:
-                    logger.error(f"Error generating worklog report: {e}", exc_info=True)
-                    return "❌ Unable to generate the worklog report right now."
+        if sub in ("activity", "daily", "daily_activity"):
+            return await self.handle_activity_command(target_date=target_date)
 
-            elif report_name in ("attention", "pm_attention", "digest"):
-                try:
-                    from app.core.reports.attention_report import DailyPMAttentionReportGenerator
-                    from app.connectors.discord.formatter import DiscordFormatter
-                    gen = DailyPMAttentionReportGenerator(manager=self.mgr)
-                    data = gen.generate_digest(target_date=target_date)
-                    return DiscordFormatter.format_pm_attention_text(data)
-                except Exception as e:
-                    logger.error(f"Error generating attention report: {e}", exc_info=True)
-                    return "❌ Unable to generate the attention report right now."
+        # 6. Deprecated /pm report compatibility shim
+        if sub == "report":
+            report_name = (options.get("name") or options.get("report") or options.get("type") or "").strip().lower()
+            return await self.handle_report_command(report_name=report_name, user_input=user_input, target_date=target_date)
 
-            elif report_name in ("activity", "daily", "daily_activity"):
-                try:
-                    from app.core.reports.daily_report import DailyActivityReportGenerator
-                    from app.connectors.discord.formatter import DiscordFormatter
-                    gen = DailyActivityReportGenerator(manager=self.mgr)
-                    data = gen.generate_report(target_date=target_date)
-                    return DiscordFormatter.format_daily_report_text(data)
-                except Exception as e:
-                    logger.error(f"Error generating daily activity report: {e}", exc_info=True)
-                    return "❌ Unable to generate the daily activity report right now."
-
-            else:
-                return f"❌ Unknown report '{report_name}'. Available reports: `overdue`, `worklog`, `attention`, `activity`, `queue`."
-
-        # 4. Mutation subcommands -> pass exclusively through ActionEngine
+        # 7. Mutation subcommands -> pass exclusively through ActionEngine
         if sub == "transition":
-            ticket = (options.get("ticket") or options.get("task_key", "")).strip().upper()
+            ticket = options.get("ticket") or options.get("task_key", "")
             target_status = options.get("status") or options.get("target_status", "")
-            if not ticket or not target_status:
-                return "❌ Both `ticket` and `status` are required. Example: `/pm transition WSSS-326 Done`"
-
-            action = create_transition_task_action(
-                target_system="jira",
-                task_key=ticket,
-                target_status=str(target_status).strip(),
-                requested_by=actor
-            )
-            res = await engine.execute(action)
-            if res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED:
-                return f"🧪 DRY RUN\nWould transition {ticket} to {target_status}."
-            if res.success:
-                return f"✅ {ticket} transitioned to {target_status}."
-            return f"❌ Could not transition {ticket} to {target_status}.\nReason: {res.error_message or 'Action failed'}"
+            return await self.handle_transition_command(ticket=ticket, target_status=target_status, actor=actor)
 
         elif sub == "assign":
-            ticket = (options.get("ticket") or options.get("task_key", "")).strip().upper()
+            ticket = options.get("ticket") or options.get("task_key", "")
             user_input = options.get("user") or options.get("assignee", "")
-            if not ticket or not user_input:
-                return "❌ Both `ticket` and `user` are required. Example: `/pm assign WSSS-326 Aqib`"
-
-            account_id, display_name = await self.resolve_jira_user(str(user_input))
-            if not account_id:
-                return "❌ I couldn't safely identify that Jira user."
-
-            action = create_assign_task_action(
-                task_key=ticket,
-                assignee=account_id,
-                assignee_name=display_name,
-                target_system="jira",
-                requested_by=actor
-            )
-            res = await engine.execute(action)
-            target_name = display_name or user_input
-            if res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED:
-                return f"🧪 DRY RUN\nWould assign {ticket} to {target_name}."
-            if res.success:
-                return f"✅ Assigned {ticket} to {target_name}."
-            return f"❌ Could not assign {ticket}.\nReason: {res.error_message or 'Action failed'}"
+            return await self.handle_assign_command(ticket=ticket, user_input=user_input, actor=actor)
 
         elif sub == "comment":
-            ticket = (options.get("ticket") or options.get("task_key", "")).strip().upper()
+            ticket = options.get("ticket") or options.get("task_key", "")
             comment_text = options.get("comment") or options.get("text") or options.get("message", "")
-            if not ticket or not comment_text:
-                return "❌ Both `ticket` and `comment` are required. Example: `/pm comment WSSS-326 \"Please verify this.\"`"
-
-            action = create_add_comment_action(
-                target_system="jira",
-                task_key=ticket,
-                comment_body=str(comment_text).strip(),
-                requested_by=actor
-            )
-            res = await engine.execute(action)
-            if res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED:
-                return f"🧪 DRY RUN\nWould add comment to {ticket}:\n{comment_text}"
-            if res.success:
-                return f"✅ Comment added to {ticket}."
-            return f"❌ Could not add comment to {ticket}.\nReason: {res.error_message or 'Action failed'}"
+            return await self.handle_comment_command(ticket=ticket, comment_text=comment_text, actor=actor)
 
         elif sub == "create":
-            project = (options.get("project") or options.get("project_key", "")).strip().upper()
-            summary = (options.get("summary") or options.get("title", "")).strip()
-            if not project or not summary:
-                return "❌ Both `project` and `summary` are required. Example: `/pm create project:WSSS summary:\"Fix login issue\"`"
-
+            project = options.get("project") or options.get("project_key", "")
+            summary = options.get("summary") or options.get("title", "")
             description = options.get("description")
-            if description is not None:
-                description = str(description).strip()
-                if not description:
-                    description = None
-
             assignee_input = options.get("assignee") or options.get("user")
             comment_text = options.get("comment")
-
-            # Resolve assignee safely if provided (me, exact display name, canonical account ID)
-            resolved_assignee = None
-            if assignee_input:
-                acc_id, disp_name, res_status = await self.resolve_jira_resource(str(assignee_input))
-                if res_status == "EXCLUDED":
-                    return f"❌ User '{assignee_input}' is excluded from Jira assignments."
-                elif res_status != "OK" or not acc_id:
-                    return "Could not resolve that Jira user. Please use an exact Jira display name or `me`."
-                resolved_assignee = acc_id
-
             priority = options.get("priority")
             labels = options.get("labels")
-            if isinstance(labels, str):
-                labels = [l.strip() for l in labels.split(",") if l.strip()]
-
-            action = create_create_task_action(
-                project_key=project,
+            issue_type = options.get("issue_type", "Task")
+            return await self.handle_create_command(
+                project=project,
                 summary=summary,
                 description=description,
-                issue_type=options.get("issue_type", "Task"),
-                assignee=resolved_assignee,
+                assignee_input=assignee_input,
+                comment_text=comment_text,
                 priority=priority,
                 labels=labels,
-                target_system="jira",
-                requested_by=actor
+                issue_type=issue_type,
+                actor=actor
             )
-            res = await engine.execute(action)
-            if not res.success and not (res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED):
-                return f"❌ Could not create task in {project}.\nReason: {res.error_message or 'Action failed'}"
-
-            created_key = res.result_data.get("key") or res.result_data.get("issue_key") or f"{project}-SIMULATED"
-            jira_url = settings.get_jira_browse_url(created_key)
-
-            # If comment was supplied, dispatch ADD_COMMENT through Action Engine
-            if comment_text and str(comment_text).strip():
-                clean_comment = str(comment_text).strip()
-                comment_action = create_add_comment_action(
-                    target_system="jira",
-                    task_key=created_key,
-                    comment_body=clean_comment,
-                    requested_by=actor
-                )
-                comment_res = await engine.execute(comment_action)
-
-                if comment_res.success:
-                    if res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED:
-                        return f"🧪 DRY RUN\nCreated {created_key} successfully and added the comment.\n{jira_url}"
-                    return f"Created {created_key} successfully and added the comment.\n{jira_url}"
-                else:
-                    if res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED:
-                        return f"🧪 DRY RUN\nCreated {created_key} successfully, but the requested comment could not be added.\n{jira_url}"
-                    return f"Created {created_key} successfully, but the requested comment could not be added.\n{jira_url}"
-            else:
-                if res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED:
-                    return f"🧪 DRY RUN\nCreated {created_key} successfully.\n{jira_url}"
-                return f"Created {created_key} successfully.\n{jira_url}"
 
         elif sub == "update":
-            ticket = (options.get("ticket") or options.get("task_key", "")).strip().upper()
-            field = (options.get("field") or "").strip().lower()
+            ticket = options.get("ticket") or options.get("task_key", "")
+            field = options.get("field") or ""
             value = options.get("value")
-            if not ticket or not field or value is None:
-                return "❌ `ticket`, `field`, and `value` are required. Example: `/pm update WSSS-326 priority High`"
-
-            if field not in ALLOWED_UPDATE_FIELDS:
-                return f"❌ Field '{field}' is not permitted for update. Allowed fields: {sorted(list(ALLOWED_UPDATE_FIELDS))}."
-
-            fields_payload: Dict[str, Any] = {}
-            if field == "labels" and isinstance(value, str):
-                fields_payload["labels"] = [l.strip() for l in value.split(",") if l.strip()]
-            else:
-                fields_payload[field] = value
-
-            action = create_update_task_action(
-                task_key=ticket,
-                fields=fields_payload,
-                target_system="jira",
-                requested_by=actor
-            )
-            res = await engine.execute(action)
-            if res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED:
-                return f"🧪 DRY RUN\nWould update {ticket}: {field} = {value}."
-            if res.success:
-                return f"✅ Updated {ticket}."
-            return f"❌ Could not update {ticket}.\nReason: {res.error_message or 'Action failed'}"
+            return await self.handle_update_command(ticket=ticket, field=field, value=value, actor=actor)
 
         elif sub == "notify":
-            user_or_channel = options.get("user") or options.get("recipient") or options.get("channel") or settings.PM_DISCORD_CHANNEL
+            target = options.get("target") or options.get("user") or options.get("recipient") or options.get("channel") or settings.PM_DISCORD_CHANNEL
             message = options.get("message") or options.get("text", "")
-            if not message:
-                return "❌ `message` is required for notify. Example: `/pm notify Aqib \"WSSS-326 needs attention\"`"
-
-            action = create_send_notification_action(
-                target_system="discord",
-                channel=str(user_or_channel),
-                message=str(message),
-                title="PM Notification",
-                requested_by=actor
-            )
-            res = await engine.execute(action)
-            if res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED:
-                return f"🧪 DRY RUN\nWould send notification to {user_or_channel}: {message}."
-            if res.success:
-                return f"✅ Notification sent to {user_or_channel}."
-            return f"❌ Could not send notification.\nReason: {res.error_message or 'Action failed'}"
+            return await self.handle_notify_command(target=target, message=message, actor=actor)
 
         elif sub == "message":
-            recipient = options.get("user") or options.get("recipient", "")
+            recipient = options.get("user") or options.get("recipient") or options.get("target", "")
             message = options.get("message") or options.get("text", "")
-            if not recipient or not message:
-                return "❌ Both `user` and `message` are required. Example: `/pm message Aqib \"Can you check WSSS-326?\"`"
-
-            action = create_send_message_action(
-                target_system="discord",
-                target_id=str(recipient),
-                text=str(message),
-                requested_by=actor
-            )
-            res = await engine.execute(action)
-            if res.dry_run or res.status == ActionStatus.DRY_RUN_SIMULATED:
-                return f"🧪 DRY RUN\nWould send message to {recipient}: {message}."
-            if res.success:
-                return f"✅ Message sent to {recipient}."
-            return f"❌ Could not send message.\nReason: {res.error_message or 'Action failed'}"
+            return await self.handle_message_command(recipient=recipient, message=message, actor=actor)
 
         else:
             return f"❌ Unknown PM command `/pm {sub}`. Type `/pm help` for available commands."

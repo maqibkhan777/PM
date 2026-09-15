@@ -1700,8 +1700,10 @@ async def test_pm_worklog_embed_redesign_representative_2026_09_14(slash_setup):
         {"accountId": "557058:8b3f9c31-7d88-473a-9351-abacc5b84933", "displayName": "Mohammad Mursaleen", "active": True},
     ]
 
-    with patch("app.connectors.jira.client.JiraClient.get_group_members", new_callable=AsyncMock) as mock_get_members:
+    with patch("app.connectors.jira.client.JiraClient.get_group_members", new_callable=AsyncMock) as mock_get_members, \
+         patch("app.connectors.jira.client.JiraClient.search_issues", new_callable=AsyncMock) as mock_search_issues:
         mock_get_members.return_value = mock_group_members
+        mock_search_issues.return_value = {"issues": []}
 
         # 1. Test /pm worklog
         payload = await handler.execute_subcommand(
@@ -1842,3 +1844,186 @@ async def test_gateway_update_deferred_response_embed_and_string_chunking():
         # Line boundary check: before suffix, it should break cleanly after a newline
         prefix = content_sent.replace("\n\n... *(output truncated)*", "")
         assert not prefix.endswith("Line")  # Shouldn't cut mid-word or mid-line arbitrarily
+
+
+# ==============================================================================
+# 21. PHASE 1 — SLASH COMMAND CLEANUP & COMPATIBILITY SHIM TESTS
+# ==============================================================================
+
+class TestPhase1SlashCommandCleanup:
+    """Comprehensive test suite for Phase 1 Slash Command Cleanup & Backward Compatibility."""
+
+    def test_canonical_command_schema_names_and_ordering(self):
+        """Verify schema defines exact target canonical hierarchy followed by report and message shims."""
+        schema = build_pm_slash_command_schema()
+        assert schema["name"] == "pm"
+        subcommands = [opt["name"] for opt in schema["options"]]
+        expected_order = [
+            "help", "status", "worklog", "overdue", "queue",
+            "attention", "activity", "transition", "assign", "comment",
+            "create", "update", "notify", "report", "message"
+        ]
+        assert subcommands == expected_order
+        assert len(subcommands) == 15
+
+    def test_report_compatibility_shim_choices(self):
+        """Verify /pm report schema maintains all 5 required report choices."""
+        schema = build_pm_slash_command_schema()
+        report_opt = next(opt for opt in schema["options"] if opt["name"] == "report")
+        assert report_opt is not None
+        name_param = next(p for p in report_opt["options"] if p["name"] == "name")
+        assert name_param["required"] is True
+        choice_values = [c["value"] for c in name_param["choices"]]
+        expected_choices = ["worklog", "overdue", "queue", "attention", "activity"]
+        assert choice_values == expected_choices
+
+    @pytest.mark.asyncio
+    async def test_report_worklog_routes_to_canonical_worklog(self, slash_setup):
+        """Verify /pm report name:worklog routes to exact same canonical output as /pm worklog."""
+        handler, _, _, _, temp_db = slash_setup
+        from app.database.repositories import JiraWorklogRepository
+        wl_repo = JiraWorklogRepository(temp_db)
+        wl_repo.upsert_worklog(
+            worklog_id="wl-p1-1",
+            jira_issue_key="WSSS-326",
+            jira_issue_id="1001",
+            author_account_id="557058:ba931089-a292-4f11",
+            author_display_name="Aqib Khan",
+            time_spent_seconds=3600,
+            started_at="2026-09-12T10:00:00Z",
+            team_group=settings.JIRA_TEAM_GROUP
+        )
+
+        res_direct = await handler.execute_subcommand(
+            subcommand="worklog",
+            options={"date": "2026-09-12"},
+            discord_user_id="123456789"
+        )
+        res_shim = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "worklog", "date": "2026-09-12"},
+            discord_user_id="123456789"
+        )
+        assert res_direct == res_shim
+        assert "embeds" in res_shim
+        assert "Daily Worklog" in res_shim["embeds"][0]["title"]
+
+    @pytest.mark.asyncio
+    async def test_report_overdue_routes_to_canonical_overdue(self, slash_setup):
+        """Verify /pm report name:overdue routes to exact same canonical output as /pm overdue."""
+        handler, _, _, _, temp_db = slash_setup
+        from app.database.repositories import JiraIssueStateRepository
+        issue_repo = JiraIssueStateRepository(temp_db)
+        issue_repo.upsert(
+            jira_issue_key="WSSS-326",
+            summary="Test Overdue Task",
+            status="In Progress",
+            assignee="Aqib Khan",
+            due_date="2026-09-10",
+            team_group=settings.JIRA_TEAM_GROUP
+        )
+
+        res_direct = await handler.execute_subcommand(
+            subcommand="overdue",
+            options={"date": "2026-09-12"},
+            discord_user_id="123456789"
+        )
+        res_shim = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "overdue", "date": "2026-09-12"},
+            discord_user_id="123456789"
+        )
+        assert res_direct == res_shim
+        assert "WSSS-326" in res_shim
+
+    @pytest.mark.asyncio
+    async def test_report_queue_attention_activity_route_to_canonical(self, slash_setup):
+        """Verify /pm report queue, attention, and activity route to exact canonical handlers."""
+        handler, _, _, _, temp_db = slash_setup
+        from app.database.repositories import EmployeeRoleRepository
+        role_repo = EmployeeRoleRepository(temp_db)
+        role_repo.upsert_assignment(
+            account_id="557058:ba931089-a292-4f11",
+            display_name="Aqib Khan",
+            designation="Full Stack Developer",
+            role_category="engineering"
+        )
+
+        # 1. Queue
+        res_q_direct = await handler.execute_subcommand(
+            subcommand="queue",
+            options={"user": "Aqib Khan"},
+            discord_user_id="123456789"
+        )
+        res_q_shim = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "queue", "user": "Aqib Khan"},
+            discord_user_id="123456789"
+        )
+        assert res_q_direct == res_q_shim
+
+        # 2. Attention
+        res_att_direct = await handler.execute_subcommand(
+            subcommand="attention",
+            options={"date": "2026-09-12"},
+            discord_user_id="123456789"
+        )
+        res_att_shim = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "attention", "date": "2026-09-12"},
+            discord_user_id="123456789"
+        )
+        assert res_att_direct == res_att_shim
+
+        # 3. Activity
+        res_act_direct = await handler.execute_subcommand(
+            subcommand="activity",
+            options={"date": "2026-09-12"},
+            discord_user_id="123456789"
+        )
+        res_act_shim = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "activity", "date": "2026-09-12"},
+            discord_user_id="123456789"
+        )
+        assert res_act_direct == res_act_shim
+
+    @pytest.mark.asyncio
+    async def test_notify_and_message_compatibility(self, slash_setup):
+        """Verify /pm notify and /pm message remain operational and accept targets."""
+        handler, _, _, _, _ = slash_setup
+        settings.DRY_RUN = False
+
+        # /pm notify with target
+        res_notify_target = await handler.execute_subcommand(
+            subcommand="notify",
+            options={"target": "alerts-channel", "message": "Build completed"},
+            discord_user_id="123456789"
+        )
+        assert "✅ Notification sent to alerts-channel." in res_notify_target
+
+        # /pm notify with user (backward compat option name)
+        res_notify_user = await handler.execute_subcommand(
+            subcommand="notify",
+            options={"user": "alerts-channel", "message": "Build completed"},
+            discord_user_id="123456789"
+        )
+        assert "✅ Notification sent to alerts-channel." in res_notify_user
+
+        # /pm message
+        res_message = await handler.execute_subcommand(
+            subcommand="message",
+            options={"user": "user-456", "message": "Direct task reminder"},
+            discord_user_id="123456789"
+        )
+        assert "✅ Message sent to user-456." in res_message
+
+    def test_help_text_lists_target_canonical_commands(self):
+        """Verify PM_HELP_TEXT reflects the primary target commands."""
+        assert "`/pm status <ticket>`" in PM_HELP_TEXT
+        assert "`/pm worklog [user] [date]`" in PM_HELP_TEXT
+        assert "`/pm overdue [user] [date]`" in PM_HELP_TEXT
+        assert "`/pm queue <user> [date]`" in PM_HELP_TEXT
+        assert "`/pm attention [date]`" in PM_HELP_TEXT
+        assert "`/pm activity [date]`" in PM_HELP_TEXT
+        assert "`/pm notify <user> <message>`" in PM_HELP_TEXT
