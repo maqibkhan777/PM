@@ -2,11 +2,130 @@
 
 import asyncio
 import random
+import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 import httpx
 from app.config.settings import settings
 from app.utils.logger import logger
+
+
+def text_to_adf_doc(body: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Convert text or dict into a valid Jira Cloud Atlassian Document Format (ADF) dict.
+
+    Supports:
+    1. Pre-built ADF document dicts with type="doc".
+    2. Strings containing Jira wiki mention markup [~accountid:<id>] or [~accountid:<id>:<name>]
+       parsed into genuine ADF mention nodes:
+       {"type": "mention", "attrs": {"id": "<id>", "text": "@<name>", "userType": "DEFAULT"}}.
+    3. Multiline plain text strings formatted into ADF paragraph structures.
+    """
+    if isinstance(body, dict):
+        if body.get("type") == "doc":
+            return body
+        elif "content" in body:
+            return {"type": "doc", "version": 1, "content": body["content"]}
+        return {
+            "type": "doc",
+            "version": 1,
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": str(body)}]}]
+        }
+
+    raw_text = str(body or "")
+    if not raw_text.strip():
+        return {
+            "type": "doc",
+            "version": 1,
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": ""}]}]
+        }
+
+    # Split into paragraphs by double newlines
+    blocks = re.split(r"\n\s*\n", raw_text.strip())
+    paragraphs = []
+
+    mention_pattern = re.compile(
+        r"\[~accountid:([^\]]+)\]|\[~([a-zA-Z0-9_\-:]+)\]",
+        re.IGNORECASE
+    )
+
+    for block in blocks:
+        block_str = block.strip()
+        if not block_str:
+            continue
+
+        inline_nodes: List[Dict[str, Any]] = []
+        last_idx = 0
+
+        for match in mention_pattern.finditer(block_str):
+            start, end = match.span()
+            if start > last_idx:
+                pre_text = block_str[last_idx:start]
+                if pre_text:
+                    inline_nodes.append({"type": "text", "text": pre_text})
+
+            if match.group(1):
+                raw_target = match.group(1).strip()
+                if "|" in raw_target:
+                    acc_id, disp_name = raw_target.split("|", 1)
+                    acc_id = acc_id.strip()
+                    disp_name = disp_name.strip()
+                else:
+                    parts = raw_target.split(":")
+                    if len(parts) >= 3 and parts[0].isdigit():
+                        acc_id = f"{parts[0]}:{parts[1]}".strip()
+                        disp_name = ":".join(parts[2:]).strip()
+                    else:
+                        acc_id = raw_target
+                        disp_name = ""
+            else:
+                val = match.group(2).strip()
+                if val.lower().startswith("accountid:"):
+                    val = val[10:].strip()
+                acc_id = val
+                disp_name = ""
+
+            acc_id = acc_id.strip()
+            disp_name = disp_name.strip()
+
+            if not disp_name:
+                if acc_id == "712020:e268bcd8-d981-4b4d-992d-d5694745df8b":
+                    disp_name = "Mubashir Butt"
+                else:
+                    disp_name = acc_id
+
+            mention_text = f"@{disp_name}" if not disp_name.startswith("@") else disp_name
+
+            inline_nodes.append({
+                "type": "mention",
+                "attrs": {
+                    "id": acc_id,
+                    "text": mention_text,
+                    "userType": "DEFAULT"
+                }
+            })
+            last_idx = end
+
+        if last_idx < len(block_str):
+            remaining_text = block_str[last_idx:]
+            if remaining_text:
+                inline_nodes.append({"type": "text", "text": remaining_text})
+
+        if not inline_nodes:
+            inline_nodes.append({"type": "text", "text": block_str})
+
+        paragraphs.append({
+            "type": "paragraph",
+            "content": inline_nodes
+        })
+
+    if not paragraphs:
+        paragraphs.append({"type": "paragraph", "content": [{"type": "text", "text": raw_text}]})
+
+    return {
+        "type": "doc",
+        "version": 1,
+        "content": paragraphs
+    }
 
 
 class JiraClient:
@@ -220,25 +339,10 @@ class JiraClient:
         payload = {"accountId": account_id}
         return await self._request("PUT", f"/rest/api/3/issue/{issue_key}/assignee", json_data=payload)
 
-    async def add_comment(self, issue_key: str, body: str) -> Dict[str, Any]:
-        """Add a comment to an issue in Atlassian Document Format."""
-        payload = {
-            "body": {
-                "type": "doc",
-                "version": 1,
-                "content": [
-                    {
-                        "type": "paragraph",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": body
-                            }
-                        ]
-                    }
-                ]
-            }
-        }
+    async def add_comment(self, issue_key: str, body: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
+        """Add a comment to an issue in Atlassian Document Format (ADF)."""
+        adf_doc = text_to_adf_doc(body)
+        payload = {"body": adf_doc}
         return await self._request("POST", f"/rest/api/3/issue/{issue_key}/comment", json_data=payload)
 
     async def update_priority(self, issue_key: str, priority_name: str) -> Dict[str, Any]:

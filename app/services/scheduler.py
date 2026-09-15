@@ -511,10 +511,9 @@ class PeriodicScheduler:
                     continue
 
                 comment_body = (
-                    f"[~accountid:{mubashir_account_id}] Automated Stale Update Reminder:\n"
-                    f"This Support ticket ({task_key}) has had no meaningful activity for {business_days:.1f} business days "
-                    f"(current status: **{status_name}**).\n"
-                    f"Please provide a status update or follow up with the client."
+                    f"[~accountid:{mubashir_account_id}:Mubashir Butt]\n\n"
+                    f"This Support ticket has had no meaningful update for 3 business days.\n"
+                    f"Please update the ticket with the current status or next action."
                 )
 
                 comment_action = create_add_comment_action(
