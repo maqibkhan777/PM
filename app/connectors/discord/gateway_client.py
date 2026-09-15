@@ -3,7 +3,7 @@
 import asyncio
 import json
 import random
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 import httpx
 import websockets
 from app.config.settings import settings
@@ -466,7 +466,7 @@ class DiscordGatewayClient:
             logger.warning(f"Error sending deferred interaction acknowledgment: {e}")
             return False
 
-    async def update_deferred_response(self, interaction_token: str, content: str) -> bool:
+    async def update_deferred_response(self, interaction_token: str, content: Union[str, Dict[str, Any]]) -> bool:
         """Update original deferred message with the final command result."""
         app_id = self.application_id or settings.DISCORD_APPLICATION_ID
         if not app_id:
@@ -477,12 +477,21 @@ class DiscordGatewayClient:
             return False
 
         url = f"{DISCORD_API_BASE}/webhooks/{app_id}/{interaction_token}/messages/@original"
-        # Ensure message does not exceed Discord's 2000 character limit
-        safe_content = content or "*(No output)*"
-        if len(safe_content) > 2000:
-            safe_content = safe_content[:1950] + "\n\n... *(output truncated)*"
 
-        payload = {"content": safe_content}
+        if isinstance(content, dict) and "embeds" in content:
+            payload = {"embeds": content["embeds"]}
+        elif isinstance(content, dict):
+            payload = content
+        else:
+            safe_content = content if (content is not None and str(content).strip()) else "*(No output)*"
+            if len(safe_content) > 2000:
+                cut_idx = safe_content[:1950].rfind("\n")
+                if cut_idx > 0:
+                    safe_content = safe_content[:cut_idx] + "\n\n... *(output truncated)*"
+                else:
+                    safe_content = safe_content[:1950] + "\n\n... *(output truncated)*"
+            payload = {"content": safe_content}
+
         headers = {"Content-Type": "application/json"}
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
@@ -700,10 +709,10 @@ class DiscordGatewayClient:
             await self.send_deferred_acknowledgement(interaction_id, interaction_token)
 
             # 2. Extract options and execute subcommand via DiscordSlashCommandHandler
-            response_text = ""
+            response_data = ""
             try:
                 subcommand, options = self.slash_handler.parse_interaction_options(data.get("options"))
-                response_text = await self.slash_handler.execute_subcommand(
+                response_data = await self.slash_handler.execute_subcommand(
                     subcommand=subcommand,
                     options=options,
                     discord_user_id=discord_user_id,
@@ -711,10 +720,10 @@ class DiscordGatewayClient:
                 )
             except Exception as e:
                 logger.error(f"Unhandled error executing /pm slash command in gateway client: {e}", exc_info=True)
-                response_text = "❌ An unexpected error occurred while processing your request."
+                response_data = "❌ An unexpected error occurred while processing your request."
 
             # 3. Patch the deferred original message with the final result
-            await self.update_deferred_response(interaction_token, response_text)
+            await self.update_deferred_response(interaction_token, response_data)
 
 
 # Global singleton Gateway client

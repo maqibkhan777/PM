@@ -1,7 +1,7 @@
 """Discord Slash Command interaction parser and handler for PM Agent."""
 
 import asyncio
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 from app.config.settings import settings
 from app.core.actions.types import (
     create_send_message_action,
@@ -231,7 +231,7 @@ class DiscordSlashCommandHandler:
         options: Dict[str, Any],
         discord_user_id: Optional[str] = None,
         channel_id: Optional[str] = None,
-    ) -> str:
+    ) -> Union[str, Dict[str, Any]]:
         """Execute a parsed /pm subcommand with RBAC verification."""
         actor = f"discord:{discord_user_id}" if discord_user_id else "discord:user"
 
@@ -252,7 +252,7 @@ class DiscordSlashCommandHandler:
             return await self.handle_status_command(ticket=ticket)
 
         # 4. Read-only Report commands (on-demand report generation)
-        if sub in ("report", "overdue", "worklog", "attention", "activity", "queue"):
+        if sub in ("report", "overdue", "worklog", "worklogs", "daily_worklog", "attention", "activity", "queue"):
             report_name = ""
             target_date = options.get("date")
             user_input = options.get("user") or options.get("resource")
@@ -348,7 +348,7 @@ class DiscordSlashCommandHandler:
                         except Exception as e:
                             logger.warning(f"On-demand worklog Jira sync encountered notice: {e}")
                         data = await gen.generate_report(target_date=target_date, sync_jira=False)
-                        return DiscordFormatter.format_daily_worklog_text(data)
+                        return DiscordFormatter.format_daily_worklog_embed(data)
                 except Exception as e:
                     logger.error(f"Error generating worklog report: {e}", exc_info=True)
                     return "❌ Unable to generate the worklog report right now."
@@ -627,16 +627,22 @@ class DiscordSlashCommandHandler:
         channel_id = payload.get("channel_id")
 
         subcommand, options = self.parse_interaction_options(data.get("options"))
-        response_text = await self.execute_subcommand(
+        response_data = await self.execute_subcommand(
             subcommand=subcommand,
             options=options,
             discord_user_id=discord_user_id,
             channel_id=channel_id
         )
 
+        if isinstance(response_data, dict) and "embeds" in response_data:
+            return {
+                "type": INTERACTION_RESPONSE_TYPE_CHANNEL_MESSAGE,
+                "data": {"embeds": response_data["embeds"]}
+            }
+
         return {
             "type": INTERACTION_RESPONSE_TYPE_CHANNEL_MESSAGE,
-            "data": {"content": response_text}
+            "data": {"content": str(response_data) if response_data is not None else ""}
         }
 
 
