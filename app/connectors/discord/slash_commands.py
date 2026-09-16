@@ -343,14 +343,14 @@ class DiscordSlashCommandHandler:
             logger.error(f"Error generating attention report: {e}", exc_info=True)
             return "❌ Unable to generate the attention report right now."
 
-    async def handle_activity_command(self, target_date: Optional[str] = None) -> str:
+    async def handle_activity_command(self, target_date: Optional[str] = None) -> Union[str, Dict[str, Any]]:
         """Handle /pm activity command (canonical handler for Daily PM activity report)."""
         try:
             from app.core.reports.daily_report import DailyActivityReportGenerator
             from app.connectors.discord.formatter import DiscordFormatter
             gen = DailyActivityReportGenerator(manager=self.mgr)
             data = gen.generate_report(target_date=target_date)
-            return DiscordFormatter.format_daily_report_text(data)
+            return DiscordFormatter.format_daily_report_embed(data)
         except Exception as e:
             logger.error(f"Error generating daily activity report: {e}", exc_info=True)
             return "❌ Unable to generate the daily activity report right now."

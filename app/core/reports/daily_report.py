@@ -1,16 +1,26 @@
 """Daily activity report generation from normalized SQLite events."""
 
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+import datetime
+from typing import Any, Dict, List, Optional, Tuple
 from collections import defaultdict
-from app.database.repositories import EventRepository
+from app.database.repositories import EventRepository, EmployeeRoleRepository
 from app.database.connection import db_manager, DatabaseManager
 from app.connectors.discord.formatter import DiscordFormatter
 from app.core.actions.types import create_send_notification_action
 from app.core.actions.engine import action_engine
 from app.config.settings import settings
+from app.core.performance.roles import resolve_canonical_account_id
 from app.utils.time import utc_now_iso, utc_now
 from app.utils.logger import logger
+
+
+def format_date_human(date_str: str) -> str:
+    """Format YYYY-MM-DD into human-readable date."""
+    try:
+        dt = datetime.datetime.strptime(date_str[:10], "%Y-%m-%d")
+        return dt.strftime("%B %d, %Y")
+    except Exception:
+        return date_str
 
 
 class DailyActivityReportGenerator:
@@ -19,14 +29,59 @@ class DailyActivityReportGenerator:
     def __init__(self, manager: Optional[DatabaseManager] = None):
         self.mgr = manager or db_manager
         self.event_repo = EventRepository(self.mgr)
+        self.role_repo = EmployeeRoleRepository(self.mgr)
+
+    def resolve_actor_membership(
+        self,
+        actor_id: Optional[str],
+        actor_name: Optional[str] = None
+    ) -> Optional[Tuple[str, str]]:
+        """Resolve an event actor against authoritative EmployeeRoleRepository.
+
+        Returns (canonical_account_id, canonical_display_name) if the actor is an
+        active, non-excluded member of the Mursaleen Cluster.
+        Returns None if the actor cannot be resolved confidently or is not a member.
+        """
+        if not actor_id and not actor_name:
+            return None
+
+        # 1. Resolve canonical account ID via deterministic role resolver
+        canonical_id = resolve_canonical_account_id(
+            identifier=actor_id,
+            display_name=actor_name,
+            role_repo=self.role_repo
+        )
+
+        assignment = None
+        if canonical_id:
+            assignment = self.role_repo.get_by_account_id(canonical_id)
+
+        if not assignment and actor_name:
+            assignment = self.role_repo.get_by_display_name(actor_name)
+
+        if not assignment:
+            return None
+
+        account_id = assignment["account_id"]
+        display_name = assignment.get("display_name") or actor_name or account_id
+
+        # 2. Check canonical exclusion list (e.g. Jira admins, MORITZ, QA runner, external users)
+        if settings.is_canonical_excluded(account_id, display_name):
+            return None
+
+        return account_id, display_name
 
     def generate_report(self, target_date: Optional[str] = None) -> Dict[str, Any]:
         """Generate daily activity metrics for a date string 'YYYY-MM-DD' (defaults to today UTC)."""
         date_str = target_date or utc_now().strftime("%Y-%m-%d")
+        formatted_date = format_date_human(date_str)
+        team_name = settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else "Mursaleen Cluster"
+
         events = self.event_repo.get_events_for_date(date_str)
 
-        total_activities = len(events)
+        total_activities = 0
         by_resource: Dict[str, int] = defaultdict(int)
+        member_breakdowns: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
         tasks_created = 0
         tasks_updated = 0
         tasks_completed = 0
@@ -38,13 +93,41 @@ class DailyActivityReportGenerator:
         blocked_tasks = 0
         reopened_tasks = 0
 
-        transitions_list: List[Dict[str, str]] = []
+        transitions_list: List[Dict[str, Any]] = []
+        activities_list: List[Dict[str, Any]] = []
 
         for e in events:
             etype = e.get("event_type", "")
-            actor = e.get("actor_name") or "System"
-            if actor:
-                by_resource[actor] += 1
+            actor_id = e.get("actor_id")
+            actor_name = e.get("actor_name")
+
+            # Extract actor info from payload if top-level fields are empty
+            payload = e.get("payload", {})
+            if not actor_id and isinstance(payload, dict):
+                user_obj = payload.get("user") or payload.get("author") or payload.get("creator") or {}
+                if isinstance(user_obj, dict):
+                    actor_id = user_obj.get("accountId") or user_obj.get("name")
+                    if not actor_name:
+                        actor_name = user_obj.get("displayName") or user_obj.get("name")
+
+            resolved = self.resolve_actor_membership(actor_id, actor_name)
+            if not resolved:
+                # Exclude activities performed by non-members, admins, service accounts, external users
+                continue
+
+            canonical_account_id, canonical_name = resolved
+
+            total_activities += 1
+            by_resource[canonical_name] += 1
+            member_breakdowns[canonical_name][etype] += 1
+
+            task_key = e.get("task_key") or e.get("task_id") or "N/A"
+            if task_key and task_key != "N/A":
+                jira_url = settings.get_jira_browse_url(task_key)
+                jira_link = DiscordFormatter.format_jira_link(task_key)
+            else:
+                jira_url = None
+                jira_link = "N/A"
 
             if etype == "TaskCreated":
                 tasks_created += 1
@@ -53,14 +136,28 @@ class DailyActivityReportGenerator:
             elif etype == "TaskCompleted":
                 tasks_completed += 1
                 status_transitions += 1
+                old_st = payload.get("old_status", "In Progress") if isinstance(payload, dict) else "In Progress"
+                transitions_list.append({
+                    "task": task_key,
+                    "task_url": jira_url,
+                    "jira_link": jira_link,
+                    "actor": canonical_name,
+                    "old_status": old_st,
+                    "new_status": "Done",
+                    "timestamp": e.get("timestamp")
+                })
             elif etype == "TaskStatusChanged":
                 status_transitions += 1
-                payload = e.get("payload", {})
+                old_st = payload.get("old_status", "Unknown") if isinstance(payload, dict) else "Unknown"
+                new_st = payload.get("new_status", "Unknown") if isinstance(payload, dict) else "Unknown"
                 transitions_list.append({
-                    "task": e.get("task_key") or e.get("task_id") or "N/A",
-                    "actor": actor,
-                    "old_status": payload.get("old_status", "Unknown"),
-                    "new_status": payload.get("new_status", "Unknown")
+                    "task": task_key,
+                    "task_url": jira_url,
+                    "jira_link": jira_link,
+                    "actor": canonical_name,
+                    "old_status": old_st,
+                    "new_status": new_st,
+                    "timestamp": e.get("timestamp")
                 })
             elif etype == "TaskCommentAdded":
                 comments_added += 1
@@ -75,11 +172,34 @@ class DailyActivityReportGenerator:
             elif etype == "TaskReopened":
                 reopened_tasks += 1
 
+            activities_list.append({
+                "event_type": etype,
+                "task": task_key,
+                "task_url": jira_url,
+                "jira_link": jira_link,
+                "actor": canonical_name,
+                "timestamp": e.get("timestamp")
+            })
+
+        # Serialized member breakdown
+        member_stats = []
+        for name, count in sorted(by_resource.items(), key=lambda x: (-x[1], x[0])):
+            counts_by_type = dict(member_breakdowns[name])
+            member_stats.append({
+                "display_name": name,
+                "total_activities": count,
+                "breakdown": counts_by_type
+            })
+
         report = {
             "date": date_str,
+            "formatted_date": formatted_date,
+            "team_name": team_name,
             "generated_at": utc_now_iso(),
             "total_activities": total_activities,
+            "active_members_count": len(by_resource),
             "activities_by_resource": dict(by_resource),
+            "members": member_stats,
             "tasks_created": tasks_created,
             "tasks_updated": tasks_updated,
             "tasks_completed": tasks_completed,
@@ -90,7 +210,8 @@ class DailyActivityReportGenerator:
             "stale_tasks": stale_tasks,
             "blocked_tasks": blocked_tasks,
             "reopened_tasks": reopened_tasks,
-            "recent_transitions": transitions_list[-10:],
+            "recent_transitions": transitions_list,
+            "activities": activities_list,
         }
         return report
 
