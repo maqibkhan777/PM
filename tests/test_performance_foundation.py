@@ -96,10 +96,10 @@ def test_client(temp_db):
 # =============================================================================
 
 def test_authoritative_roles_seeding(temp_db):
-    """Verify 18 authoritative employee designations are seeded with exact text and normalized categories."""
+    """Verify authoritative employee designations are seeded with exact text and normalized categories."""
     role_repo = EmployeeRoleRepository(temp_db)
     assignments = role_repo.list_assignments()
-    assert len(assignments) == 18
+    assert len(assignments) == len(AUTHORITATIVE_EMPLOYEE_ROLES)
 
     # Verify exact designation and role category for key members
     tahir = role_repo.get_by_account_id("638855b85fce844d606bb422")
@@ -426,7 +426,7 @@ def test_api_roles_and_unresolved_endpoints(test_client, temp_db):
     resp_roles = test_client.get("/performance/roles")
     assert resp_roles.status_code == 200
     roles_list = resp_roles.json()
-    assert len(roles_list) == 18
+    assert len(roles_list) == len(AUTHORITATIVE_EMPLOYEE_ROLES)
 
     # 2. Seed an unseeded active issue
     issue_repo = JiraIssueStateRepository(temp_db)

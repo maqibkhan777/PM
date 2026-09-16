@@ -51,6 +51,8 @@ CATEGORY_TO_RESOURCE_ROLE = {
 AUTHORITATIVE_JIRA_LEGACY_ACCOUNT_MAP: Dict[str, str] = {
     "ahsan.amin": "712020:8bc58bcd-fe17-4f1b-9825-c5251cb6b1de",
     "jira-user-ahsan": "712020:8bc58bcd-fe17-4f1b-9825-c5251cb6b1de",
+    "usman": "5f83e3937d9637006ffd0436",
+    "syed muhammad usman": "5f83e3937d9637006ffd0436",
 }
 
 
@@ -142,6 +144,31 @@ def get_employee_designation_and_category(
             )
 
     return "Unknown", RoleCategory.UNKNOWN.value, False
+
+
+def get_employee_queue_filter_id(
+    account_id: Optional[str],
+    display_name: Optional[str] = None,
+    role_repo: Optional[EmployeeRoleRepository] = None,
+) -> Optional[str]:
+    """Look up authoritative Jira queue saved filter ID from SQLite."""
+    if not account_id and not display_name:
+        return None
+
+    repo = role_repo or EmployeeRoleRepository()
+    canonical_id = resolve_canonical_account_id(account_id, display_name, role_repo=repo)
+
+    if canonical_id:
+        assignment = repo.get_by_account_id(canonical_id)
+        if assignment and assignment.get("jira_queue_filter_id"):
+            return assignment.get("jira_queue_filter_id")
+
+    if display_name:
+        assignment = repo.get_by_display_name(display_name)
+        if assignment and assignment.get("jira_queue_filter_id"):
+            return assignment.get("jira_queue_filter_id")
+
+    return None
 
 
 def resolve_resource_role(

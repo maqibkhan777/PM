@@ -124,6 +124,7 @@ class EmployeeRoleAssignment(BaseModel):
     effective_from: Optional[str] = None
     effective_to: Optional[str] = None
     source: str = "authoritative_seed"
+    jira_queue_filter_id: Optional[str] = None
     created_at: str
     updated_at: str
 

@@ -221,6 +221,7 @@ CREATE TABLE IF NOT EXISTS employee_role_assignments (
     effective_from TEXT,
     effective_to TEXT,
     source TEXT NOT NULL DEFAULT 'authoritative_seed',
+    jira_queue_filter_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -800,115 +801,161 @@ def _migrate_performance_tables(conn) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_perf_val_team ON performance_validation_reports(team_group)")
 
 
-# Authoritative 18 employee designations seeded by exact account_id and exact designation
+def _migrate_employee_roles(conn) -> None:
+    """Idempotently ensure employee_role_assignments schema contains all expected columns."""
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='employee_role_assignments'"
+    )
+    if not cursor.fetchone():
+        return
+
+    cursor = conn.execute("PRAGMA table_info(employee_role_assignments)")
+    rows = cursor.fetchall()
+    existing_columns = {
+        row["name"] if hasattr(row, "keys") and "name" in row.keys() else row[1]
+        for row in rows
+    }
+
+    if "jira_queue_filter_id" not in existing_columns:
+        logger.info("Migrating database: adding 'jira_queue_filter_id' column to employee_role_assignments table...")
+        conn.execute("ALTER TABLE employee_role_assignments ADD COLUMN jira_queue_filter_id TEXT")
+        logger.info("Database migration complete: 'jira_queue_filter_id' column added successfully.")
+
+
+# Authoritative employee designations and Jira saved filter assignments
 AUTHORITATIVE_EMPLOYEE_ROLES = [
     {
         "account_id": "712020:8bc58bcd-fe17-4f1b-9825-c5251cb6b1de",
         "display_name": "Ahsan Amin",
         "designation": "Senior WordPress Developer",
         "role_category": "WordPress Development",
+        "jira_queue_filter_id": "15370",
     },
     {
         "account_id": "63da2ba4f1475ad42c584247",
         "display_name": "Ahsan Iftikhar",
         "designation": "Senior BA",
         "role_category": "Business Analysis",
+        "jira_queue_filter_id": "17081",
     },
     {
         "account_id": "712020:0eca0fb9-4f12-4532-a435-4c178f2d90e8",
         "display_name": "Nauman Sadiq",
         "designation": "Senior BA",
         "role_category": "Business Analysis",
+        "jira_queue_filter_id": "16829",
     },
     {
         "account_id": "712020:a6d04898-c6d8-4a39-a521-103e4b8bfe7c",
         "display_name": "Muhammad Shahmeer Khan",
         "designation": "Junior BA",
         "role_category": "Business Analysis",
+        "jira_queue_filter_id": "15517",
     },
     {
         "account_id": "712020:c12d2371-1e5b-4797-a888-369c0c9c5a65",
         "display_name": "Muhammad Sufiyan",
         "designation": "Senior QA Engineer",
         "role_category": "QA",
+        "jira_queue_filter_id": "15515",
     },
     {
         "account_id": "712020:32e5be05-80c9-4ece-ac19-301da7c9487d",
         "display_name": "shoaib hassan askari",
         "designation": "Senior QA",
         "role_category": "QA",
+        "jira_queue_filter_id": "15516",
     },
     {
         "account_id": "712020:12e1da4b-147f-4f91-9d2d-965b66e19b61",
         "display_name": "Muhammad Bilal Khan",
         "designation": "Mid-level QA",
         "role_category": "QA",
+        "jira_queue_filter_id": "16817",
     },
     {
         "account_id": "63e362bd790148a180977179",
         "display_name": "Daniyal Raza",
         "designation": "Mid-level WordPress Developer",
         "role_category": "WordPress Development",
+        "jira_queue_filter_id": "16826",
     },
     {
         "account_id": "5fb3d908facfd6007697c25a",
         "display_name": "Muhammad Hamza",
         "designation": "Mid-level WordPress Developer",
         "role_category": "WordPress Development",
+        "jira_queue_filter_id": "16827",
     },
     {
         "account_id": "606570150a6b3f00698f9430",
         "display_name": "Muneeb Jalal",
         "designation": "Senior WordPress Developer",
         "role_category": "WordPress Development",
+        "jira_queue_filter_id": "15369",
     },
     {
         "account_id": "61ee41431c42100069344a09",
         "display_name": "Syed ali",
         "designation": "Senior WordPress Developer",
         "role_category": "WordPress Development",
+        "jira_queue_filter_id": "15368",
     },
     {
         "account_id": "638855b85fce844d606bb422",
         "display_name": "Tahir Ali",
         "designation": "Senior Content Writer / Marketing Strategist",
         "role_category": "Content / Marketing",
+        "jira_queue_filter_id": "16828",
     },
     {
         "account_id": "638490c75fce844d606a16ef",
         "display_name": "Hamza Hanif",
         "designation": "SEO",
         "role_category": "SEO",
+        "jira_queue_filter_id": "17010",
     },
     {
         "account_id": "712020:e268bcd8-d981-4b4d-992d-d5694745df8b",
         "display_name": "Mubashir Butt",
         "designation": "Customer Support Engineer",
         "role_category": "Customer Support",
+        "jira_queue_filter_id": None,
     },
     {
         "account_id": "712020:fb8608cb-6393-48a7-a3ab-1ad744a2b7f6",
         "display_name": "Muhammad Usama Azad",
         "designation": "Front End Developer",
         "role_category": "Frontend Development",
+        "jira_queue_filter_id": "15367",
     },
     {
         "account_id": "712020:2783ea21-c611-402d-9adb-0529f5b7066d",
         "display_name": "Muhammad Ali Siddiqui",
         "designation": "Junior Content Writer",
         "role_category": "Content",
+        "jira_queue_filter_id": "17129",
     },
     {
         "account_id": "712020:bb2e5830-7156-4852-bba8-75fa773fc55d",
         "display_name": "Talha Bukhari",
         "designation": "Content Producer",
         "role_category": "Content",
+        "jira_queue_filter_id": "17082",
     },
     {
         "account_id": "712020:1ddac8e3-e006-48e7-b4c9-ee941efc8e6e",
         "display_name": "Azain Hassan",
         "designation": "Designer",
         "role_category": "Design",
+        "jira_queue_filter_id": "15371",
+    },
+    {
+        "account_id": "5f83e3937d9637006ffd0436",
+        "display_name": "Usman",
+        "designation": "Engineering Manager",
+        "role_category": "Unknown",
+        "jira_queue_filter_id": "17124",
     },
 ]
 
@@ -1427,12 +1474,13 @@ def _seed_authoritative_roles(conn) -> None:
             """
             INSERT INTO employee_role_assignments (
                 id, account_id, display_name, designation, role_category,
-                effective_from, effective_to, source, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'authoritative_seed', ?, ?)
+                effective_from, effective_to, source, jira_queue_filter_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'authoritative_seed', ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 display_name = excluded.display_name,
                 designation = excluded.designation,
                 role_category = excluded.role_category,
+                jira_queue_filter_id = excluded.jira_queue_filter_id,
                 updated_at = excluded.updated_at
             """,
             (
@@ -1442,6 +1490,7 @@ def _seed_authoritative_roles(conn) -> None:
                 r["designation"],
                 r["role_category"],
                 "2026-01-01",
+                r.get("jira_queue_filter_id"),
                 now_iso,
                 now_iso,
             ),
@@ -1454,6 +1503,7 @@ def _apply_migrations(conn) -> None:
     _migrate_jira_worklogs(conn)
     _migrate_actions(conn)
     _migrate_performance_tables(conn)
+    _migrate_employee_roles(conn)
 
 
 def _ensure_post_migration_indexes(conn) -> None:

@@ -39,6 +39,7 @@ class CreateRoleAssignmentRequest(BaseModel):
     role_category: str = Field(..., description="Normalized role category")
     effective_from: Optional[str] = None
     effective_to: Optional[str] = None
+    jira_queue_filter_id: Optional[str] = Field(None, description="Jira saved queue filter ID")
 
 
 @router.get("/runs/latest", response_model=Optional[Dict[str, Any]])

@@ -32,7 +32,7 @@ from app.database.repositories import (
     PerformanceRepository,
     PerformanceValidationRepository,
 )
-from app.database.schema import init_db
+from app.database.schema import init_db, AUTHORITATIVE_EMPLOYEE_ROLES
 from app.utils.time import format_iso, utc_now, utc_now_iso
 
 
@@ -93,7 +93,7 @@ def test_validation_engine_execution(temp_db):
         ValidationRecommendation.READY_WITH_DATA_QUALITY_LIMITATIONS,
     ]
     assert "authoritative_designated_count" in report.executive_summary
-    assert report.team_population_validation["authoritative_designated_count"] == 18
+    assert report.team_population_validation["authoritative_designated_count"] == len(AUTHORITATIVE_EMPLOYEE_ROLES)
 
 
 # =============================================================================
@@ -131,7 +131,7 @@ def test_strict_no_ranking_and_no_score_assertion(temp_db):
 # =============================================================================
 
 def test_population_and_exclusion_integrity_validation(temp_db):
-    """Verify 18 authoritative designations mapped and 4 global exclusions verified absent."""
+    """Verify authoritative designations mapped and 4 global exclusions verified absent."""
     worklog_repo = JiraWorklogRepository(temp_db)
 
     # Insert worklogs for regular developer (Awais) and canonical excluded (Aqib Khan)
@@ -156,7 +156,7 @@ def test_population_and_exclusion_integrity_validation(temp_db):
     report = validator.validate_team(history_days=365)
     pop_val = report.team_population_validation
 
-    assert pop_val["authoritative_designated_count"] == 18
+    assert pop_val["authoritative_designated_count"] == len(AUTHORITATIVE_EMPLOYEE_ROLES)
     assert pop_val["globally_excluded_resources_count"] >= 4
     assert pop_val["globally_excluded_ids_verified_absent"] is True
     assert len(pop_val["excluded_violations"]) == 0

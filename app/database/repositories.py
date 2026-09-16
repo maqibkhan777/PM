@@ -1888,6 +1888,8 @@ class EmployeeRoleRepository:
         legacy_map = {
             "ahsan.amin": "712020:8bc58bcd-fe17-4f1b-9825-c5251cb6b1de",
             "jira-user-ahsan": "712020:8bc58bcd-fe17-4f1b-9825-c5251cb6b1de",
+            "usman": "5f83e3937d9637006ffd0436",
+            "syed muhammad usman": "5f83e3937d9637006ffd0436",
         }
         target_id = legacy_map.get(str(account_id).strip().lower(), str(account_id).strip())
 
@@ -1917,6 +1919,20 @@ class EmployeeRoleRepository:
             row = cursor.fetchone()
             return dict(row) if row else None
 
+    def get_queue_filter_id(self, account_id: str) -> Optional[str]:
+        """Retrieve Jira saved queue filter ID by account ID (or alias)."""
+        assignment = self.get_by_account_id(account_id)
+        if assignment:
+            return assignment.get("jira_queue_filter_id")
+        return None
+
+    def get_queue_filter_id_by_display_name(self, display_name: str) -> Optional[str]:
+        """Retrieve Jira saved queue filter ID by display name."""
+        assignment = self.get_by_display_name(display_name)
+        if assignment:
+            return assignment.get("jira_queue_filter_id")
+        return None
+
     def list_assignments(self) -> List[Dict[str, Any]]:
         """List all authoritative employee role assignments."""
         with self.mgr.session() as conn:
@@ -1937,6 +1953,7 @@ class EmployeeRoleRepository:
         effective_from: Optional[str] = None,
         effective_to: Optional[str] = None,
         source: str = "manual_admin",
+        jira_queue_filter_id: Optional[str] = None,
     ) -> None:
         """Insert or update an employee role assignment."""
         now_str = utc_now_iso()
@@ -1946,8 +1963,8 @@ class EmployeeRoleRepository:
                 """
                 INSERT INTO employee_role_assignments (
                     id, account_id, display_name, designation, role_category,
-                    effective_from, effective_to, source, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    effective_from, effective_to, source, jira_queue_filter_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     display_name = excluded.display_name,
                     designation = excluded.designation,
@@ -1955,6 +1972,7 @@ class EmployeeRoleRepository:
                     effective_from = excluded.effective_from,
                     effective_to = excluded.effective_to,
                     source = excluded.source,
+                    jira_queue_filter_id = excluded.jira_queue_filter_id,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -1966,6 +1984,7 @@ class EmployeeRoleRepository:
                     effective_from,
                     effective_to,
                     source,
+                    jira_queue_filter_id,
                     now_str,
                     now_str,
                 ),
@@ -1978,6 +1997,8 @@ class EmployeeRoleRepository:
         legacy_map = {
             "ahsan.amin": "712020:8bc58bcd-fe17-4f1b-9825-c5251cb6b1de",
             "jira-user-ahsan": "712020:8bc58bcd-fe17-4f1b-9825-c5251cb6b1de",
+            "usman": "5f83e3937d9637006ffd0436",
+            "syed muhammad usman": "5f83e3937d9637006ffd0436",
         }
         with self.mgr.session() as conn:
             cursor = conn.execute("SELECT account_id, display_name FROM employee_role_assignments")
