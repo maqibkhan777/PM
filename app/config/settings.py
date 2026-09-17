@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     TICKET_CREATION_NOTIFY_PM: bool = True
     NOTIFICATION_COOLDOWN_MINUTES: int = 60
 
+    # Production Automation Safety Flags (Default: False)
+    EPIC_REVIEW_ENABLED: bool = False
+    MUBASHIR_STALE_SUPPORT_ENABLED: bool = False
+    MUBASHIR_SUPPORT_RULE_ENABLED: bool = False
+
     # Active Queue Filter Settings (Jira Cloud source of truth)
     JIRA_ACTIVE_QUEUE_FILTER_ID: Optional[str] = None
     JIRA_ACTIVE_QUEUE_JQL: Optional[str] = None
@@ -215,14 +220,22 @@ class Settings(BaseSettings):
     def is_discord_user_allowed(self, discord_user_id: Optional[str]) -> bool:
         """Check if a Discord user ID is allowed to run PM commands.
         
-        If DISCORD_PM_ALLOWED_USERS is empty, in development it defaults to allowed;
-        if populated, strictly enforces the allowlist.
+        - If discord_user_id is None or empty: returns False.
+        - If DISCORD_PM_ALLOWED_USERS == "*": returns True.
+        - If DISCORD_PM_ALLOWED_USERS is empty:
+            * In production (APP_ENV=production): DENY ALL (False).
+            * In development/local (APP_ENV != production): ALLOW ALL (True).
+        - If DISCORD_PM_ALLOWED_USERS is configured: strictly checks membership.
         """
-        if not discord_user_id:
+        if not discord_user_id or not str(discord_user_id).strip():
             return False
+        raw_allowed = (self.DISCORD_PM_ALLOWED_USERS or "").strip()
+        if raw_allowed == "*":
+            return True
         allowed = self.get_discord_pm_allowed_users()
         if not allowed:
-            # If no explicit allowlist is configured, permit (e.g. initial dev/testing)
+            if self.is_production():
+                return False
             return True
         return str(discord_user_id).strip() in allowed
 

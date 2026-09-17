@@ -28,6 +28,8 @@ class PeriodicScheduler:
         self.mgr = manager or db_manager
         self.event_repo = EventRepository(self.mgr)
         self.issue_state_repo = JiraIssueStateRepository(self.mgr)
+        from app.services.notification_deduplication import NotificationDeduplicationService
+        self.dedup_service = NotificationDeduplicationService(self.mgr)
         self._running = False
         self._rules_task: Optional[asyncio.Task] = None
         self._polling_task: Optional[asyncio.Task] = None
@@ -429,6 +431,8 @@ class PeriodicScheduler:
 
     async def _evaluate_mubashir_stale_support_tickets(self) -> List[Any]:
         """Find internal Support tickets created by Mubashir in eligible statuses inactive for >= 3 business days."""
+        if not settings.MUBASHIR_STALE_SUPPORT_ENABLED:
+            return []
         self._sync_recent_events_to_projection()
         actions = []
         now_tz = datetime.now(zoneinfo.ZoneInfo("Asia/Karachi"))
@@ -503,7 +507,8 @@ class PeriodicScheduler:
             if business_days >= 3.0:
                 # Idempotency key based on issue key and last activity timestamp
                 dedup_condition = f"mubashir_support_stale:{task_key}:{last_act_str}"
-                if not notification_dedup_service.should_notify(
+                dedup_svc = getattr(self, "dedup_service", None) or notification_dedup_service
+                if not dedup_svc.should_notify(
                     rule_id="MubashirStaleSupport",
                     target_id=task_key,
                     condition=dedup_condition
@@ -526,7 +531,7 @@ class PeriodicScheduler:
                 actions.append(comment_action)
 
                 # Record deduplication
-                notification_dedup_service.record_notification_sent(
+                dedup_svc.record_notification_sent(
                     rule_id="MubashirStaleSupport",
                     target_id=task_key,
                     condition=dedup_condition
@@ -537,6 +542,8 @@ class PeriodicScheduler:
 
     async def _evaluate_active_epic_review(self) -> Optional[Dict[str, Any]]:
         """Run scheduled review of active Epics assigned to or reported by PM."""
+        if not settings.EPIC_REVIEW_ENABLED:
+            return None
         if not settings.is_jira_configured():
             return None
         try:

@@ -106,6 +106,7 @@ async def test_jira_client_add_comment_payload():
 @pytest.mark.asyncio
 async def test_stale_support_evaluation_generates_correct_comment_and_idempotency(temp_db, monkeypatch):
     """Verify PeriodicScheduler generates the concise reminder and respects idempotency."""
+    monkeypatch.setattr(settings, "MUBASHIR_STALE_SUPPORT_ENABLED", True)
     monkeypatch.setattr(type(settings), "is_jira_configured", lambda self: False)
     state_repo = JiraIssueStateRepository(temp_db)
     scheduler = PeriodicScheduler(temp_db)

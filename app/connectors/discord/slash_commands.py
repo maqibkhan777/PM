@@ -205,15 +205,28 @@ class DiscordSlashCommandHandler:
         return None, None
 
     def _is_authorized_pm(self, discord_user_id: Optional[str]) -> bool:
-        """Verify whether a Discord user is permitted to execute /pm commands."""
+        """Verify whether a Discord user is permitted to execute /pm commands.
+
+        - If DISCORD_PM_COMMAND_ENABLED is False => DENY ALL.
+        - If discord_user_id is None or empty => DENY.
+        - If DISCORD_PM_ALLOWED_USERS == "*" => ALLOW.
+        - If DISCORD_PM_ALLOWED_USERS is empty:
+            * In production (APP_ENV=production) => DENY ALL.
+            * In development/local (APP_ENV != production) => ALLOW ALL.
+        - If DISCORD_PM_ALLOWED_USERS is configured => check membership in allowlist.
+        """
         if not settings.DISCORD_PM_COMMAND_ENABLED:
             return False
-        allowed = settings.DISCORD_PM_ALLOWED_USERS.strip()
-        if not allowed or allowed == "*":
+        if not discord_user_id or not str(discord_user_id).strip():
+            return False
+        allowed = (settings.DISCORD_PM_ALLOWED_USERS or "").strip()
+        if allowed == "*":
+            return True
+        if not allowed:
+            if settings.is_production():
+                return False
             return True
         allowed_list = [u.strip() for u in allowed.split(",") if u.strip()]
-        if not discord_user_id:
-            return False
         return str(discord_user_id).strip() in allowed_list
 
     # =========================================================================

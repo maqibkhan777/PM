@@ -98,7 +98,7 @@ class MubashirSupportRule(BaseRule):
         self.dedup_service = NotificationDeduplicationService(manager=self.mgr)
 
     def evaluate(self, event: BaseEvent, context: Optional[Dict[str, Any]] = None) -> List[BaseAction]:
-        if not self.enabled or not isinstance(event, TaskCreated):
+        if not self.enabled or not settings.MUBASHIR_SUPPORT_RULE_ENABLED or not isinstance(event, TaskCreated):
             return []
 
         # Prevent bootstrap / historical import floods

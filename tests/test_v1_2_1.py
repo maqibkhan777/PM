@@ -341,6 +341,11 @@ class TestCustomerServiceManagementExclusion:
 # ==============================================================================
 
 class TestMubashirSupportRule:
+    @pytest.fixture(autouse=True)
+    def enable_mubashir_support_rule_flag(self, monkeypatch):
+        """Enable MUBASHIR_SUPPORT_RULE_ENABLED flag for testing rule evaluation logic."""
+        monkeypatch.setattr(settings, "MUBASHIR_SUPPORT_RULE_ENABLED", True)
+
     def test_sprint_name_extraction(self):
         """Verify sprint name extraction from various Jira Cloud field formats."""
         # 1. customfield_10020 with list of dicts
@@ -474,6 +479,11 @@ class TestMubashirSupportRule:
 # ==============================================================================
 
 class TestMubashirStaleSupport:
+    @pytest.fixture(autouse=True)
+    def enable_mubashir_stale_support_flag(self, monkeypatch):
+        """Enable MUBASHIR_STALE_SUPPORT_ENABLED flag for testing stale evaluation logic."""
+        monkeypatch.setattr(settings, "MUBASHIR_STALE_SUPPORT_ENABLED", True)
+
     def test_business_days_calculation_scenarios(self):
         """Verify Asia/Karachi business day calculations with weekend exclusion."""
         tz = zoneinfo.ZoneInfo("Asia/Karachi")
