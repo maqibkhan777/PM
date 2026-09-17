@@ -1,153 +1,193 @@
-# PM Operations Agent — V0.1
+# PM Operations Agent — V1.2.1
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg)](https://fastapi.tiangolo.com)
 [![SQLite](https://img.shields.io/badge/SQLite-WAL_Mode-003B57.svg)](https://www.sqlite.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A local-first, connector-based automation platform designed for Project Managers to monitor team activity, enforce workflow rules, dispatch notifications and direct messages, generate daily reports, and safely execute project management actions through a centralized Action & Approval Engine.
+A local-first, connector-based automation and operational reporting platform for Project Managers. The system monitors Jira Cloud activity in near real-time, projects state into SQLite, evaluates workflow and policy rules, dispatches mobile-first Discord reports and alerts, and executes project management operations safely through a centralized Action Engine and strict production safety guards.
 
 ---
 
 ## 1. Core Architectural Principles
 
-1. **Decoupled Core**: The application core operates strictly on generic domain models (`Task`, `Project`, `User`, `Event`, `Action`, `Rule`, `Notification`, `Report`). The core has **zero** direct dependencies on Jira, Mattermost, or Discord.
-2. **Connector Architecture**: External systems translate incoming webhooks into normalized domain events (`TaskCreated`, `TaskStatusChanged`, `TaskCommentAdded`, etc.) and translate domain actions (`SendMessage`, `TransitionTask`) into external API calls.
-3. **Idempotent Action Engine**: Every action carries a deterministic `idempotency_key` and is checked against the database before execution to prevent duplicate writes on network retries.
-4. **Centralized Dry Run**: When `DRY_RUN=true`, the Action Engine intercepts and simulates all external mutating calls centrally, producing human-readable previews and audit logs without making mutating external network requests.
-5. **Strict User Mapping**: The system strictly resolves Jira users to Mattermost accounts (Explicit Mapping ➔ Verified Email ➔ Exact Name). If unresolved, the system **never guesses**—it creates a `USER_MAPPING_REQUIRED` state and alerts the PM via Discord.
-6. **In-Process Background Scheduler**: Periodically evaluates time-based rules (`StaleTaskRule`, `OverdueRule`) without requiring external infrastructure like Redis or Celery.
+1. **Decoupled Domain Core**: The application core operates strictly on domain models (`Task`, `Project`, `User`, `Event`, `Action`, `Rule`, `Notification`, `Report`). The core logic is isolated from external communication protocols.
+2. **Connector Layer**: Dedicated connectors translate incoming external data into normalized events (`TaskCreated`, `TaskStatusChanged`, `TaskCommentAdded`, `TaskAssigned`, etc.) and translate domain actions (`SendMessage`, `TransitionTask`, `AddComment`, `CreateTask`, `UpdateTask`) into external API calls.
+3. **Idempotent Action Engine**: Every action carries a deterministic `idempotency_key` and is tracked in SQLite to prevent duplicate executions across network retries or overlapping schedules.
+4. **Centralized Dry Run**: When `DRY_RUN=true` (the default), the Action Engine intercepts and simulates all external mutating calls, emitting human-readable preview logs and audit records without altering Jira, Discord, or Mattermost.
+5. **Authoritative Employee & Role Resolution**: Team assignments, saved-filter lookups, and reporting boundaries resolve deterministically against local SQLite repositories (`employee_roles`, `plugin_boards`).
+6. **In-Process Periodic Scheduler**: Periodically evaluates polling loops, time-based rules, and scheduled daily reports without external broker dependencies.
+7. **Production Automation Safety Guards**: Automated Jira mutations (transitions, comments) are gated behind explicit environment feature flags and disabled by default.
+8. **Role-Based Discord Authorization**: Interactive slash commands enforce strict user allowlist verification, defaulting to deny-all in production.
 
 ---
 
-## 2. High-Level Architecture
+## 2. System Architecture & Workflows
+
+### Main Event & Action Processing Flow
 
 ```
-                          EXTERNAL SYSTEMS
-                                 │
-                 ┌───────────────┼───────────────┐
-                 │               │               │
-                 ▼               ▼               ▼
-            Jira Cloud       Mattermost       Discord
-                 │               │               │
-                 └───────────────┼───────────────┘
-                                 │
-                          CONNECTOR LAYER
-                                 │
-                                 ▼
-                        EVENT NORMALIZATION
-                                 │
-                                 ▼
-                             EVENT BUS
-                                 │
-              ┌──────────────────┼──────────────────┐
-              ▼                  ▼                  ▼
-        RULES ENGINE       REPORT ENGINE       FUTURE AI
-              │                  │
-              └─────────┬────────┘
-                        ▼
-                  ACTION ENGINE
-                        │
-                 APPROVAL ENGINE
-                        │
-                 CENTRAL DRY RUN
-                        │
-                  AUDIT LOGGER
-                        │
-                 CONNECTOR LAYER
-                        │
-              ┌─────────┼─────────┐
-              ▼         ▼         ▼
-            Jira    Mattermost Discord
+   ┌────────────────────────────────────────────────────────┐
+   │                       Jira Cloud                       │
+   └───────────────────────────┬────────────────────────────┘
+                               │ (REST API v3 / Polling every 2m)
+                               ▼
+   ┌────────────────────────────────────────────────────────┐
+   │                      Jira Poller                       │
+   └───────────────────────────┬────────────────────────────┘
+                               │ (Normalized Events)
+                               ▼
+   ┌────────────────────────────────────────────────────────┐
+   │         Event Bus & SQLite Projection Layer            │
+   │  - event_store / jira_issue_state (WAL Mode)           │
+   │  - notification_dedup_service                          │
+   └───────────────┬────────────────────────┬───────────────┘
+                   │                        │
+                   ▼                        ▼
+   ┌─────────────────────────────┐  ┌───────────────────────┐
+   │        Rules Engine         │  │    Report Engine      │
+   │  - Stale / Overdue Tasks    │  │  - Daily Worklog      │
+   │  - Blocked / Reopened       │  │  - Daily Overdue      │
+   │  - Comment Mentions         │  │  - PM Attention       │
+   │  - Ticket Creation Policy   │  │  - Active Queue       │
+   │  - Mubashir Support Rules   │  │  - Daily Activity     │
+   └───────────────┬─────────────┘  └───────┬───────────────┘
+                   │                        │
+                   └───────────┬────────────┘
+                               ▼
+   ┌────────────────────────────────────────────────────────┐
+   │                    Action Engine                       │
+   │  - Idempotency & Validation Gate                       │
+   │  - Centralized Dry Run Handler                         │
+   │  - Audit Service (Sensitive data redacted)             │
+   └───────────────────────────┬────────────────────────────┘
+                               │
+                               ▼
+   ┌────────────────────────────────────────────────────────┐
+   │                   Discord Connector                    │
+   │  - Mobile-First Multi-Embed Presentations              │
+   │  - Webhook Dispatcher & Interactive Gateway Bot        │
+   └────────────────────────────────────────────────────────┘
 ```
 
----
-
-## 3. Project Structure
+### Active Queue Architecture
 
 ```
-pm-operations-agent/
-│
-├── app/
-│   ├── config/
-│   │   └── settings.py               # Pydantic environment configuration & settings
-│   ├── database/
-│   │   ├── connection.py             # Thread-safe SQLite connection manager
-│   │   ├── schema.py                 # DDL definitions & table initialization
-│   │   └── repositories.py           # Repositories for Events, Users, Mappings, Rules, Actions, Audits
-│   ├── core/
-│   │   ├── models/
-│   │   │   ├── domain.py             # Generic domain models (Task, User, Message, ActionPreview)
-│   │   │   └── enums.py              # TaskStatus, ActionType, Capability, SecurityLevel
-│   │   ├── events/
-│   │   │   ├── base.py               # BaseEvent abstract class
-│   │   │   ├── types.py              # Concrete normalized & domain events
-│   │   │   └── bus.py                # In-process asynchronous Event Bus with deduplication
-│   │   ├── rules/
-│   │   │   ├── base.py               # BaseRule interface
-│   │   │   ├── engine.py             # RulesEngine coordinator
-│   │   │   └── builtin.py            # ActiveWorkRule, StaleTaskRule, OverdueRule, BlockedRule, ReopenedRule
-│   │   ├── actions/
-│   │   │   ├── base.py               # BaseAction & ActionResult
-│   │   │   ├── types.py              # Action factory constructors
-│   │   │   └── engine.py             # ActionEngine router, idempotency & central Dry Run
-│   │   ├── approvals/
-│   │   │   └── engine.py             # Approval classification (AUTO, APPROVAL_REQUIRED, BLOCKED)
-│   │   └── reports/
-│   │       └── daily_report.py       # Daily PM Activity Report generator
-│   ├── connectors/
-│   │   ├── base/
-│   │   │   └── connector.py          # BaseConnector ABC & Capability enums
-│   │   ├── jira/
-│   │   │   ├── client.py             # Jira REST API client (httpx)
-│   │   │   ├── normalizer.py         # Jira webhook JSON -> BaseEvent normalizer
-│   │   │   └── connector.py          # JiraConnector implementation
-│   │   ├── discord/
-│   │   │   ├── formatter.py          # Rich Embed builder (color-coded alerts)
-│   │   │   ├── webhook_connector.py  # DiscordWebhookConnector (outbound alerts)
-│   │   │   └── bot_connector.py      # DiscordBotConnector skeleton for future commands
-│   │   └── mattermost/
-│   │       ├── client.py             # Mattermost REST API v4 client
-│   │       └── connector.py          # MattermostConnector (DMs & channel posts)
-│   ├── services/
-│   │   ├── user_mapping_service.py   # Jira <-> Mattermost strict user resolution
-│   │   ├── notification_deduplication.py # Cooldown tracker to prevent notification spam
-│   │   ├── scheduler.py              # Background worker for time-based rules
-│   │   ├── audit_service.py          # Sensitive-data redacted audit logger
-│   │   └── orchestrator.py           # Startup, lifecycle, and event wiring
-│   ├── api/
-│   │   ├── app.py                    # FastAPI application setup
-│   │   └── routes/                   # Health, Webhooks, Events, Actions, Rules, Reports, Mappings
-│   └── utils/
-│       ├── logger.py                 # Structured logger with automatic credential redaction
-│       └── time.py                   # Timezone-aware ISO 8601 utilities
-├── tests/                            # Comprehensive Pytest test suite (41 tests, 100% pass)
-├── scripts/
-│   ├── seed_demo_data.py             # Pre-seed users, mappings, rules, and events
-│   └── simulate_webhook.py           # CLI tool to test Scenarios A, B, C, D locally
-├── data/                             # SQLite persistent storage (created automatically)
-├── .env.example                      # Template environment variables
-├── .gitignore                        # Git exclusion rules
-├── pytest.ini                        # Pytest configuration
-├── requirements.txt                  # Python dependencies
-├── README.md                         # This documentation
-└── run.py                            # Server entrypoint
+   [Resource / User Query]
+              │
+              ▼
+   [EmployeeRoleRepository / PluginBoardRepository] ─── Resolve Authoritative Filter ID
+              │
+              ▼
+   [Live Jira REST API v3 Query] ────────────────────── `filter = {filter_id}` (Cursor Pagination)
+              │
+              ├─► Success: Warm/Update `jira_issue_state` SQLite Cache
+              │
+              └─► Failure/Offline: Fall back to local SQLite cache projection (`source = sqlite_cache`)
+              │
+              ▼
+   [Discord Mobile-First Embed Presentation] ────────── Clickable links, priority, status & overflow guard
 ```
 
 ---
 
-## 4. Local Installation & Setup
+## 3. Discord Slash Commands Reference
+
+The agent registers a top-level `/pm` command with **15 subcommands** via the Discord Gateway API. Interactive access requires authorization through `DISCORD_PM_ALLOWED_USERS`.
+
+| Subcommand | Usage | Description | Parameters |
+| :--- | :--- | :--- | :--- |
+| **`help`** | `/pm help` | Displays the operational command list and syntax. | None |
+| **`status`** | `/pm status <ticket>` | Fetches read-only status and details for a Jira ticket. | `ticket` (required) |
+| **`worklog`** | `/pm worklog [user] [date]` | Generates the daily team worklog report or individual resource breakdown. | `user` (optional), `date` (optional: `YYYY-MM-DD`) |
+| **`overdue`** | `/pm overdue [user] [date]` | Generates the overdue tasks digest for the team or a specific resource. | `user` (optional), `date` (optional: `YYYY-MM-DD`) |
+| **`queue`** | `/pm queue <user> [date]` | Fetches the live active Jira queue for a resource using their authoritative filter. | `user` (required), `date` (optional: `YYYY-MM-DD`) |
+| **`attention`** | `/pm attention [date]` | Generates the consolidated PM Attention Digest (inactive, reopened, unassigned). | `date` (optional: `YYYY-MM-DD`) |
+| **`activity`** | `/pm activity [date]` | Generates the Daily Activity Report detailing member activity and status transitions. | `date` (optional: `YYYY-MM-DD`) |
+| **`transition`** | `/pm transition <ticket> <status>` | Transitions a Jira ticket to a target workflow status. | `ticket` (required), `status` (required) |
+| **`assign`** | `/pm assign <ticket> <user>` | Assigns a Jira ticket to a user (strict account ID or canonical display name). | `ticket` (required), `user` (required) |
+| **`comment`** | `/pm comment <ticket> <comment>` | Adds an operational comment to a Jira ticket. | `ticket` (required), `comment` (required) |
+| **`create`** | `/pm create <project> <summary> ...` | Creates a new Jira task with optional description, assignee, and initial comment. | `project` (req), `summary` (req), `description`, `assignee`, `comment` |
+| **`update`** | `/pm update <ticket> <field> <value>`| Updates an allowlisted field (`summary`, `description`, `priority`, `labels`, `duedate`). | `ticket` (req), `field` (req), `value` (req) |
+| **`notify`** | `/pm notify <user> <message>` | Dispatches a notification to a Discord channel or user. | `user` (required), `message` (required) |
+| **`report`** | `/pm report <name> [user] [date]` | *[Deprecated]* Compatibility shim; routes to canonical `/pm <name>` handlers. | `name` (required: choices), `user` (opt), `date` (opt) |
+| **`message`** | `/pm message <user> <message>` | *[Deprecated]* Compatibility shim; routes to `/pm notify`. | `user` (required), `message` (required) |
+
+---
+
+## 4. Automated Jobs & Background Schedulers
+
+Background evaluations execute in an asynchronous event loop within `PeriodicScheduler`:
+
+| Job Name | Schedule | Default State | Config Flag | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| **Jira Poller** | Every 2 min | **Enabled** | `JIRA_POLLING_ENABLED=true` | Queries updated issues across monitored Jira projects/groups and publishes normalized events. |
+| **Stale Task Evaluation** | Every 15 min | **Enabled** | `SCHEDULER_ENABLED=true` | Evaluates in-progress tasks inactive for $\ge 24\text{h}$. PM channel alert muted by default (`STALE_TASK_NOTIFY_PM=false`). |
+| **Overdue Task Evaluation**| Every 15 min | **Enabled** | `SCHEDULER_ENABLED=true` | Evaluates tasks past due date. Individual PM channel alert muted by default (`OVERDUE_NOTIFY_PM=false`). |
+| **Daily Worklog Report** | Daily at 23:59 PKT | **Enabled** | `DAILY_WORKLOG_REPORT_ENABLED=true` | Dispatches daily team worklog summary embed to `#pm-alerts`. Idempotent (once per day). |
+| **Performance Analysis** | Every 60 min | **Enabled** | `PERFORMANCE_ANALYSIS_ENABLED=true` | Re-computes velocity, historical distributions, and confidence tiers in SQLite. |
+| **Daily Overdue Digest** | Daily at 08:40 PKT | **Disabled** | `OVERDUE_DIGEST_ENABLED=false` | Aggregates all overdue cluster tasks into a single morning embed. |
+| **PM Attention Digest** | Daily at 08:40 PKT | **Disabled** | `PM_ATTENTION_DIGEST_ENABLED=false` | Aggregates inactive, reopened, and unassigned issues into a morning embed. |
+| **Daily Activity Report** | Daily at 08:40 PKT | **Disabled** | `DAILY_ACTIVITY_REPORT_ENABLED=false` | Scheduled Discord broadcast for activity metrics (available on-demand via `/pm activity`). |
+| **Active Epic Review** | Every 15 min | **Disabled** | `EPIC_REVIEW_ENABLED=false` | **Mutating Job**: Synchronizes active Epic statuses based on child sprint ticket progress. |
+| **Mubashir Stale Support** | Every 15 min | **Disabled** | `MUBASHIR_STALE_SUPPORT_ENABLED=false` | **Mutating Job**: Posts reminder comments on internal Support tickets inactive $\ge 3$ business days. |
+| **Mubashir Support Rule** | Event-Driven | **Disabled** | `MUBASHIR_SUPPORT_RULE_ENABLED=false` | **Mutating Job**: Enforces sprint assignment and product label on created Support tickets. |
+
+---
+
+## 5. Production Safety & Access Controls
+
+### Automated Jira Mutation Guards
+All automated background operations capable of creating Jira comments or transitioning issues are guarded by explicit Boolean switches:
+```ini
+# Production Automation Safety Guards (Default: false)
+EPIC_REVIEW_ENABLED=false
+MUBASHIR_STALE_SUPPORT_ENABLED=false
+MUBASHIR_SUPPORT_RULE_ENABLED=false
+```
+When set to `false`, the scheduler and rules engine completely bypass mutation logic.
+
+### Discord Role-Based Authorization
+Interactive `/pm` commands check the user's Discord ID against `DISCORD_PM_ALLOWED_USERS`:
+* **Production (`APP_ENV=production`)**: An empty allowlist strictly **denies all users**.
+* **Development (`APP_ENV!=production`)**: An empty allowlist permits local testing.
+* **Configured Allowlist**: Comma-separated Discord numeric user IDs (e.g., `DISCORD_PM_ALLOWED_USERS=123456789012345678`).
+* **Wildcard (`DISCORD_PM_ALLOWED_USERS=*`)**: Explicitly permits all authenticated guild members.
+
+### Centralized Dry Run
+```ini
+DRY_RUN=true
+```
+When enabled, all mutating operations (`TRANSITION_TASK`, `ASSIGN_TASK`, `ADD_COMMENT`, `CREATE_TASK`, `UPDATE_TASK`, `SEND_MESSAGE`) produce simulated execution results (`DRY_RUN_SIMULATED`) and audit entries without making outbound network write calls.
+
+---
+
+## 6. Report Presentation Standards
+
+All operational reports share a standardized mobile-first design system:
+* **Rich Embed Layouts**: Clear visual hierarchy, category headers, and color branding.
+* **Clickable Jira Links**: Issue keys format as Markdown links (`[WSSS-326](https://domain.atlassian.net/browse/WSSS-326)`).
+* **Multi-Embed Chunking**: Handled via `_chunk_embed_lines()` with deterministic limits ($\le 10$ embeds, $\le 3,800$ chars per description, $\le 5,800$ cumulative text budget).
+* **Explicit Overflow Handling**: Reports exceeding budget display atomic overflow summaries (`• ... and N more item(s)`) rather than arbitrary text slicing.
+* **Standard Report Colors**:
+  * 🟣 Purple (`0x9B59B6`): Daily Worklog & Daily Activity
+  * 🔴 Red (`0xE74C3C`): Overdue Digest
+  * 🔵 Blue (`0x3498DB`): Active Queue
+  * 🟠 Amber (`0xF39C12`): PM Attention Digest
+  * 🟢 Green (`0x2ECC71`): Empty States ("No overdue tasks", "No attention items")
+
+---
+
+## 7. Local Installation & Quick Start
 
 ### Prerequisites
-* Python 3.10 or higher
+* Python 3.10+
 * Windows, macOS, or Linux
 
 ### Step 1: Clone and Create Virtual Environment
 ```powershell
-# Create virtual environment
 python -m venv .venv
 
-# Activate virtual environment
 # On Windows (PowerShell):
 .venv\Scripts\Activate.ps1
 # On Linux/macOS:
@@ -159,261 +199,57 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Step 3: Configure Environment Variables
-Copy the template configuration:
+### Step 3: Configure Environment
+Copy the example configuration:
 ```powershell
 copy .env.example .env
 ```
-Edit `.env` to configure your credentials:
+Configure your credentials in `.env`:
 ```ini
 APP_ENV=development
 DEBUG=true
 DRY_RUN=true
 
-# ------------------------------------------------------------------------------
-# Jira Cloud (Primary Ingestion: Polling, Optional: Webhook)
-# ------------------------------------------------------------------------------
-JIRA_BASE_URL=https://your-company.atlassian.net
-JIRA_EMAIL=pm-agent@your-company.com
+# Jira Cloud
+JIRA_BASE_URL=https://your-domain.atlassian.net
+JIRA_EMAIL=pm-agent@your-domain.com
 JIRA_API_TOKEN=your_jira_api_token
+JIRA_TEAM_GROUP=Mursaleen Cluster
 
-# Polling Configuration (Primary Event Ingestion)
-JIRA_POLLING_ENABLED=true
-JIRA_POLLING_INTERVAL_MINUTES=2
-JIRA_POLLING_BATCH_SIZE=50
-JIRA_POLLING_LOOKBACK_MINUTES=5
-JIRA_POLLING_INITIAL_LOOKBACK_MINUTES=60
-
-# Optional Fast Path: Jira Webhooks
-JIRA_WEBHOOK_SECRET=
-
-# ------------------------------------------------------------------------------
-# Discord Webhook (Outbound Alerts)
-# ------------------------------------------------------------------------------
-DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/your/webhook/url
-
-# ------------------------------------------------------------------------------
-# Mattermost (OPTIONAL — Leave empty if not configured)
-# The PM Agent runs completely without Mattermost credentials.
-# ------------------------------------------------------------------------------
-MATTERMOST_URL=
-MATTERMOST_TOKEN=
-MATTERMOST_TEAM_NAME=
-
-# Rule Thresholds
-STALE_TASK_HOURS=24
-SCHEDULER_ENABLED=true
-SCHEDULER_INTERVAL_MINUTES=15
+# Discord
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+DISCORD_BOT_TOKEN=your_bot_token
+DISCORD_APPLICATION_ID=your_app_id
+DISCORD_PM_ALLOWED_USERS=your_numeric_discord_user_id
 ```
 
-> [!NOTE]
-> **Enabling Mattermost Later**:
-> When you obtain Mattermost bot access, simply set:
-> ```ini
-> MATTERMOST_URL=https://mattermost.your-company.com
-> MATTERMOST_TOKEN=your_bot_access_token
-> MATTERMOST_TEAM_NAME=main
-> ```
-> The connector will automatically connect and resume delivering direct messages without any code or database changes.
-
-### Step 4: Seed Demo Data
-```powershell
-python scripts/seed_demo_data.py
-```
-
-### Step 5: Run the Server
+### Step 4: Run the Application
 ```powershell
 python run.py
 ```
-The server will start at `http://127.0.0.1:8000`. Interactive OpenAPI documentation is available at `http://127.0.0.1:8000/docs`.
-
-### Step 6: Trigger Manual Polling (Optional / Testing)
-You can trigger an on-demand Jira polling cycle at any time:
-```powershell
-curl -X POST http://127.0.0.1:8000/jira/poll
-```
+FastAPI runs at `http://127.0.0.1:8000`. Interactive OpenAPI documentation is available at `http://127.0.0.1:8000/docs`.
 
 ---
 
-## 5. Running Tests
+## 8. Production Deployment Safety Checklist
 
-Run the complete automated test suite (mocking all external APIs with zero required credentials):
-```powershell
-python -m pytest -v
-```
-All 41 unit and integration tests will execute and pass in under 3 seconds.
+Before deploying the PM Operations Agent to production:
+
+1. **Verify Environment Mode**: Set `APP_ENV=production` and `DEBUG=false` in your production environment.
+2. **Configure Authorized Discord Users**: Add your authorized numeric Discord user ID(s) to `DISCORD_PM_ALLOWED_USERS`. An empty value in production denies all commands.
+3. **Keep Safety Guards Disabled Initially**: Ensure `EPIC_REVIEW_ENABLED=false`, `MUBASHIR_STALE_SUPPORT_ENABLED=false`, and `MUBASHIR_SUPPORT_RULE_ENABLED=false` until manual review is complete.
+4. **Validate in Dry Run**: Run with `DRY_RUN=true` first to observe incoming events, state projections, and simulated actions in the audit log.
+5. **Database Persistence**: Ensure the directory containing `DB_PATH` is persistent across container/process restarts. SQLite runs in `WAL` mode for high-concurrency read/write operations.
+6. **Timezone Setting**: Verify `REPORT_TIMEZONE=Asia/Karachi` matches your operational expectations for daily scheduled reports.
 
 ---
 
-## 6. End-to-End Local Simulation
+## 9. Testing & Quality Assurance
 
-Use the simulation script to test all built-in scenarios without a live Jira webhook:
+The repository includes a comprehensive Pytest test suite covering event ingestion, rules, reports, multi-embed formatting, Discord slash commands, and production safety guards:
 
 ```powershell
-# Simulate all scenarios
-python scripts/simulate_webhook.py --scenario all
-
-# Or simulate individual scenarios:
-python scripts/simulate_webhook.py --scenario a  # Status transition 'To Do' -> 'In Progress'
-python scripts/simulate_webhook.py --scenario b  # Comment added on 'To Do' (WorkflowViolation)
-python scripts/simulate_webhook.py --scenario c  # Inactivity > 24h (StaleTask alert + DM reminder)
-python scripts/simulate_webhook.py --scenario d  # Unmapped user (USER_MAPPING_REQUIRED alert)
+pytest
 ```
 
----
-
-## 7. Webhook & Cloudflare Tunnel Setup
-
-To connect live Jira Cloud webhooks to your local machine for free:
-
-### 1. Start Cloudflare Tunnel
-Install [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) and run:
-```powershell
-cloudflared tunnel --url http://127.0.0.1:8000
-```
-Cloudflare will output a public HTTPS URL such as:
-`https://random-subdomain.trycloudflare.com`
-
-### 2. Configure Jira Cloud Webhook
-1. Go to **Jira Settings** ➔ **System** ➔ **WebHooks** (`https://your-domain.atlassian.net/plugins/servlet/webhooks`).
-2. Click **Create a Webhook**.
-3. Set URL to:
-   ```
-   https://random-subdomain.trycloudflare.com/webhooks/jira
-   ```
-4. Check Events:
-   * **Issue**: Created, Updated
-   * **Comment**: Created
-   * **Worklog**: Created
-5. Click **Save**.
-
-The `/webhooks/jira` endpoint will receive payloads, validate, deduplicate, persist with status `RECEIVED`, and acknowledge Jira in <20ms while processing through the Event Bus in the background.
-
----
-
-## 8. REST API Reference
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/` | Application status banner and version info |
-| `GET` | `/health` | System health (App, DB, Jira, Mattermost, Discord, Dry Run) |
-| `GET` | `/health/connectors` | Detailed connector health and machine-readable capabilities |
-| `POST` | `/webhooks/jira` | Rapid webhook ingestion endpoint (returns HTTP 202) |
-| `GET` | `/events` | Paginated list of normalized events (`?limit=50&offset=0`) |
-| `GET` | `/events/{id}` | Retrieve specific event details |
-| `POST` | `/events/{id}/retry` | Manually reprocess a failed or retry-pending event |
-| `GET` | `/actions` | List generated actions and execution status |
-| `GET` | `/actions/{id}` | Retrieve specific action details and preview |
-| `POST` | `/actions/{id}/approve` | Approve and execute a pending approval action |
-| `GET` | `/rules` | List all workflow rules, configurations, and enabled state |
-| `POST` | `/rules/{name}/toggle` | Dynamically enable or disable a workflow rule |
-| `GET` | `/reports/daily` | Generate structured Daily PM Activity Report (`?date=YYYY-MM-DD`) |
-| `POST` | `/reports/daily/send` | Generate and broadcast Daily PM Activity Report to Discord |
-| `GET` | `/user-mappings` | List all Jira ↔ Mattermost user mappings |
-| `POST` | `/user-mappings` | Create or update Jira ↔ Mattermost user mapping |
-
----
-
-## 9. Built-in Workflow Rules
-
-1. **Active Work Detection (`ActiveWorkRule`)**:
-   * **Trigger**: Task status is `To Do` and an activity occurs (comment added, work logged, subtask progressed).
-   * **Action**: Emits `WorkflowViolation` alert to Discord PM channel. Does not modify Jira status automatically.
-2. **Stale Task Detection (`StaleTaskRule`)**:
-   * **Trigger**: Task status is `In Progress` and no activity has occurred for `> STALE_TASK_HOURS` (default 24h).
-   * **Action**: Dispatches Discord alert to PM and sends a direct message reminder to the assigned resource on Mattermost.
-3. **Overdue Task Detection (`OverdueRule`)**:
-   * **Trigger**: `due_date < current_time` and task status is not `Done`/`Closed`.
-   * **Action**: Dispatches Discord overdue alert with due date and assignee.
-4. **Blocked Task Detection (`BlockedRule`)**:
-   * **Trigger**: Task is transitioned to `Blocked` or flagged.
-   * **Action**: Dispatches Discord high-priority alert.
-5. **Reopened Task Detection (`ReopenedRule`)**:
-   * **Trigger**: Task moves from `Done`/`Resolved` back to active status (`To Do` / `In Progress`).
-   * **Action**: Dispatches Discord alert detailing who reopened the issue.
-
----
-
-## 10. Example Discord & Mattermost Messages
-
-### Discord Workflow Violation Alert (Red Embed)
-```text
-🚨 Jira Workflow Alert
-Activity detected on CF7-421 while remaining in To Do.
-
-Issue:      CF7-421
-Project:    CF7 Apps
-Resource:   Ahsan Amin
-Title:      Payment Gateway Testing
-Details:    Activity detected (TaskCommentAdded) while task remains in 'To Do' status.
-```
-
-### Discord Stale Task Alert (Amber Embed)
-```text
-⚠️ Stale Task Alert
-Task CF7-421 has been In Progress for >24h without activity.
-
-Issue:       CF7-421
-Assigned to: Ahsan Amin
-Inactivity:  28.5 hours
-Title:       Payment Gateway Testing
-```
-
-### Mattermost Direct Message to Assignee
-```text
-Hey Ahsan Amin,
-
-CF7-421 (Payment Gateway Testing) has not been updated for 28 hours.
-Please share the current status, update the ticket, or let us know if there are any blockers.
-```
-
-### Discord Missing User Mapping Warning (Amber Embed)
-```text
-⚠️ Mattermost Mapping Required
-No verified Mattermost account mapping exists for this resource.
-
-Jira User:       New Contractor (`jira-user-unmapped-999`)
-Intended Action: Send Stale Task Mattermost Direct Message
-Status:          ❌ Direct Message was NOT sent.
-```
-
----
-
-## 11. Security Model & Credential Redaction
-
-* **Zero Hard-Coded Credentials**: All secrets live in `.env` and environment variables.
-* **Automatic Redaction**: `app/utils/logger.py` and `app/services/audit_service.py` intercept and scrub API tokens, Bearer tokens, Discord webhook URLs, passwords, and authorization headers from logs and database audit entries.
-* **Capability Security Levels**: Connector capabilities are strictly partitioned into `READ`, `WRITE`, and `DESTRUCTIVE`. Destructive operations (e.g., deleting issues) are rejected unconditionally.
-* **No Arbitrary HTTP Requests**: The Action Engine only executes registered typed actions against configured connectors.
-
----
-
-## 12. Known Limitations (V0.1)
-
-1. In-process event bus and scheduler run within the local FastAPI process (designed for single-instance local deployments).
-2. Discord interactive slash commands (`/status`, `/assign`) are stubbed in `DiscordBotConnector` for V0.2+; V0.1 handles all outbound alerts via `DiscordWebhookConnector`.
-3. Jira JQL search runs on-demand without local caching of complete issue backlogs.
-
----
-
-## 13. Roadmap to V0.2+ (AI & Autonomous Operations)
-
-Because V0.1 strictly implements the decoupled Action Engine and domain event architecture, an LLM or autonomous AI agent layer can be integrated seamlessly in future versions:
-
-```
-                 AI / LLM AGENT (V0.2+)
-                           │
-             ┌─────────────┴─────────────┐
-             │                           │
-          Queries                     Actions
-             │                           │
-             ▼                           ▼
-       Core REST APIs              Action Engine
-             │                           │
-      (Task & Event state)         Approval Layer
-                                         │
-                                     Connectors
-```
-
-* **No direct API access**: The AI layer will **never** make direct HTTP calls to Jira or Mattermost.
-* **Tool-based execution**: The AI agent will invoke domain tools (`TransitionTask`, `SendMessage`, `AddComment`) that pass through the Action Engine, Approval Engine, Idempotency checks, and Audit logging automatically.
+**Verified Test Status**: **376 passed, 1 skipped** (100% operational test pass rate).
