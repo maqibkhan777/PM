@@ -305,10 +305,10 @@ def test_zero_attention_items_empty_state():
 
 
 # ==============================================================================
-# Requirement 9 & 10: Monospace Tables with Clickable Links
+# Requirement 9 & 10: Mobile-First Embed Presentation with Clickable Links
 # ==============================================================================
-def test_discord_table_monospace_and_clickable_links():
-    """Embed table rows keep fixed width via inline code while hyperlinked keys remain clickable."""
+def test_discord_mobile_embed_and_clickable_links():
+    """Embed presents categories and items cleanly without monospace ASCII tables."""
     report_data = {
         "team_name": "Mursaleen Cluster",
         "date": "2026-09-11",
@@ -349,6 +349,7 @@ def test_discord_table_monospace_and_clickable_links():
         }
     }
     payload = DiscordFormatter.format_pm_attention_digest(report_data)
+    assert isinstance(payload, dict) and "embeds" in payload
     embed = payload["embeds"][0]
     assert embed["title"] == "⚠️ Mursaleen Cluster — PM Attention Digest"
     assert embed["color"] == COLOR_AMBER
@@ -359,10 +360,81 @@ def test_discord_table_monospace_and_clickable_links():
     assert "🔁 Reopened" in desc
     assert "📌 Unassigned" in desc
 
-    # Verify clickable Jira links with monospace wrapper
+    # Verify clickable Jira links
     assert "[TASK-101](https://objectsws.atlassian.net/browse/TASK-101)" in desc
     assert "[TASK-201](https://objectsws.atlassian.net/browse/TASK-201)" in desc
     assert "[TASK-301](https://objectsws.atlassian.net/browse/TASK-301)" in desc
+
+    # Verify no legacy monospace table pipe characters
+    assert "|" not in desc
+
+    # Verify format_pm_attention_embed alias compatibility
+    alias_payload = DiscordFormatter.format_pm_attention_embed(report_data)
+    assert alias_payload == payload
+
+
+def test_pm_attention_multi_embed_chunking_and_overflow():
+    """Verify that large PM attention digests chunk across embeds with cumulative limits and explicit overflow."""
+    stale_tickets = [
+        {
+            "key": f"STALE-{i}",
+            "summary": f"Long detailed summary describing stalled investigation on feature component {i} in deep background",
+            "url": f"https://objectsws.atlassian.net/browse/STALE-{i}",
+            "status": "In Progress",
+            "updated_at": "Sep 01, 2026",
+            "inactive_for": "10 days"
+        }
+        for i in range(50)
+    ]
+    reopened_tickets = [
+        {
+            "key": f"REOPEN-{i}",
+            "summary": f"Customer bug report reopened with detailed context number {i}",
+            "url": f"https://objectsws.atlassian.net/browse/REOPEN-{i}",
+            "status": "Reopened",
+            "updated_at": "Sep 05, 2026"
+        }
+        for i in range(50)
+    ]
+    unassigned_tickets = [
+        {
+            "key": f"UNASSIGN-{i}",
+            "summary": f"Unassigned incoming ticket needing triaging {i}",
+            "url": f"https://objectsws.atlassian.net/browse/UNASSIGN-{i}",
+            "status": "To Do",
+            "updated_at": "Sep 08, 2026"
+        }
+        for i in range(50)
+    ]
+
+    report_data = {
+        "team_name": "Mursaleen Cluster",
+        "date": "2026-09-11",
+        "formatted_date": "September 11, 2026",
+        "total_count": 150,
+        "categories": {
+            "inactive_stalled": {"title": "🟠 Inactive / Stalled", "count": 50, "tickets": stale_tickets},
+            "reopened": {"title": "🔁 Reopened", "count": 50, "tickets": reopened_tickets},
+            "unassigned": {"title": "📌 Unassigned", "count": 50, "tickets": unassigned_tickets},
+        }
+    }
+
+    payload = DiscordFormatter.format_pm_attention_digest(report_data)
+    embeds = payload["embeds"]
+    assert len(embeds) <= 10
+
+    # Verify cumulative character budget <= 5800
+    total_chars = sum(len(e["title"]) + len(e["description"]) + len(e.get("footer", {}).get("text", "")) for e in embeds)
+    assert total_chars <= 5800
+
+    # Verify each individual description <= 3800
+    for e in embeds:
+        assert len(e["description"]) <= 3800
+
+    # Verify explicit overflow messaging exists when items are capped
+    all_desc = "\n".join(e["description"] for e in embeds)
+    assert "more attention item(s)" in all_desc
+
 
 
 # ==============================================================================

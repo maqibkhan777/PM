@@ -772,3 +772,46 @@ def test_format_daily_worklog_embed_focused_2026_09_14():
     no_zero_report["zero_worklog_members"] = []
     no_zero_payload = DiscordFormatter.format_daily_worklog_embed(no_zero_report)
     assert "⏸️ **No Logged Work**" not in no_zero_payload["embeds"][0]["description"]
+
+
+@pytest.mark.asyncio
+async def test_scheduled_worklog_send_uses_mobile_embed(isolated_worklog_env):
+    """Verify that send_report_to_discord dispatches the validated mobile-first embed."""
+    from unittest.mock import patch, AsyncMock
+    from app.core.actions.base import ActionResult
+    from app.core.models.enums import ActionStatus
+
+    mgr, gen = isolated_worklog_env
+    repo = JiraWorklogRepository(mgr)
+    repo.upsert_worklog(
+        worklog_id="wl-sched-1",
+        jira_issue_key="WSSS-100",
+        time_spent_seconds=7200,
+        started_at="2026-09-17T09:00:00Z",
+        author_account_id="712020:e268bcd8-d981-4b4d-992d-d5694745df8b",
+        author_display_name="Mubashir Butt",
+        team_group="Mursaleen Cluster"
+    )
+
+    with patch("app.core.reports.worklog_report.action_engine.execute", new_callable=AsyncMock) as mock_exec:
+        mock_exec.return_value = ActionResult(
+            action_id="act-worklog-1",
+            target_system="discord",
+            target_id="pm-alerts",
+            status=ActionStatus.DRY_RUN_SIMULATED,
+            success=True,
+            result_data={"simulated": True}
+        )
+
+        res = await gen.send_report_to_discord(target_date="2026-09-17", force=True, sync_jira=False)
+        assert res["status"] == "sent"
+        assert mock_exec.call_count == 1
+        dispatched_action = mock_exec.call_args[0][0]
+        embeds = dispatched_action.parameters.get("embeds", [])
+        assert len(embeds) == 1
+        embed = embeds[0]
+        assert "Daily Worklog" in embed["title"]
+        assert embed["color"] == 0x9B59B6
+        assert "👥 **Team Worklog**" in embed["description"]
+        assert "Mubashir Butt — 2h" in embed["description"]
+        assert "|" not in embed["description"]

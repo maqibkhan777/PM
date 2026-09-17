@@ -169,7 +169,12 @@ class TestDateSelectors:
 
         # Valid date for attention digest
         res = await handler.execute_subcommand("attention", {"date": "2026-09-10"}, discord_user_id="user1")
-        assert "September 10, 2026" in res or "PM Attention Digest" in res
+        if isinstance(res, dict) and "embeds" in res:
+            desc = res["embeds"][0].get("description", "")
+            title = res["embeds"][0].get("title", "")
+            assert "September 10, 2026" in desc or "PM Attention Digest" in title
+        else:
+            assert "September 10, 2026" in res or "PM Attention Digest" in res
 
 
 # ==============================================================================

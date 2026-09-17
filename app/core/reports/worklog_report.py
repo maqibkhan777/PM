@@ -358,7 +358,7 @@ class DailyWorklogReportGenerator:
 
         # Generate report with synchronization
         report_data = await self.generate_report(date_str, sync_jira=sync_jira)
-        embed_payload = DiscordFormatter.format_daily_worklog_report(report_data)
+        embed_payload = DiscordFormatter.format_daily_worklog_embed(report_data)
 
         # Dispatch through ActionEngine -> DiscordConnector
         if not action_engine.get_connector("discord"):

@@ -344,14 +344,14 @@ class DiscordSlashCommandHandler:
             logger.error(f"Error generating active queue report: {e}", exc_info=True)
             return "❌ Unable to generate the active queue report right now."
 
-    async def handle_attention_command(self, target_date: Optional[str] = None) -> str:
+    async def handle_attention_command(self, target_date: Optional[str] = None) -> Union[str, Dict[str, Any]]:
         """Handle /pm attention command (canonical handler for PM attention digest)."""
         try:
             from app.core.reports.attention_report import DailyPMAttentionReportGenerator
             from app.connectors.discord.formatter import DiscordFormatter
             gen = DailyPMAttentionReportGenerator(manager=self.mgr)
             data = gen.generate_digest(target_date=target_date)
-            return DiscordFormatter.format_pm_attention_text(data)
+            return DiscordFormatter.format_pm_attention_digest(data)
         except Exception as e:
             logger.error(f"Error generating attention report: {e}", exc_info=True)
             return "❌ Unable to generate the attention report right now."
