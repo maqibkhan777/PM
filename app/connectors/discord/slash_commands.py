@@ -282,7 +282,7 @@ class DiscordSlashCommandHandler:
         self,
         user_input: Optional[str] = None,
         target_date: Optional[str] = None
-    ) -> str:
+    ) -> Union[str, Dict[str, Any]]:
         """Handle /pm overdue command (canonical handler for overdue digest)."""
         try:
             from app.core.reports.overdue_report import DailyOverdueReportGenerator
@@ -297,10 +297,10 @@ class DiscordSlashCommandHandler:
                 elif res_status == "NOT_FOUND" or not acc_id:
                     return "❌ Resource not found."
                 data = gen.generate_user_overdue_digest(account_id=acc_id, display_name=disp_name, target_date=target_date)
-                return DiscordFormatter.format_user_overdue_digest_text(data)
+                return DiscordFormatter.format_user_overdue_digest_embed(data)
             else:
                 data = gen.generate_digest(target_date=target_date)
-                return DiscordFormatter.format_overdue_digest_text(data)
+                return DiscordFormatter.format_overdue_digest(data)
         except Exception as e:
             logger.error(f"Error generating overdue report: {e}", exc_info=True)
             return "❌ Unable to generate the overdue report right now."
@@ -309,7 +309,7 @@ class DiscordSlashCommandHandler:
         self,
         user_input: Optional[str] = None,
         target_date: Optional[str] = None
-    ) -> str:
+    ) -> Union[str, Dict[str, Any]]:
         """Handle /pm queue command (canonical handler for active queue report)."""
         if not user_input:
             return "❌ Target resource is required for active queue report. Example: `/pm queue user:\"Ahsan Amin\"`"
@@ -326,7 +326,7 @@ class DiscordSlashCommandHandler:
             from app.connectors.discord.formatter import DiscordFormatter
             gen = ResourceQueueReportGenerator(manager=self.mgr)
             data = gen.generate_user_queue_report(account_id=acc_id, display_name=disp_name, target_date=target_date)
-            return DiscordFormatter.format_user_active_queue_text(data)
+            return DiscordFormatter.format_user_active_queue_embed(data)
         except Exception as e:
             logger.error(f"Error generating active queue report: {e}", exc_info=True)
             return "❌ Unable to generate the active queue report right now."
