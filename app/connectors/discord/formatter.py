@@ -1648,3 +1648,278 @@ class DiscordFormatter:
             url=url,
         )
 
+    @staticmethod
+    def _resolve_mubashir_jira_url(item: Dict[str, Any], issue_key: str) -> Optional[str]:
+        """Resolve Jira URL preferring item-provided jira_url or falling back to settings.get_jira_browse_url."""
+        url = item.get("jira_url")
+        if (not url or "your-domain" in url) and issue_key and issue_key != "Unknown":
+            computed = settings.get_jira_browse_url(issue_key)
+            if not url or "your-domain" not in computed:
+                url = computed
+        return url
+
+    @classmethod
+    def format_mubashir_automation_report(cls, report_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Format Mubashir Automation Report into a clean, mobile-first Discord embed payload with clickable Jira links."""
+        title_base = "🤖 Mubashir Automation Report"
+        footer_text = "PM Operations Agent — Mubashir Automation"
+
+        date_str = report_data.get("formatted_date") or report_data.get("date") or "Today"
+        total_comments = report_data.get("total_comments")
+        if total_comments is None:
+            by_auto = report_data.get("by_automation", {})
+            total_comments = sum(len(v) for v in by_auto.values()) if by_auto else len(report_data.get("comments", []))
+
+        if total_comments == 0:
+            return {
+                "embeds": [{
+                    "title": title_base,
+                    "description": f"**Date:** {date_str}\n\n✅ No Mubashir automation comments were added.",
+                    "color": COLOR_GREEN,
+                    "footer": {"text": footer_text}
+                }]
+            }
+
+        base_lines = [
+            f"**Date:** {date_str}",
+            f"**Total Comments Added:** {total_comments}",
+        ]
+
+        # Extract by_automation grouping, falling back to comments list if needed
+        by_automation = report_data.get("by_automation")
+        if not by_automation and "comments" in report_data:
+            by_automation = {}
+            for c in report_data.get("comments", []):
+                src = c.get("automation_source") or "Unknown"
+                by_automation.setdefault(src, []).append(c)
+        by_automation = by_automation or {}
+
+        known_sources = [
+            ("MubashirStaleSupport", "🕒 **MUBASHIR_STALE_SUPPORT**", "Mubashir stale support reminder"),
+            ("MubashirSupportRule", "⚙️ **MUBASHIR_SUPPORT_RULE**", "Mubashir support creation workflow comment"),
+        ]
+
+        candidate_sections: List[Dict[str, Any]] = []
+        total_items_count = 0
+
+        # 1. Known sources in deterministic order
+        for src_key, default_header, default_note in known_sources:
+            items = by_automation.get(src_key, [])
+            if not items:
+                continue
+
+            sec_lines: List[str] = []
+            for item in items:
+                issue_key = item.get("issue_key") or item.get("key") or item.get("target_id") or "Unknown"
+                url = cls._resolve_mubashir_jira_url(item, issue_key)
+                link_str = f"[{issue_key}]({url})" if url and issue_key != "Unknown" else (issue_key or "N/A")
+                note = item.get("description") or item.get("note") or default_note
+                sec_lines.append(f"• {link_str} — {note}")
+                total_items_count += 1
+
+            candidate_sections.append({
+                "header": default_header,
+                "lines": sec_lines
+            })
+
+        # 2. Unexpected / custom sources in alphabetical order
+        extra_keys = sorted([k for k in by_automation.keys() if k not in ("MubashirStaleSupport", "MubashirSupportRule")])
+        for extra_key in extra_keys:
+            items = by_automation[extra_key]
+            if not items:
+                continue
+
+            clean_name = str(extra_key).replace("*", "").strip().upper()
+            fallback_header = f"🤖 **{clean_name}**"
+            sec_lines: List[str] = []
+            for item in items:
+                issue_key = item.get("issue_key") or item.get("key") or item.get("target_id") or "Unknown"
+                url = cls._resolve_mubashir_jira_url(item, issue_key)
+                link_str = f"[{issue_key}]({url})" if url and issue_key != "Unknown" else (issue_key or "N/A")
+                note = item.get("description") or item.get("note") or item.get("summary") or "Automated comment"
+                sec_lines.append(f"• {link_str} — {note}")
+                total_items_count += 1
+
+            candidate_sections.append({
+                "header": fallback_header,
+                "lines": sec_lines
+            })
+
+        MAX_TOTAL_BUDGET = 5800
+        MAX_EMBED_DESC_LEN = 3800
+        MAX_EMBEDS = 10
+
+        # Build full candidate lines
+        all_lines: List[str] = list(base_lines)
+        for sec in candidate_sections:
+            all_lines.append("")
+            all_lines.append(sec["header"])
+            all_lines.extend(sec["lines"])
+
+        test_res = cls._chunk_embed_lines(
+            title_base=title_base,
+            lines=all_lines,
+            footer_text=footer_text,
+            max_total_budget=MAX_TOTAL_BUDGET,
+            max_embed_desc_len=MAX_EMBED_DESC_LEN,
+            max_embeds=MAX_EMBEDS,
+            color=COLOR_PURPLE,
+        )
+        total_chars = sum(
+            len(e.get("title", "")) + len(e.get("description", "")) + len(e.get("footer", {}).get("text", ""))
+            for e in test_res.get("embeds", [])
+        )
+
+        last_desc = test_res.get("embeds", [])[-1].get("description", "") if test_res.get("embeds") else ""
+        last_item_line = candidate_sections[-1]["lines"][-1] if (candidate_sections and candidate_sections[-1]["lines"]) else ""
+        all_fit = (last_item_line in last_desc) if last_item_line else True
+
+        if total_chars <= MAX_TOTAL_BUDGET and len(test_res.get("embeds", [])) <= MAX_EMBEDS and all_fit:
+            return test_res
+
+        # Overflow handling if budget or embed limit exceeded
+        final_lines: List[str] = list(base_lines)
+        included_count = 0
+        omitted_count = 0
+
+        for sec in candidate_sections:
+            sec_header_added = False
+            for line in sec["lines"]:
+                candidate_lines = list(final_lines)
+                if not sec_header_added:
+                    candidate_lines.extend(["", sec["header"]])
+                candidate_lines.append(line)
+                remaining = total_items_count - (included_count + 1)
+                omission_line = f"• ... and {remaining} more automation comment(s)"
+                if remaining > 0:
+                    candidate_lines.append(omission_line)
+
+                check_res = cls._chunk_embed_lines(
+                    title_base=title_base,
+                    lines=candidate_lines,
+                    footer_text=footer_text,
+                    max_total_budget=MAX_TOTAL_BUDGET,
+                    max_embed_desc_len=MAX_EMBED_DESC_LEN,
+                    max_embeds=MAX_EMBEDS,
+                    color=COLOR_PURPLE,
+                )
+                check_chars = sum(
+                    len(e.get("title", "")) + len(e.get("description", "")) + len(e.get("footer", {}).get("text", ""))
+                    for e in check_res.get("embeds", [])
+                )
+                check_last_desc = check_res.get("embeds", [])[-1].get("description", "") if check_res.get("embeds") else ""
+                expected_last = omission_line if remaining > 0 else line
+                made_it = (expected_last in check_last_desc)
+
+                if check_chars <= MAX_TOTAL_BUDGET and len(check_res.get("embeds", [])) <= MAX_EMBEDS and made_it:
+                    if not sec_header_added:
+                        final_lines.extend(["", sec["header"]])
+                        sec_header_added = True
+                    final_lines.append(line)
+                    included_count += 1
+                else:
+                    omitted_count = total_items_count - included_count
+                    break
+            if omitted_count > 0:
+                break
+
+        if omitted_count > 0:
+            final_lines.append(f"• ... and {omitted_count} more automation comment(s)")
+
+        return cls._chunk_embed_lines(
+            title_base=title_base,
+            lines=final_lines,
+            footer_text=footer_text,
+            max_total_budget=MAX_TOTAL_BUDGET,
+            max_embed_desc_len=MAX_EMBED_DESC_LEN,
+            max_embeds=MAX_EMBEDS,
+            color=COLOR_PURPLE,
+        )
+
+    @classmethod
+    def format_mubashir_automation_report_embed(cls, report_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Alias for format_mubashir_automation_report."""
+        return cls.format_mubashir_automation_report(report_data)
+
+    @classmethod
+    def format_mubashir_automation_report_text(cls, report_data: Dict[str, Any]) -> str:
+        """Format plain-text markdown summary of Mubashir Automation Report."""
+        date_str = report_data.get("formatted_date") or report_data.get("date") or "Today"
+        total_comments = report_data.get("total_comments")
+        if total_comments is None:
+            by_auto = report_data.get("by_automation", {})
+            total_comments = sum(len(v) for v in by_auto.values()) if by_auto else len(report_data.get("comments", []))
+
+        if total_comments == 0:
+            return (
+                f"🤖 **Mubashir Automation Report**\n"
+                f"**Date:** {date_str}\n\n"
+                f"✅ No Mubashir automation comments were added.\n\n"
+                f"──────────────────────────────────────────────────\n"
+                f"*PM Operations Agent — Mubashir Automation*"
+            )
+
+        lines = [
+            "🤖 **Mubashir Automation Report**",
+            f"**Date:** {date_str}",
+            f"**Total Comments Added:** {total_comments}",
+        ]
+
+        by_automation = report_data.get("by_automation") or {}
+        if not by_automation and "comments" in report_data:
+            by_automation = {}
+            for c in report_data.get("comments", []):
+                src = c.get("automation_source") or "Unknown"
+                by_automation.setdefault(src, []).append(c)
+
+        known_sources = [
+            ("MubashirStaleSupport", "🕒 **MUBASHIR_STALE_SUPPORT**", "Mubashir stale support reminder"),
+            ("MubashirSupportRule", "⚙️ **MUBASHIR_SUPPORT_RULE**", "Mubashir support creation workflow comment"),
+        ]
+
+        item_count = 0
+        MAX_TEXT_ITEMS = 40
+        omitted = 0
+
+        for src_key, default_header, default_note in known_sources:
+            items = by_automation.get(src_key, [])
+            if not items:
+                continue
+            lines.append("")
+            lines.append(default_header)
+            for item in items:
+                if item_count >= MAX_TEXT_ITEMS:
+                    omitted += 1
+                    continue
+                issue_key = item.get("issue_key") or item.get("key") or item.get("target_id") or "Unknown"
+                url = cls._resolve_mubashir_jira_url(item, issue_key)
+                link_str = f"[{issue_key}]({url})" if url and issue_key != "Unknown" else (issue_key or "N/A")
+                note = item.get("description") or item.get("note") or default_note
+                lines.append(f"• {link_str} — {note}")
+                item_count += 1
+
+        extra_keys = sorted([k for k in by_automation.keys() if k not in ("MubashirStaleSupport", "MubashirSupportRule")])
+        for extra_key in extra_keys:
+            items = by_automation[extra_key]
+            if not items:
+                continue
+            clean_name = str(extra_key).replace("*", "").strip().upper()
+            lines.append("")
+            lines.append(f"🤖 **{clean_name}**")
+            for item in items:
+                if item_count >= MAX_TEXT_ITEMS:
+                    omitted += 1
+                    continue
+                issue_key = item.get("issue_key") or item.get("key") or item.get("target_id") or "Unknown"
+                url = cls._resolve_mubashir_jira_url(item, issue_key)
+                link_str = f"[{issue_key}]({url})" if url and issue_key != "Unknown" else (issue_key or "N/A")
+                note = item.get("description") or item.get("note") or item.get("summary") or "Automated comment"
+                lines.append(f"• {link_str} — {note}")
+                item_count += 1
+
+        if omitted > 0:
+            lines.append(f"• ... and {omitted} more automation comment(s)")
+
+        lines.append("")
+        lines.append("──────────────────────────────────────────────────\n*PM Operations Agent — Mubashir Automation*")
+        return "\n".join(lines)

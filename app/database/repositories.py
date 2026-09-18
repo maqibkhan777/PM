@@ -548,6 +548,41 @@ class ActionRepository:
                 results.append(d)
             return results
 
+    def get_successful_mubashir_comments(
+        self,
+        start_time_utc: str,
+        end_time_utc: str,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve completed, non-dry-run Jira comments created by Mubashir automations within [start_time_utc, end_time_utc)."""
+        query = """
+            SELECT id, action_id, idempotency_key, action_type, target_system,
+                   target_id, parameters, status, dry_run, requested_by,
+                   result_data, created_at, executed_at,
+                   COALESCE(executed_at, created_at) AS execution_time
+            FROM actions
+            WHERE target_system = 'jira'
+              AND action_type = 'AddComment'
+              AND requested_by IN ('MubashirStaleSupport', 'MubashirSupportRule')
+              AND status = 'COMPLETED'
+              AND dry_run = 0
+              AND COALESCE(executed_at, created_at) >= ?
+              AND COALESCE(executed_at, created_at) < ?
+            ORDER BY COALESCE(executed_at, created_at) ASC, action_id ASC
+        """
+        with self.mgr.session() as conn:
+            cursor = conn.execute(query, (start_time_utc, end_time_utc))
+            results = []
+            for row in cursor.fetchall():
+                d = dict(row)
+                d["parameters"] = json.loads(d["parameters"]) if d.get("parameters") else {}
+                if d.get("result_data"):
+                    try:
+                        d["result_data"] = json.loads(d["result_data"])
+                    except Exception:
+                        pass
+                results.append(d)
+            return results
+
 
 class NotificationRepository:
     """Repository for tracking and deduplicating notification dispatches."""

@@ -154,27 +154,29 @@ class MubashirSupportRule(BaseRule):
 
         # Construct unified reminder feedback
         missing_reasons: List[str] = []
-        jira_comment_lines: List[str] = [
-            f"[~accountid:{MUBASHIR_CANONICAL_ACCOUNT_ID}] Automated PM Workflow Check for Support Ticket {task_key}:"
-        ]
-
         if not sprint_passed:
             found_str = f" (currently: {', '.join(sprint_names)})" if sprint_names else " (none assigned)"
             missing_reasons.append(f"Missing approved sprint{found_str}")
-            jira_comment_lines.append(
-                "• **Sprint Requirement:** Please assign this Support ticket to an approved sprint: `Support Board` or `Feature Request`."
-            )
 
         if not label_passed:
             missing_reasons.append("Missing product/service label")
-            jira_comment_lines.append(
-                "• **Label Requirement:** Please apply the appropriate product/service label to this ticket (e.g. `free`, `pro`, or configured product label)."
-            )
 
-        jira_comment_lines.append(
-            "\n*This is an automated operational reminder to ensure proper support queue triage and board tracking.*"
-        )
-        comment_body = "\n".join(jira_comment_lines)
+        # Concise, natural PM comment wording
+        if not sprint_passed and not label_passed:
+            comment_body = (
+                f"[~accountid:{MUBASHIR_CANONICAL_ACCOUNT_ID}] "
+                "Please make sure this ticket is added to the approved sprint and has the required label."
+            )
+        elif not sprint_passed:
+            comment_body = (
+                f"[~accountid:{MUBASHIR_CANONICAL_ACCOUNT_ID}] "
+                "Please make sure this ticket is added to the approved sprint."
+            )
+        else:
+            comment_body = (
+                f"[~accountid:{MUBASHIR_CANONICAL_ACCOUNT_ID}] "
+                "Please make sure this ticket has the required label."
+            )
 
         actions: List[BaseAction] = []
 

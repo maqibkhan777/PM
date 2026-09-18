@@ -115,6 +115,12 @@ class Settings(BaseSettings):
     PM_ATTENTION_DIGEST_TIMEZONE: str = "Asia/Karachi"
     PM_ATTENTION_DIGEST_CHANNEL: Optional[str] = None  # None falls back to PM_DISCORD_CHANNEL
 
+    # Mubashir Automation Report Settings
+    MUBASHIR_AUTOMATION_REPORT_ENABLED: bool = False
+    MUBASHIR_AUTOMATION_REPORT_TIME: str = "08:40"
+    MUBASHIR_AUTOMATION_REPORT_TIMEZONE: str = "Asia/Karachi"
+    MUBASHIR_AUTOMATION_REPORT_CHANNEL: Optional[str] = None
+
     # Daily Activity Report Settings
     DAILY_ACTIVITY_REPORT_ENABLED: bool = False
     DAILY_ACTIVITY_REPORT_TIME: str = "08:40"  # HH:MM format

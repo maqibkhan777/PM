@@ -415,8 +415,11 @@ class TestMubashirSupportRule:
         assert len(actions) == 2
         comment_act = actions[0]
         assert comment_act.action_type.value == "AddComment"
-        assert "Support Board" in comment_act.parameters["comment"]
-        assert MUBASHIR_CANONICAL_ACCOUNT_ID in comment_act.parameters["comment"]
+        comment_text = comment_act.parameters["comment"]
+        assert "approved sprint" in comment_text
+        assert MUBASHIR_CANONICAL_ACCOUNT_ID in comment_text
+        assert "Automated" not in comment_text
+        assert "Workflow Check" not in comment_text
 
     def test_mubashir_support_missing_label(self, test_db):
         """Mubashir + Support + missing label -> generates reminder comment."""
@@ -441,7 +444,10 @@ class TestMubashirSupportRule:
         actions = rule.evaluate(event)
         assert len(actions) == 2
         comment_act = actions[0]
-        assert "Label Requirement" in comment_act.parameters["comment"]
+        comment_text = comment_act.parameters["comment"]
+        assert "required label" in comment_text
+        assert MUBASHIR_CANONICAL_ACCOUNT_ID in comment_text
+        assert "Automated" not in comment_text
 
     def test_mubashir_support_missing_both(self, test_db):
         """Mubashir + Support + missing sprint & label -> SINGLE unified comment & alert."""
@@ -459,8 +465,13 @@ class TestMubashirSupportRule:
         actions = rule.evaluate(event)
         assert len(actions) == 2 # 1 comment + 1 notification (no duplicate spam)
         comment_act = actions[0]
-        assert "Sprint Requirement" in comment_act.parameters["comment"]
-        assert "Label Requirement" in comment_act.parameters["comment"]
+        comment_text = comment_act.parameters["comment"]
+        assert "approved sprint" in comment_text
+        assert "required label" in comment_text
+        assert MUBASHIR_CANONICAL_ACCOUNT_ID in comment_text
+        assert "Automated" not in comment_text
+        assert "Workflow Check" not in comment_text
+        assert "operational reminder" not in comment_text
 
     def test_other_creator_support_rule_ignored(self, test_db):
         """Other creator creating Support ticket does NOT trigger MubashirSupportRule."""

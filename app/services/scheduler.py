@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import zoneinfo
 from typing import Any, Dict, List, Optional
@@ -163,6 +163,15 @@ class PeriodicScheduler:
         except Exception as e:
             logger.error(f"Error during Daily PM Attention Digest evaluation: {e}", exc_info=True)
 
+        # 5b. Evaluate Scheduled Mubashir Automation Report
+        mubashir_report_status = None
+        try:
+            mubashir_report_res = await self._evaluate_mubashir_automation_report()
+            if mubashir_report_res:
+                mubashir_report_status = mubashir_report_res.get("status")
+        except Exception as e:
+            logger.error(f"Error during Mubashir Automation Report evaluation: {e}", exc_info=True)
+
         # 6. Evaluate Scheduled Performance Foundation Analysis
         perf_analysis_status = None
         try:
@@ -199,6 +208,7 @@ class PeriodicScheduler:
             f"Daily worklog status: {daily_report_status or 'idle'}, "
             f"Daily overdue status: {daily_overdue_status or 'idle'}, "
             f"Daily attention status: {daily_attention_status or 'idle'}, "
+            f"Mubashir automation report status: {mubashir_report_status or 'idle'}, "
             f"Performance analysis status: {perf_analysis_status or 'idle'}, "
             f"Epic review status: {epic_review_status or 'idle'}"
         )
@@ -211,6 +221,7 @@ class PeriodicScheduler:
             "daily_report_status": daily_report_status,
             "daily_overdue_status": daily_overdue_status,
             "daily_attention_status": daily_attention_status,
+            "mubashir_report_status": mubashir_report_status,
             "performance_analysis_status": perf_analysis_status,
             "epic_review_status": epic_review_status,
         }
@@ -407,6 +418,72 @@ class PeriodicScheduler:
                     record_history=True
                 )
         return None
+
+    async def _evaluate_mubashir_automation_report(self) -> Optional[Dict[str, Any]]:
+        """Check if daily Mubashir Automation Report should be triggered for previous calendar day."""
+        if not settings.MUBASHIR_AUTOMATION_REPORT_ENABLED:
+            return None
+
+        try:
+            tz_str = settings.MUBASHIR_AUTOMATION_REPORT_TIMEZONE or settings.get_report_timezone()
+            tz = zoneinfo.ZoneInfo(tz_str)
+            now_tz = datetime.now(tz)
+        except Exception:
+            tz = zoneinfo.ZoneInfo("Asia/Karachi")
+            now_tz = datetime.now(tz)
+
+        current_time_str = now_tz.strftime("%H:%M")
+        scheduled_time = (settings.MUBASHIR_AUTOMATION_REPORT_TIME or "08:40").strip()
+
+        if current_time_str < scheduled_time:
+            return None
+
+        # Critical Date Rule: target date is PREVIOUS calendar day in configured timezone
+        yesterday_tz = now_tz - timedelta(days=1)
+        target_date_str = yesterday_tz.strftime("%Y-%m-%d")
+        team_group = "Mursaleen Cluster"
+
+        try:
+            from app.core.reports.mubashir_report import MubashirAutomationReportGenerator
+            generator = MubashirAutomationReportGenerator(manager=self.mgr)
+
+            # Check persistent idempotency: skip if already sent for that previous-day date
+            if generator.history_repo.has_report_been_sent(
+                team_group=team_group,
+                report_date=target_date_str,
+                report_type="mubashir_automation_report",
+            ):
+                logger.debug(
+                    f"Mubashir Automation Report for '{team_group}' on {target_date_str} already recorded. Skipping."
+                )
+                return {
+                    "status": "skipped_duplicate",
+                    "date": target_date_str,
+                    "team_name": team_group,
+                }
+
+            logger.info(
+                f"Triggering scheduled Mubashir Automation Report for '{team_group}' on {target_date_str} "
+                f"(current_time={current_time_str}, scheduled_time={scheduled_time})"
+            )
+            result = await generator.send_report_to_discord(
+                target_date=target_date_str,
+                force=False,
+                record_history=True,
+            )
+            logger.info(
+                f"Mubashir Automation Report evaluation complete: status={result.get('status')} "
+                f"(date={target_date_str}, comments={result.get('total_comments', 0)})"
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Error evaluating Mubashir Automation Report: {e}", exc_info=True)
+            return {
+                "status": "failed",
+                "date": target_date_str,
+                "team_name": team_group,
+                "error": str(e),
+            }
 
     async def _evaluate_performance_analysis(self) -> Optional[Dict[str, Any]]:
         """Run performance data foundation analysis if enabled and interval elapsed."""
