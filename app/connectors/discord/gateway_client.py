@@ -288,6 +288,7 @@ def build_pm_slash_command_schema() -> Dict[str, Any]:
                             {"name": "queue", "value": "queue"},
                             {"name": "attention", "value": "attention"},
                             {"name": "activity", "value": "activity"},
+                            {"name": "mubashir", "value": "mubashir"},
                         ],
                     },
                     {

@@ -368,6 +368,18 @@ class DiscordSlashCommandHandler:
             logger.error(f"Error generating daily activity report: {e}", exc_info=True)
             return "❌ Unable to generate the daily activity report right now."
 
+    async def handle_mubashir_command(self, target_date: Optional[str] = None) -> Union[str, Dict[str, Any]]:
+        """Handle on-demand Mubashir Automation Report."""
+        try:
+            from app.core.reports.mubashir_report import MubashirAutomationReportGenerator
+            from app.connectors.discord.formatter import DiscordFormatter
+            gen = MubashirAutomationReportGenerator(manager=self.mgr)
+            data = gen.generate_report(target_date=target_date)
+            return DiscordFormatter.format_mubashir_automation_report(data)
+        except Exception as e:
+            logger.error(f"Error generating Mubashir automation report: {e}", exc_info=True)
+            return "❌ Unable to generate the Mubashir automation report right now."
+
     async def handle_report_command(
         self,
         report_name: str,
@@ -378,7 +390,7 @@ class DiscordSlashCommandHandler:
         rname = (report_name or "").strip().lower()
         if not rname:
             return (
-                "❌ Please specify a report name: `overdue`, `worklog`, `attention`, `activity`, or `queue`.\n"
+                "❌ Please specify a report name: `overdue`, `worklog`, `attention`, `activity`, `queue`, or `mubashir`.\n"
                 "Example: `/pm report name:overdue` or `/pm overdue`"
             )
 
@@ -392,8 +404,16 @@ class DiscordSlashCommandHandler:
             return await self.handle_attention_command(target_date=target_date)
         elif rname in ("activity", "daily", "daily_activity"):
             return await self.handle_activity_command(target_date=target_date)
+        elif rname in (
+            "mubashir",
+            "mubashir_automation",
+            "mubashir_report",
+        ):
+            return await self.handle_mubashir_command(
+                target_date=target_date
+            )
         else:
-            return f"❌ Unknown report '{report_name}'. Available reports: `overdue`, `worklog`, `attention`, `activity`, `queue`."
+            return f"❌ Unknown report '{report_name}'. Available reports: `overdue`, `worklog`, `attention`, `activity`, `queue`, `mubashir`."
 
     async def handle_transition_command(self, ticket: str, target_status: str, actor: str) -> str:
         """Handle /pm transition command."""

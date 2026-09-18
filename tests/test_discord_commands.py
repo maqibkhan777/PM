@@ -1908,7 +1908,7 @@ class TestPhase1SlashCommandCleanup:
         name_param = next(p for p in report_opt["options"] if p["name"] == "name")
         assert name_param["required"] is True
         choice_values = [c["value"] for c in name_param["choices"]]
-        expected_choices = ["worklog", "overdue", "queue", "attention", "activity"]
+        expected_choices = ["worklog", "overdue", "queue", "attention", "activity", "mubashir"]
         assert choice_values == expected_choices
 
     @pytest.mark.asyncio
@@ -2142,3 +2142,292 @@ class TestDailyActivityReportEnhancements:
         # Clickable Jira links
         assert f"[WSSS-326]({settings.get_jira_browse_url('WSSS-326')})" in desc
         assert "`To Do` → `In Progress`" in desc
+
+
+class TestManualMubashirReportCommand:
+    """Comprehensive test suite for manual on-demand Mubashir Automation Report."""
+
+    @staticmethod
+    def _insert_action(
+        temp_db,
+        action_id: Optional[str] = None,
+        action_type: str = "AddComment",
+        target_system: str = "jira",
+        target_id: str = "TREN-378",
+        requested_by: str = "MubashirStaleSupport",
+        status: str = "COMPLETED",
+        dry_run: int = 0,
+        created_at: str = "2026-09-18T05:00:00+00:00",
+        executed_at: Optional[str] = "2026-09-18T05:00:01+00:00",
+        parameters: Optional[Dict[str, Any]] = None,
+        result_data: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        import uuid
+        import json
+        aid = action_id or str(uuid.uuid4())
+        params = parameters or {"title": "Fix Broken Checkout", "comment": "Automated reminder text"}
+        res = result_data or {"id": "647322", "body": "comment response"}
+        with temp_db.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO actions (
+                    id, action_id, idempotency_key, action_type, target_system,
+                    target_id, parameters, status, attempt_count, dry_run,
+                    requested_by, created_at, executed_at, result_data
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+                """,
+                (
+                    aid, aid, f"key-{aid}", action_type, target_system,
+                    target_id, json.dumps(params), status, dry_run,
+                    requested_by, created_at, executed_at, json.dumps(res)
+                )
+            )
+        return aid
+
+    def test_mubashir_choice_in_schema(self):
+        """Verify 'mubashir' is registered in /pm report name choices and command count remains exactly 15."""
+        schema = build_pm_slash_command_schema()
+        assert len(schema["options"]) == 15
+        report_opt = next(opt for opt in schema["options"] if opt["name"] == "report")
+        assert report_opt is not None
+        name_param = next(p for p in report_opt["options"] if p["name"] == "name")
+        choice_values = [c["value"] for c in name_param["choices"]]
+        assert "mubashir" in choice_values
+        assert choice_values == ["worklog", "overdue", "queue", "attention", "activity", "mubashir"]
+
+    @pytest.mark.asyncio
+    async def test_mubashir_report_authorized_invocation(self, slash_setup):
+        """Verify authorized user can run /pm report name:mubashir and receive Discord embed."""
+        handler, _, _, _, _ = slash_setup
+        res = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "mubashir"},
+            discord_user_id="123456789"
+        )
+        assert isinstance(res, dict)
+        assert "embeds" in res
+        assert len(res["embeds"]) == 1
+        embed = res["embeds"][0]
+        assert embed["title"] == "🤖 Mubashir Automation Report"
+        assert embed["color"] == 0x2ECC71
+
+    @pytest.mark.asyncio
+    async def test_mubashir_report_unauthorized_invocation(self, slash_setup):
+        """Verify unauthorized user is rejected when requesting mubashir report."""
+        handler, _, _, _, _ = slash_setup
+        res = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "mubashir"},
+            discord_user_id="999999999"
+        )
+        assert res == "❌ You are not authorized to use PM commands."
+
+    @pytest.mark.asyncio
+    async def test_mubashir_routing_aliases_and_case_insensitivity(self, slash_setup):
+        """Verify aliases 'mubashir', 'mubashir_automation', 'mubashir_report' and case insensitivity work."""
+        handler, _, _, _, _ = slash_setup
+        for alias in ("mubashir", "mubashir_automation", "mubashir_report", "Mubashir", " MUBASHIR "):
+            res = await handler.execute_subcommand(
+                subcommand="report",
+                options={"name": alias},
+                discord_user_id="123456789"
+            )
+            assert isinstance(res, dict), f"Failed for alias: {alias}"
+            assert "embeds" in res, f"Failed for alias: {alias}"
+            assert res["embeds"][0]["title"] == "🤖 Mubashir Automation Report"
+
+    @pytest.mark.asyncio
+    async def test_mubashir_unknown_report_error_message(self, slash_setup):
+        """Verify unknown report name error message includes 'mubashir' in available reports."""
+        handler, _, _, _, _ = slash_setup
+        res = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "nonexistent_report"},
+            discord_user_id="123456789"
+        )
+        assert "❌ Unknown report 'nonexistent_report'." in res
+        assert "`mubashir`" in res
+
+    @pytest.mark.asyncio
+    async def test_mubashir_report_date_filtering(self, slash_setup):
+        """Verify target_date accurately filters actions across calendar days."""
+        handler, _, _, _, temp_db = slash_setup
+        self._insert_action(
+            temp_db,
+            action_id="act-sep18",
+            target_id="TREN-378",
+            requested_by="MubashirStaleSupport",
+            executed_at="2026-09-18T06:00:00+00:00"
+        )
+        self._insert_action(
+            temp_db,
+            action_id="act-sep17",
+            target_id="TREN-379",
+            requested_by="MubashirSupportRule",
+            executed_at="2026-09-17T06:00:00+00:00"
+        )
+
+        res_18 = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "mubashir", "date": "2026-09-18"},
+            discord_user_id="123456789"
+        )
+        assert isinstance(res_18, dict)
+        desc_18 = res_18["embeds"][0]["description"]
+        assert "**Total Comments Added:** 1" in desc_18
+        assert "TREN-378" in desc_18
+        assert "TREN-379" not in desc_18
+
+        res_17 = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "mubashir", "date": "2026-09-17"},
+            discord_user_id="123456789"
+        )
+        assert isinstance(res_17, dict)
+        desc_17 = res_17["embeds"][0]["description"]
+        assert "**Total Comments Added:** 1" in desc_17
+        assert "TREN-379" in desc_17
+        assert "TREN-378" not in desc_17
+
+    @pytest.mark.asyncio
+    async def test_mubashir_report_invalid_date_handling(self, slash_setup):
+        """Verify invalid date format and invalid calendar dates return clear validation errors."""
+        handler, _, _, _, _ = slash_setup
+        # Format error
+        res_fmt = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "mubashir", "date": "invalid-date"},
+            discord_user_id="123456789"
+        )
+        assert "Invalid date format 'invalid-date'" in res_fmt
+        assert "YYYY-MM-DD" in res_fmt
+
+        # Calendar error (Feb 31)
+        res_cal = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "mubashir", "date": "2026-02-31"},
+            discord_user_id="123456789"
+        )
+        assert "Invalid calendar date '2026-02-31'" in res_cal
+        assert "Expected a valid date" in res_cal
+
+    @pytest.mark.asyncio
+    async def test_mubashir_report_populated_content_and_canonical_jira_links(self, slash_setup):
+        """Verify populated report content displays both rules, counts, summaries, and canonical Jira URLs."""
+        handler, _, _, _, temp_db = slash_setup
+        self._insert_action(
+            temp_db,
+            action_id="act-stale-1",
+            target_id="TREN-378",
+            requested_by="MubashirStaleSupport",
+            executed_at="2026-09-18T04:30:00+00:00",
+            parameters={"title": "Fix Broken Checkout", "comment": "3 days stale"}
+        )
+        self._insert_action(
+            temp_db,
+            action_id="act-support-1",
+            target_id="TREN-380",
+            requested_by="MubashirSupportRule",
+            executed_at="2026-09-18T05:15:00+00:00",
+            parameters={"title": "Client Ticket Needs Attention", "comment": "Awaiting response"}
+        )
+
+        res = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "mubashir", "date": "2026-09-18"},
+            discord_user_id="123456789"
+        )
+        assert isinstance(res, dict)
+        desc = res["embeds"][0]["description"]
+        assert "**Total Comments Added:** 2" in desc
+        assert "MUBASHIR_STALE_SUPPORT" in desc
+        assert "MUBASHIR_SUPPORT_RULE" in desc
+        assert f"[TREN-378]({settings.get_jira_browse_url('TREN-378')})" in desc
+        assert f"[TREN-380]({settings.get_jira_browse_url('TREN-380')})" in desc
+
+    @pytest.mark.asyncio
+    async def test_mubashir_report_empty_state_embed(self, slash_setup):
+        """Verify empty report returns empty state embed message."""
+        handler, _, _, _, _ = slash_setup
+        res = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "mubashir", "date": "2026-09-18"},
+            discord_user_id="123456789"
+        )
+        assert isinstance(res, dict)
+        embed = res["embeds"][0]
+        assert embed["title"] == "🤖 Mubashir Automation Report"
+        assert "**Date:**" in embed["description"]
+        assert "✅ No Mubashir automation comments were added." in embed["description"]
+
+    @pytest.mark.asyncio
+    async def test_mubashir_report_read_only_safety(self, slash_setup):
+        """Verify manual report execution does NOT make network calls, write actions, or record daily_report_history."""
+        handler, _, mock_jira_client, _, temp_db = slash_setup
+        self._insert_action(
+            temp_db,
+            action_id="act-safety-1",
+            target_id="TREN-378",
+            requested_by="MubashirStaleSupport",
+            executed_at="2026-09-18T04:30:00+00:00"
+        )
+
+        with temp_db.session() as conn:
+            initial_actions_count = conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0]
+            initial_history_count = conn.execute("SELECT COUNT(*) FROM daily_report_history").fetchone()[0]
+
+        res = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "mubashir", "date": "2026-09-18"},
+            discord_user_id="123456789"
+        )
+        assert isinstance(res, dict)
+
+        # Zero Jira mutations
+        assert len(mock_jira_client.comment_calls) == 0
+        assert len(mock_jira_client.transition_calls) == 0
+        assert len(mock_jira_client.assign_calls) == 0
+        assert len(mock_jira_client.create_issue_calls) == 0
+
+        # Zero new DB actions or daily_report_history
+        with temp_db.session() as conn:
+            final_actions_count = conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0]
+            final_history_count = conn.execute("SELECT COUNT(*) FROM daily_report_history").fetchone()[0]
+        assert final_actions_count == initial_actions_count
+        assert final_history_count == initial_history_count
+
+    @pytest.mark.asyncio
+    async def test_existing_reports_compatibility(self, slash_setup):
+        """Verify existing reports (worklog, overdue, queue, attention, activity) remain operational."""
+        handler, _, _, _, _ = slash_setup
+        # Worklog
+        res_wl = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "worklog", "date": "2026-09-18"},
+            discord_user_id="123456789"
+        )
+        assert isinstance(res_wl, dict) and "embeds" in res_wl
+
+        # Overdue
+        res_od = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "overdue", "date": "2026-09-18"},
+            discord_user_id="123456789"
+        )
+        assert isinstance(res_od, dict) and "embeds" in res_od
+
+        # Attention
+        res_att = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "attention", "date": "2026-09-18"},
+            discord_user_id="123456789"
+        )
+        assert isinstance(res_att, dict) and "embeds" in res_att
+
+        # Activity
+        res_act = await handler.execute_subcommand(
+            subcommand="report",
+            options={"name": "activity", "date": "2026-09-18"},
+            discord_user_id="123456789"
+        )
+        assert isinstance(res_act, dict) and "embeds" in res_act
