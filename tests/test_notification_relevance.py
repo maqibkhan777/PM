@@ -145,6 +145,7 @@ def test_comment_mentioning_me_produces_personal_discord_notification():
     assert len(actions) == 1
     action = actions[0]
     assert action.action_type == ActionType.SEND_NOTIFICATION
+    assert action.parameters["channel"] == settings.JIRA_NOTIFICATION_DISCORD_CHANNEL
     assert "You were mentioned on WSSS-101" in action.parameters.get("title", "")
     assert "[WSSS-101](https://custom-jira.example.com/browse/WSSS-101)" in action.parameters["embeds"][0]["description"]
 
@@ -170,6 +171,7 @@ def test_ticket_assigned_to_me_produces_personal_notification():
     actions = rule.evaluate(event)
     assert len(actions) == 1
     action = actions[0]
+    assert action.parameters["channel"] == settings.JIRA_NOTIFICATION_DISCORD_CHANNEL
     assert "Task Assigned to You — WSSS-102" in action.parameters.get("title", "")
     assert action.parameters.get("level") == "SUCCESS"
     assert "[WSSS-102](https://custom-jira.example.com/browse/WSSS-102)" in action.parameters["embeds"][0]["description"]
@@ -196,6 +198,7 @@ def test_ticket_assigned_to_another_team_member_produces_team_awareness_notifica
     actions = rule.evaluate(event)
     assert len(actions) == 1
     action = actions[0]
+    assert action.parameters["channel"] == settings.JIRA_NOTIFICATION_DISCORD_CHANNEL
     assert "Task Assigned — WSSS-103" in action.parameters.get("title", "")
     assert action.parameters.get("level") == "INFO"
 

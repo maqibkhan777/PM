@@ -152,6 +152,17 @@ def slash_setup(temp_db):
     handler = DiscordSlashCommandHandler(user_repo=user_repo, action_engine=engine)
     bot = DiscordBotConnector(bot_token="test_token_123", slash_handler=handler)
 
+    # Wrap execute_subcommand for test suite convenience: default channel_id to pm-alerts
+    orig_exec = handler.execute_subcommand
+    async def _test_execute_subcommand(subcommand: str, options: Dict[str, Any], discord_user_id: Optional[str] = None, channel_id: Optional[str] = None):
+        return await orig_exec(
+            subcommand=subcommand,
+            options=options,
+            discord_user_id=discord_user_id,
+            channel_id="pm-alerts" if channel_id is None else channel_id,
+        )
+    handler.execute_subcommand = _test_execute_subcommand
+
     # Setup allowed user
     settings.DISCORD_PM_ALLOWED_USERS = "123456789,987654321"
     settings.DRY_RUN = False
@@ -460,6 +471,7 @@ async def test_discord_interaction_payload_handling(slash_setup):
     # 2. Type 2: APPLICATION_COMMAND (/pm status WSSS-326)
     cmd_payload = {
         "type": 2,
+        "channel_id": "pm-alerts",
         "data": {
             "name": "pm",
             "options": [
@@ -627,6 +639,7 @@ async def test_gateway_process_interaction_create_flow(slash_setup):
         "id": "int_999",
         "token": "tok_888",
         "type": 2,
+        "channel_id": "pm-alerts",
         "data": {
             "name": "pm",
             "options": [

@@ -148,17 +148,17 @@ class TestDateSelectors:
         settings.DISCORD_PM_ALLOWED_USERS = "*"
 
         # Invalid format
-        res1 = await handler.execute_subcommand("overdue", {"date": "2026/09/12"}, discord_user_id="user1")
+        res1 = await handler.execute_subcommand("overdue", {"date": "2026/09/12"}, discord_user_id="user1", channel_id="pm-alerts")
         assert "Invalid date format" in res1
 
-        res2 = await handler.execute_subcommand("worklog", {"date": "yesterday"}, discord_user_id="user1")
+        res2 = await handler.execute_subcommand("worklog", {"date": "yesterday"}, discord_user_id="user1", channel_id="pm-alerts")
         assert "Invalid date format" in res2
 
         # Invalid calendar date (e.g. Feb 31)
-        res3 = await handler.execute_subcommand("overdue", {"date": "2026-02-31"}, discord_user_id="user1")
+        res3 = await handler.execute_subcommand("overdue", {"date": "2026-02-31"}, discord_user_id="user1", channel_id="pm-alerts")
         assert "Invalid calendar date" in res3
 
-        res4 = await handler.execute_subcommand("report", {"name": "attention", "date": "2026-13-45"}, discord_user_id="user1")
+        res4 = await handler.execute_subcommand("report", {"name": "attention", "date": "2026-13-45"}, discord_user_id="user1", channel_id="pm-alerts")
         assert "Invalid calendar date" in res4
 
     @pytest.mark.asyncio
@@ -168,7 +168,7 @@ class TestDateSelectors:
         settings.DISCORD_PM_ALLOWED_USERS = "*"
 
         # Valid date for attention digest
-        res = await handler.execute_subcommand("attention", {"date": "2026-09-10"}, discord_user_id="user1")
+        res = await handler.execute_subcommand("attention", {"date": "2026-09-10"}, discord_user_id="user1", channel_id="pm-alerts")
         if isinstance(res, dict) and "embeds" in res:
             desc = res["embeds"][0].get("description", "")
             title = res["embeds"][0].get("title", "")

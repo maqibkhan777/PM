@@ -229,6 +229,27 @@ class DiscordSlashCommandHandler:
         allowed_list = [u.strip() for u in allowed.split(",") if u.strip()]
         return str(discord_user_id).strip() in allowed_list
 
+    def _is_allowed_pm_channel(self, channel_id: Optional[str]) -> bool:
+        """Verify whether a Discord channel is permitted for /pm slash commands.
+
+        /pm commands are strictly restricted to #pm-alerts (or configured PM_DISCORD_CHANNEL).
+        Any other channel (e.g. #notifications, #general, #dev-chat) or missing/empty channel context is rejected.
+        """
+        if not channel_id or not str(channel_id).strip():
+            return False
+
+        clean = str(channel_id).strip().lower()
+        pm_channel = (settings.PM_DISCORD_CHANNEL or "pm-alerts").strip().lower()
+
+        allowed_identifiers = {
+            pm_channel,
+            f"#{pm_channel}",
+            "pm-alerts",
+            "#pm-alerts",
+        }
+
+        return clean in allowed_identifiers
+
     # =========================================================================
     # Canonical Subcommand Handlers (Single Source of Truth)
     # =========================================================================
@@ -639,6 +660,10 @@ class DiscordSlashCommandHandler:
         # 1. Authorization check
         if not self._is_authorized_pm(discord_user_id):
             return "❌ You are not authorized to use PM commands."
+
+        # 2. Channel restriction check (/pm commands restricted exclusively to #pm-alerts)
+        if not self._is_allowed_pm_channel(channel_id):
+            return "❌ PM commands can only be used in #pm-alerts. Please use #pm-alerts for PM operations."
 
         sub = (subcommand or "help").strip().lower()
 

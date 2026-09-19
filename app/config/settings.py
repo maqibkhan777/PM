@@ -40,12 +40,14 @@ class Settings(BaseSettings):
 
     # Discord Connector (Webhook & Interactive Bot)
     DISCORD_WEBHOOK_URL: str = "https://discord.com/api/webhooks/placeholder"
+    DISCORD_NOTIFICATIONS_WEBHOOK_URL: Optional[str] = None  # Dedicated webhook for #notifications
     DISCORD_BOT_TOKEN: Optional[str] = None
     DISCORD_APPLICATION_ID: Optional[str] = None
     DISCORD_GUILD_ID: Optional[str] = None  # Optional: specific guild ID for instant dev slash-command registration
     DISCORD_PM_ALLOWED_USERS: str = ""  # Comma-separated Discord user IDs allowed to run /pm commands
     DISCORD_PM_COMMAND_ENABLED: bool = True
     PM_DISCORD_CHANNEL: str = "pm-alerts"
+    JIRA_NOTIFICATION_DISCORD_CHANNEL: str = "notifications"
 
     # Mattermost Connector (Optional)
     MATTERMOST_URL: Optional[str] = None
@@ -200,6 +202,14 @@ class Settings(BaseSettings):
         return bool(
             self.DISCORD_WEBHOOK_URL
             and not self.DISCORD_WEBHOOK_URL.endswith("placeholder")
+        )
+
+    def is_discord_notifications_configured(self) -> bool:
+        """Check if dedicated Discord notifications webhook URL is meaningfully configured."""
+        return bool(
+            self.DISCORD_NOTIFICATIONS_WEBHOOK_URL
+            and not self.DISCORD_NOTIFICATIONS_WEBHOOK_URL.endswith("placeholder")
+            and not self.DISCORD_NOTIFICATIONS_WEBHOOK_URL.endswith("placeholder_notifications")
         )
 
     def is_discord_bot_configured(self) -> bool:

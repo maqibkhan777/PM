@@ -325,6 +325,7 @@ async def test_slash_command_queue_and_report_equivalence(slash_setup):
         subcommand="queue",
         options={"user": "Abdul Subhan"},
         discord_user_id="123456789",
+        channel_id="pm-alerts",
     )
 
     # 2. /pm report name:queue user:Abdul Subhan
@@ -332,6 +333,7 @@ async def test_slash_command_queue_and_report_equivalence(slash_setup):
         subcommand="report",
         options={"name": "queue", "user": "Abdul Subhan"},
         discord_user_id="123456789",
+        channel_id="pm-alerts",
     )
 
     assert isinstance(res_direct, dict) and "embeds" in res_direct

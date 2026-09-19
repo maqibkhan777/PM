@@ -545,7 +545,7 @@ class CommentNotificationRule(BaseRule):
 
         notif_action = create_send_notification_action(
             target_system="discord",
-            channel=settings.PM_DISCORD_CHANNEL,
+            channel=settings.JIRA_NOTIFICATION_DISCORD_CHANNEL,
             title=title,
             message=msg,
             level=level,
@@ -638,7 +638,7 @@ class AssignmentRule(BaseRule):
 
         notif_action = create_send_notification_action(
             target_system="discord",
-            channel=settings.PM_DISCORD_CHANNEL,
+            channel=settings.JIRA_NOTIFICATION_DISCORD_CHANNEL,
             title=title,
             message=msg,
             level=level,

@@ -310,7 +310,8 @@ async def test_development_auth_empty_allowed_users_remains_permissive(slash_han
     res = await slash_handler.execute_subcommand(
         subcommand="help",
         options={},
-        discord_user_id="123456789"
+        discord_user_id="123456789",
+        channel_id="pm-alerts",
     )
     assert "PM Commands" in res
 
