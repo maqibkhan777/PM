@@ -3,7 +3,7 @@
 import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from collections import defaultdict
-from app.database.repositories import EventRepository, EmployeeRoleRepository
+from app.database.repositories import EventRepository, EmployeeRoleRepository, DailyReportHistoryRepository
 from app.database.connection import db_manager, DatabaseManager
 from app.connectors.discord.formatter import DiscordFormatter
 from app.core.actions.types import create_send_notification_action
@@ -30,6 +30,7 @@ class DailyActivityReportGenerator:
         self.mgr = manager or db_manager
         self.event_repo = EventRepository(self.mgr)
         self.role_repo = EmployeeRoleRepository(self.mgr)
+        self.history_repo = DailyReportHistoryRepository(self.mgr)
 
     def resolve_actor_membership(
         self,
@@ -215,26 +216,77 @@ class DailyActivityReportGenerator:
         }
         return report
 
-    async def send_report_to_discord(self, target_date: Optional[str] = None) -> Dict[str, Any]:
-        """Generate and dispatch daily activity report embed to Discord."""
+    async def send_report_to_discord(
+        self,
+        target_date: Optional[str] = None,
+        force: bool = False,
+        record_history: bool = True
+    ) -> Dict[str, Any]:
+        """Generate and dispatch daily activity report embed to Discord with persistent idempotency tracking."""
         report_data = self.generate_report(target_date)
+        date_str = report_data["date"]
+        team_group = report_data.get("team_name") or (
+            settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else "Mursaleen Cluster"
+        )
+
+        # Idempotency check: skip if already sent today unless force is True
+        if not force and self.history_repo.has_report_been_sent(
+            team_group=team_group,
+            report_date=date_str,
+            report_type="daily_activity_report"
+        ):
+            logger.info(f"Daily PM Activity Report for team '{team_group}' on {date_str} already dispatched. Skipping.")
+            return {
+                "status": "skipped",
+                "reason": "already_sent_today",
+                "date": date_str,
+                "team_name": team_group,
+            }
+
         embed_payload = DiscordFormatter.format_daily_report(report_data)
+        channel = settings.DAILY_ACTIVITY_REPORT_CHANNEL or settings.PM_DISCORD_CHANNEL
+
+        embeds = embed_payload.get("embeds", [])
+        embed_title = embeds[0].get("title") if embeds else f"📋 Daily PM Activity Report — {date_str}"
+        embed_desc = embeds[0].get("description") if embeds else f"Daily activity report generated for {date_str}"
 
         action = create_send_notification_action(
             target_system="discord",
-            channel=settings.PM_DISCORD_CHANNEL,
-            title=f"📋 Daily PM Activity Report — {report_data['date']}",
-            message=f"Daily activity report generated for {report_data['date']}",
+            channel=channel,
+            title=embed_title,
+            message=embed_desc,
             level="INFO",
-            fields=embed_payload.get("embeds"),
-            requested_by="DailyReportGenerator"
+            fields=embeds,
+            requested_by="DailyActivityReportScheduler"
         )
-        action.parameters["embeds"] = embed_payload.get("embeds")
+        action.parameters["embeds"] = embeds
+
+        # Ensure Discord connector is registered
+        if not action_engine.get_connector("discord"):
+            from app.connectors.discord import DiscordWebhookConnector
+            action_engine.register_connector(DiscordWebhookConnector())
 
         res = await action_engine.execute(action)
+        status_val = res.status.value if hasattr(res, "status") and hasattr(res.status, "value") else str(getattr(res, "status", "unknown"))
+        is_success = res.success if hasattr(res, "success") else (status_val.upper() in ("COMPLETED", "SUCCESS", "SIMULATED", "DRY_RUN_SIMULATED"))
+
+        if is_success and record_history:
+            self.history_repo.record_report_sent(
+                team_group=team_group,
+                report_date=date_str,
+                payload=report_data,
+                report_type="daily_activity_report"
+            )
+            logger.info(f"Recorded daily activity report sent for team '{team_group}' on {date_str}.")
+
         return {
+            "status": status_val,
+            "date": date_str,
+            "team_name": team_group,
+            "total_activities": report_data.get("total_activities", 0),
+            "recorded_history": record_history and is_success,
             "report": report_data,
-            "action_result": res.model_dump()
+            "action_result": res.model_dump() if hasattr(res, "model_dump") else res
         }
 
 

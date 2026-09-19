@@ -176,6 +176,15 @@ class PeriodicScheduler:
         except Exception as e:
             logger.error(f"Error during Mubashir Automation Report evaluation: {e}", exc_info=True)
 
+        # 5c. Evaluate Scheduled Daily Activity Report
+        daily_activity_status = None
+        try:
+            activity_report_res = await self._evaluate_daily_activity_report()
+            if activity_report_res:
+                daily_activity_status = activity_report_res.get("status")
+        except Exception as e:
+            logger.error(f"Error during Daily Activity Report evaluation: {e}", exc_info=True)
+
         # 6. Evaluate Scheduled Performance Foundation Analysis
         perf_analysis_status = None
         try:
@@ -231,6 +240,7 @@ class PeriodicScheduler:
             f"Daily overdue status: {daily_overdue_status or 'idle'}, "
             f"Daily attention status: {daily_attention_status or 'idle'}, "
             f"Mubashir automation report status: {mubashir_report_status or 'idle'}, "
+            f"Daily activity status: {daily_activity_status or 'idle'}, "
             f"Performance analysis status: {perf_analysis_status or 'idle'}, "
             f"Epic review status: {epic_review_status or 'idle'}, "
             f"Daily retention status: {daily_retention_status or 'idle'}, "
@@ -246,6 +256,7 @@ class PeriodicScheduler:
             "daily_overdue_status": daily_overdue_status,
             "daily_attention_status": daily_attention_status,
             "mubashir_report_status": mubashir_report_status,
+            "daily_activity_status": daily_activity_status,
             "performance_analysis_status": perf_analysis_status,
             "epic_review_status": epic_review_status,
             "daily_retention_status": daily_retention_status,
@@ -526,6 +537,41 @@ class PeriodicScheduler:
                 "team_name": team_group,
                 "error": str(e),
             }
+
+    async def _evaluate_daily_activity_report(self) -> Optional[Dict[str, Any]]:
+        """Check if daily activity report should be triggered based on scheduled time (08:40 Asia/Karachi)."""
+        if not settings.DAILY_ACTIVITY_REPORT_ENABLED:
+            return None
+
+        try:
+            tz_str = settings.DAILY_ACTIVITY_REPORT_TIMEZONE or settings.get_report_timezone()
+            tz = zoneinfo.ZoneInfo(tz_str)
+            now_tz = datetime.now(tz)
+        except Exception:
+            tz = zoneinfo.ZoneInfo("Asia/Karachi")
+            now_tz = datetime.now(tz)
+
+        today_str = now_tz.strftime("%Y-%m-%d")
+        current_time_str = now_tz.strftime("%H:%M")
+
+        scheduled_time = (settings.DAILY_ACTIVITY_REPORT_TIME or settings.get_default_report_time()).strip()
+        if current_time_str >= scheduled_time:
+            from app.core.reports.daily_report import DailyActivityReportGenerator
+            generator = DailyActivityReportGenerator(manager=self.mgr)
+            team_group = settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else "Mursaleen Cluster"
+
+            # Check persistent idempotency: skip if already sent today
+            if not generator.history_repo.has_report_been_sent(team_group, today_str, report_type="daily_activity_report"):
+                logger.info(
+                    f"Triggering scheduled daily activity report for team '{team_group}' on {today_str} "
+                    f"(current_time={current_time_str}, scheduled_time={scheduled_time})"
+                )
+                return await generator.send_report_to_discord(
+                    target_date=today_str,
+                    force=False,
+                    record_history=True
+                )
+        return None
 
     async def _evaluate_performance_analysis(self) -> Optional[Dict[str, Any]]:
         """Run performance data foundation analysis if enabled and interval elapsed."""

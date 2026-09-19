@@ -297,3 +297,55 @@ def test_daily_activity_embed_massive_overflow_with_explicit_omission(temp_db):
         for line in emb["description"].splitlines():
             if line.startswith("• [TASK-"):
                 assert line.endswith("— Ahsan Amin")
+
+
+@pytest.mark.asyncio
+async def test_daily_activity_send_report_to_discord_idempotency(temp_db, monkeypatch):
+    """Test send_report_to_discord records history and skips duplicate delivery on subsequent calls."""
+    from unittest.mock import AsyncMock
+    from app.core.actions.base import ActionResult
+    from app.core.models.enums import ActionStatus
+    from app.core.actions.engine import action_engine
+
+    async def fake_execute(action):
+        return ActionResult(
+            action_id=getattr(action, "action_id", "act-sim-1"),
+            target_system="discord",
+            target_id="pm-alerts",
+            status=ActionStatus.DRY_RUN_SIMULATED,
+            success=True,
+            result_data={"simulated": True}
+        )
+
+    monkeypatch.setattr(action_engine, "execute", fake_execute)
+
+    report_gen = DailyActivityReportGenerator(manager=temp_db)
+    event_repo = EventRepository(temp_db)
+    today = "2026-09-12"
+    now_iso = "2026-09-12T10:00:00Z"
+
+    event_repo.insert(
+        event_type="TaskCreated",
+        source="jira",
+        external_event_id="act-ev-1",
+        timestamp=now_iso,
+        actor_name="Ahsan Amin",
+        task_id="CF7-100",
+        payload={"title": "New feature"}
+    )
+
+    # First call: should generate and record history
+    res1 = await report_gen.send_report_to_discord(target_date=today, force=False, record_history=True)
+    assert res1["recorded_history"] is True
+    assert res1["total_activities"] == 1
+    assert report_gen.history_repo.has_report_been_sent("Mursaleen Cluster", today, report_type="daily_activity_report") is True
+
+    # Second call without force: should skip with already_sent_today reason
+    res2 = await report_gen.send_report_to_discord(target_date=today, force=False, record_history=True)
+    assert res2["status"] == "skipped"
+    assert res2["reason"] == "already_sent_today"
+
+    # Third call with force=True: should bypass idempotency check
+    res3 = await report_gen.send_report_to_discord(target_date=today, force=True, record_history=True)
+    assert res3["status"].lower() in ("success", "simulated", "dry_run_simulated")
+    assert res3["recorded_history"] is True
