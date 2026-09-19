@@ -1,6 +1,6 @@
 """Authoritative declarative retention policies and table registries."""
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 from app.core.retention.models import RetentionClass, RetentionPolicyDefinition
 
 # Authoritative policy definitions ordered by deletion hierarchy (children before parents)
