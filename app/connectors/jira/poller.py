@@ -552,6 +552,14 @@ class JiraPoller:
         # Preserves last_activity_at unless a meaningful activity occurred
         effective_activity_time = new_activity_time or (cached_state.get("last_activity_at") if cached_state else (updated_str or now_str))
 
+        # Extract canonical fields from issue
+        components_raw = fields.get("components", []) if isinstance(fields.get("components"), list) else []
+        components_list = [c.get("name") if isinstance(c, dict) else str(c) for c in components_raw]
+        labels_list = fields.get("labels", []) if isinstance(fields.get("labels"), list) else []
+        subtasks_raw = fields.get("subtasks", []) if isinstance(fields.get("subtasks"), list) else []
+        orig_est_secs = fields.get("timeoriginalestimate") or (fields.get("timetracking", {}).get("originalEstimateSeconds") if isinstance(fields.get("timetracking"), dict) else None)
+        time_spent_secs = fields.get("timespent") or (fields.get("timetracking", {}).get("timeSpentSeconds") if isinstance(fields.get("timetracking"), dict) else None)
+
         self.issue_state_repo.upsert(
             jira_issue_key=task_key,
             summary=summary,
@@ -563,8 +571,15 @@ class JiraPoller:
             last_seen_at=now_str,
             last_activity_at=effective_activity_time,
             project_key=project_key,
-            raw_reference=issue,
-            team_group=settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else None
+            raw_reference=None,
+            team_group=settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else None,
+            issue_type=issuetype_obj.get("name", "Task"),
+            labels=labels_list,
+            components=components_list,
+            subtask_count=len(subtasks_raw),
+            original_estimate_seconds=orig_est_secs,
+            time_spent_seconds=time_spent_secs,
+            creator_id=creator_acc_id,
         )
 
         # ----------------------------------------------------------------------

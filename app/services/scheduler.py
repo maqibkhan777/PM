@@ -29,13 +29,17 @@ class PeriodicScheduler:
         self.event_repo = EventRepository(self.mgr)
         self.issue_state_repo = JiraIssueStateRepository(self.mgr)
         from app.services.notification_deduplication import NotificationDeduplicationService
+        from app.core.retention.service import RetentionService
         self.dedup_service = NotificationDeduplicationService(self.mgr)
+        self.retention_service = RetentionService(self.mgr)
         self._running = False
         self._rules_task: Optional[asyncio.Task] = None
         self._polling_task: Optional[asyncio.Task] = None
         self._interval_minutes = settings.SCHEDULER_INTERVAL_MINUTES
         self._polling_interval_minutes = settings.JIRA_POLLING_INTERVAL_MINUTES
         self._last_performance_analysis_at: Optional[datetime] = None
+        self._last_daily_retention_date: Optional[str] = None
+        self._last_monday_retention_date: Optional[str] = None
 
     @property
     def is_running(self) -> bool:
@@ -201,6 +205,24 @@ class PeriodicScheduler:
         except Exception as e:
             logger.error(f"Error during Active Epic review evaluation: {e}", exc_info=True)
 
+        # 9. Evaluate Scheduled Daily Data Retention Maintenance
+        daily_retention_status = None
+        try:
+            daily_retention_res = await self._evaluate_daily_retention()
+            if daily_retention_res:
+                daily_retention_status = daily_retention_res.get("status")
+        except Exception as e:
+            logger.error(f"Error during Daily Data Retention evaluation: {e}", exc_info=True)
+
+        # 10. Evaluate Scheduled Monday Raw Event Retention Maintenance
+        monday_retention_status = None
+        try:
+            monday_retention_res = await self._evaluate_monday_retention()
+            if monday_retention_res:
+                monday_retention_status = monday_retention_res.get("status")
+        except Exception as e:
+            logger.error(f"Error during Monday Raw Event Retention evaluation: {e}", exc_info=True)
+
         logger.info(
             f"Scheduler cycle complete. Evaluated: {stale_evaluated} stale, "
             f"{overdue_evaluated} overdue, {mubashir_stale_count} mubashir stale. "
@@ -210,7 +232,9 @@ class PeriodicScheduler:
             f"Daily attention status: {daily_attention_status or 'idle'}, "
             f"Mubashir automation report status: {mubashir_report_status or 'idle'}, "
             f"Performance analysis status: {perf_analysis_status or 'idle'}, "
-            f"Epic review status: {epic_review_status or 'idle'}"
+            f"Epic review status: {epic_review_status or 'idle'}, "
+            f"Daily retention status: {daily_retention_status or 'idle'}, "
+            f"Monday retention status: {monday_retention_status or 'idle'}"
         )
         return {
             "timestamp": utc_now_iso(),
@@ -224,6 +248,8 @@ class PeriodicScheduler:
             "mubashir_report_status": mubashir_report_status,
             "performance_analysis_status": perf_analysis_status,
             "epic_review_status": epic_review_status,
+            "daily_retention_status": daily_retention_status,
+            "monday_retention_status": monday_retention_status,
         }
 
     def _sync_recent_events_to_projection(self) -> None:
@@ -237,9 +263,18 @@ class PeriodicScheduler:
                     continue
                 payload = e.get("payload", {})
                 issue_data = payload.get("issue", {})
-                fields = issue_data.get("fields", {})
+                fields = issue_data.get("fields", {}) if isinstance(issue_data.get("fields"), dict) else {}
                 status_name = fields.get("status", {}).get("name") or payload.get("new_status") or "Unknown"
                 assignee = fields.get("assignee") or {}
+                components_raw = fields.get("components", []) if isinstance(fields.get("components"), list) else []
+                components_list = [c.get("name") if isinstance(c, dict) else str(c) for c in components_raw]
+                labels_list = fields.get("labels", []) if isinstance(fields.get("labels"), list) else []
+                subtasks_raw = fields.get("subtasks", []) if isinstance(fields.get("subtasks"), list) else []
+                orig_est_secs = fields.get("timeoriginalestimate") or (fields.get("timetracking", {}).get("originalEstimateSeconds") if isinstance(fields.get("timetracking"), dict) else None)
+                time_spent_secs = fields.get("timespent") or (fields.get("timetracking", {}).get("timeSpentSeconds") if isinstance(fields.get("timetracking"), dict) else None)
+                creator_obj = fields.get("creator") or fields.get("reporter") or {}
+                creator_id = creator_obj.get("accountId") or creator_obj.get("name") if isinstance(creator_obj, dict) else str(creator_obj)
+
                 self.issue_state_repo.upsert(
                     jira_issue_key=tkey,
                     summary=fields.get("summary") or "Task",
@@ -248,8 +283,15 @@ class PeriodicScheduler:
                     due_date=fields.get("duedate"),
                     last_seen_at=e.get("timestamp"),
                     last_activity_at=e.get("timestamp"),
-                    raw_reference=issue_data,
-                    team_group=team_group
+                    raw_reference=None,
+                    team_group=team_group,
+                    issue_type=fields.get("issuetype", {}).get("name", "Task") if isinstance(fields.get("issuetype"), dict) else "Task",
+                    labels=labels_list,
+                    components=components_list,
+                    subtask_count=len(subtasks_raw),
+                    original_estimate_seconds=orig_est_secs,
+                    time_spent_seconds=time_spent_secs,
+                    creator_id=creator_id
                 )
         except Exception as err:
             logger.debug(f"Event sync to projection failed: {err}")
@@ -546,8 +588,8 @@ class PeriodicScheduler:
                     raw = json.loads(d["raw_reference"]) if d.get("raw_reference") else {}
                     fields = raw.get("fields", {}) if isinstance(raw, dict) else {}
                     creator = fields.get("creator") or raw.get("creator") or {}
-                    creator_id = creator.get("accountId") or creator.get("name") if isinstance(creator, dict) else str(creator)
-                    itype = fields.get("issuetype", {}).get("name", "") if isinstance(fields.get("issuetype"), dict) else str(raw.get("issue_type", ""))
+                    creator_id = d.get("creator_id") or (creator.get("accountId") or creator.get("name") if isinstance(creator, dict) else str(creator))
+                    itype = d.get("issue_type") or (fields.get("issuetype", {}).get("name", "") if isinstance(fields.get("issuetype"), dict) else str(raw.get("issue_type", "")))
 
                     if creator_id == mubashir_account_id and itype.lower() in ("support", "support ticket", "customer support", "helpdesk"):
                         st_name = d.get("status", "").strip().lower()
@@ -629,6 +671,62 @@ class PeriodicScheduler:
             return {"status": "completed", "epics_reviewed": len(results), "details": results}
         except Exception as e:
             logger.error(f"Error during Active Epic review: {e}", exc_info=True)
+            return {"status": "error", "error": str(e)}
+
+    async def _evaluate_daily_retention(self) -> Optional[Dict[str, Any]]:
+        """Run daily maintenance pruning 30d analytical runs, 90d audit logs, 30d notifications."""
+        now_pkt = datetime.now(zoneinfo.ZoneInfo("Asia/Karachi"))
+        today_pkt_str = now_pkt.strftime("%Y-%m-%d")
+
+        # Run once per calendar day (Asia/Karachi)
+        if self._last_daily_retention_date == today_pkt_str:
+            return None
+
+        # Prefer running at or after 04:00 AM PKT
+        if now_pkt.hour < 4:
+            return None
+
+        logger.info(f"Triggering scheduled daily data retention maintenance (date: {today_pkt_str})...")
+        try:
+            res = self.retention_service.run_daily_maintenance(dry_run=False)
+            self._last_daily_retention_date = today_pkt_str
+            return {
+                "status": res.status,
+                "rows_deleted": res.total_rows_deleted,
+                "tables_processed": res.total_tables_processed,
+                "duration_ms": res.execution_duration_ms,
+            }
+        except Exception as e:
+            logger.error(f"Daily retention maintenance encountered an error: {e}", exc_info=True)
+            return {"status": "error", "error": str(e)}
+
+    async def _evaluate_monday_retention(self) -> Optional[Dict[str, Any]]:
+        """Run Monday weekly maintenance pruning processed raw events older than Monday 00:00:00 PKT."""
+        now_pkt = datetime.now(zoneinfo.ZoneInfo("Asia/Karachi"))
+        today_pkt_str = now_pkt.strftime("%Y-%m-%d")
+
+        # Only on Mondays (weekday 0), at or after 03:00 AM PKT, once per day
+        if now_pkt.weekday() != 0:
+            return None
+
+        if self._last_monday_retention_date == today_pkt_str:
+            return None
+
+        if now_pkt.hour < 3:
+            return None
+
+        logger.info(f"Triggering scheduled Monday raw event retention maintenance (date: {today_pkt_str})...")
+        try:
+            res = self.retention_service.run_weekly_monday_maintenance(dry_run=False)
+            self._last_monday_retention_date = today_pkt_str
+            return {
+                "status": res.status,
+                "rows_deleted": res.total_rows_deleted,
+                "tables_processed": res.total_tables_processed,
+                "duration_ms": res.execution_duration_ms,
+            }
+        except Exception as e:
+            logger.error(f"Monday raw event retention maintenance encountered an error: {e}", exc_info=True)
             return {"status": "error", "error": str(e)}
 
 

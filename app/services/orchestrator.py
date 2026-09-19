@@ -181,6 +181,15 @@ class SystemOrchestrator:
                 if source == "jira" and raw_payload.get("issue"):
                     issue = raw_payload["issue"]
                     fields = issue.get("fields", {})
+                    components_raw = fields.get("components", []) if isinstance(fields.get("components"), list) else []
+                    components_list = [c.get("name") if isinstance(c, dict) else str(c) for c in components_raw]
+                    labels_list = fields.get("labels", []) if isinstance(fields.get("labels"), list) else []
+                    subtasks_raw = fields.get("subtasks", []) if isinstance(fields.get("subtasks"), list) else []
+                    orig_est_secs = fields.get("timeoriginalestimate") or (fields.get("timetracking", {}).get("originalEstimateSeconds") if isinstance(fields.get("timetracking"), dict) else None)
+                    time_spent_secs = fields.get("timespent") or (fields.get("timetracking", {}).get("timeSpentSeconds") if isinstance(fields.get("timetracking"), dict) else None)
+                    creator_obj = fields.get("creator") or fields.get("reporter") or {}
+                    creator_id = creator_obj.get("accountId") or creator_obj.get("name") if isinstance(creator_obj, dict) else str(creator_obj)
+
                     self.issue_state_repo.upsert(
                         jira_issue_key=issue.get("key", normalized_event.task_key or ""),
                         summary=fields.get("summary", getattr(normalized_event, "title", None)),
@@ -192,7 +201,14 @@ class SystemOrchestrator:
                         last_seen_at=utc_now_iso(),
                         last_activity_at=normalized_event.timestamp or fields.get("updated"),
                         project_key=fields.get("project", {}).get("key", normalized_event.project_key),
-                        raw_reference=issue
+                        raw_reference=None,
+                        issue_type=fields.get("issuetype", {}).get("name", "Task") if isinstance(fields.get("issuetype"), dict) else "Task",
+                        labels=labels_list,
+                        components=components_list,
+                        subtask_count=len(subtasks_raw),
+                        original_estimate_seconds=orig_est_secs,
+                        time_spent_seconds=time_spent_secs,
+                        creator_id=creator_id
                     )
 
                 await event_bus.publish(normalized_event)

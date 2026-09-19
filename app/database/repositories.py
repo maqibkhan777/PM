@@ -73,33 +73,62 @@ class EventRepository:
         event_id: str,
         status: str,
         last_error: Optional[str] = None,
-        increment_attempts: bool = False
+        increment_attempts: bool = False,
+        strip_payload: bool = False
     ) -> None:
         processed_at = utc_now_iso() if status in ("PROCESSED", "FAILED") else None
+        should_strip = strip_payload or (status == "PROCESSED")
         with self.mgr.session() as conn:
-            if increment_attempts:
-                conn.execute(
-                    """
-                    UPDATE events
-                    SET processing_status = ?,
-                        last_error = ?,
-                        processing_attempts = processing_attempts + 1,
-                        processed_at = COALESCE(?, processed_at)
-                    WHERE id = ?
-                    """,
-                    (status, last_error, processed_at, event_id)
-                )
+            if should_strip:
+                if increment_attempts:
+                    conn.execute(
+                        """
+                        UPDATE events
+                        SET processing_status = ?,
+                            last_error = ?,
+                            processing_attempts = processing_attempts + 1,
+                            processed_at = COALESCE(?, processed_at),
+                            payload = '{}'
+                        WHERE id = ?
+                        """,
+                        (status, last_error, processed_at, event_id)
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE events
+                        SET processing_status = ?,
+                            last_error = ?,
+                            processed_at = COALESCE(?, processed_at),
+                            payload = '{}'
+                        WHERE id = ?
+                        """,
+                        (status, last_error, processed_at, event_id)
+                    )
             else:
-                conn.execute(
-                    """
-                    UPDATE events
-                    SET processing_status = ?,
-                        last_error = ?,
-                        processed_at = COALESCE(?, processed_at)
-                    WHERE id = ?
-                    """,
-                    (status, last_error, processed_at, event_id)
-                )
+                if increment_attempts:
+                    conn.execute(
+                        """
+                        UPDATE events
+                        SET processing_status = ?,
+                            last_error = ?,
+                            processing_attempts = processing_attempts + 1,
+                            processed_at = COALESCE(?, processed_at)
+                        WHERE id = ?
+                        """,
+                        (status, last_error, processed_at, event_id)
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE events
+                        SET processing_status = ?,
+                            last_error = ?,
+                            processed_at = COALESCE(?, processed_at)
+                        WHERE id = ?
+                        """,
+                        (status, last_error, processed_at, event_id)
+                    )
 
     def list_events(
         self,
@@ -718,6 +747,30 @@ class JiraIssueStateRepository:
     def __init__(self, manager: Optional[DatabaseManager] = None):
         self.mgr = manager or db_manager
 
+    @staticmethod
+    def _format_row(row_dict: Dict[str, Any]) -> Dict[str, Any]:
+        d = dict(row_dict)
+        if d.get("raw_reference"):
+            try:
+                d["raw_reference"] = json.loads(d["raw_reference"])
+            except Exception:
+                pass
+        if d.get("labels") and isinstance(d["labels"], str):
+            try:
+                d["labels"] = json.loads(d["labels"])
+            except Exception:
+                d["labels"] = [d["labels"]]
+        elif d.get("labels") is None:
+            d["labels"] = []
+        if d.get("components") and isinstance(d["components"], str):
+            try:
+                d["components"] = json.loads(d["components"])
+            except Exception:
+                d["components"] = [d["components"]]
+        elif d.get("components") is None:
+            d["components"] = []
+        return d
+
     def get(self, issue_key: str) -> Optional[Dict[str, Any]]:
         """Retrieve latest known state for a specific Jira issue."""
         from app.database.schema import init_db
@@ -729,13 +782,7 @@ class JiraIssueStateRepository:
                 )
                 row = cursor.fetchone()
                 if row:
-                    d = dict(row)
-                    if d.get("raw_reference"):
-                        try:
-                            d["raw_reference"] = json.loads(d["raw_reference"])
-                        except Exception:
-                            pass
-                    return d
+                    return self._format_row(dict(row))
                 return None
         except sqlite3.OperationalError:
             init_db(self.mgr)
@@ -759,6 +806,13 @@ class JiraIssueStateRepository:
         project_key: Optional[str] = None,
         raw_reference: Optional[Dict[str, Any]] = None,
         team_group: Optional[str] = None,
+        issue_type: Optional[str] = None,
+        labels: Optional[Any] = None,
+        components: Optional[Any] = None,
+        subtask_count: Optional[int] = None,
+        original_estimate_seconds: Optional[int] = None,
+        time_spent_seconds: Optional[int] = None,
+        creator_id: Optional[str] = None,
     ) -> None:
         """Upsert an issue state projection."""
         now_str = utc_now_iso()
@@ -772,16 +826,43 @@ class JiraIssueStateRepository:
         if not team_group and existing:
             team_group = existing.get("team_group")
 
+        # Extract canonical fields from raw_reference if provided and not explicitly given
+        if raw_reference and isinstance(raw_reference, dict):
+            fields = raw_reference.get("fields", {}) if isinstance(raw_reference.get("fields"), dict) else {}
+            if not issue_type:
+                issue_type = fields.get("issuetype", {}).get("name") or raw_reference.get("issue_type")
+            if labels is None:
+                labels = fields.get("labels") if fields.get("labels") is not None else raw_reference.get("labels")
+            if components is None:
+                raw_comps = fields.get("components") if fields.get("components") is not None else raw_reference.get("components")
+                if isinstance(raw_comps, list):
+                    components = [c.get("name") if isinstance(c, dict) else str(c) for c in raw_comps]
+            if subtask_count is None:
+                subtasks = fields.get("subtasks") if fields.get("subtasks") is not None else raw_reference.get("subtasks")
+                if isinstance(subtasks, list):
+                    subtask_count = len(subtasks)
+            if original_estimate_seconds is None:
+                original_estimate_seconds = fields.get("timeoriginalestimate") or fields.get("timetracking", {}).get("originalEstimateSeconds")
+            if time_spent_seconds is None:
+                time_spent_seconds = fields.get("timespent") or fields.get("timetracking", {}).get("timeSpentSeconds")
+            if not creator_id:
+                creator = fields.get("creator", {}) if isinstance(fields.get("creator"), dict) else {}
+                creator_id = creator.get("accountId") or creator.get("name")
+
         raw_json = json.dumps(raw_reference) if raw_reference is not None else (json.dumps(existing.get("raw_reference")) if existing and existing.get("raw_reference") else None)
+        labels_str = json.dumps(labels) if isinstance(labels, list) else (str(labels) if labels is not None else (json.dumps(existing.get("labels")) if existing and existing.get("labels") is not None else None))
+        comps_str = json.dumps(components) if isinstance(components, list) else (str(components) if components is not None else (json.dumps(existing.get("components")) if existing and existing.get("components") is not None else None))
+        sub_count_val = int(subtask_count) if subtask_count is not None else (int(existing.get("subtask_count", 0)) if existing else 0)
 
         with self.mgr.session() as conn:
             conn.execute(
                 """
                 INSERT INTO jira_issue_state (
                     jira_issue_key, summary, status, assignee, priority, due_date,
-                    updated_at, last_seen_at, last_activity_at, project_key, raw_reference, team_group
+                    updated_at, last_seen_at, last_activity_at, project_key, raw_reference, team_group,
+                    issue_type, labels, components, subtask_count, original_estimate_seconds, time_spent_seconds, creator_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(jira_issue_key) DO UPDATE SET
                     summary = excluded.summary,
                     status = excluded.status,
@@ -792,8 +873,15 @@ class JiraIssueStateRepository:
                     last_seen_at = excluded.last_seen_at,
                     last_activity_at = excluded.last_activity_at,
                     project_key = excluded.project_key,
-                    raw_reference = excluded.raw_reference,
-                    team_group = excluded.team_group
+                    raw_reference = COALESCE(excluded.raw_reference, jira_issue_state.raw_reference),
+                    team_group = COALESCE(excluded.team_group, jira_issue_state.team_group),
+                    issue_type = COALESCE(excluded.issue_type, jira_issue_state.issue_type),
+                    labels = COALESCE(excluded.labels, jira_issue_state.labels),
+                    components = COALESCE(excluded.components, jira_issue_state.components),
+                    subtask_count = COALESCE(excluded.subtask_count, jira_issue_state.subtask_count),
+                    original_estimate_seconds = COALESCE(excluded.original_estimate_seconds, jira_issue_state.original_estimate_seconds),
+                    time_spent_seconds = COALESCE(excluded.time_spent_seconds, jira_issue_state.time_spent_seconds),
+                    creator_id = COALESCE(excluded.creator_id, jira_issue_state.creator_id)
                 """,
                 (
                     jira_issue_key,
@@ -808,6 +896,13 @@ class JiraIssueStateRepository:
                     project_key,
                     raw_json,
                     team_group,
+                    issue_type,
+                    labels_str,
+                    comps_str,
+                    sub_count_val,
+                    original_estimate_seconds,
+                    time_spent_seconds,
+                    creator_id,
                 )
             )
 
@@ -845,16 +940,7 @@ class JiraIssueStateRepository:
                     """,
                     (cutoff_iso,)
                 )
-            results = []
-            for row in cursor.fetchall():
-                d = dict(row)
-                if d.get("raw_reference"):
-                    try:
-                        d["raw_reference"] = json.loads(d["raw_reference"])
-                    except Exception:
-                        pass
-                results.append(d)
-            return results
+            return [self._format_row(dict(row)) for row in cursor.fetchall()]
 
     def get_overdue_candidates(
         self,
@@ -895,16 +981,7 @@ class JiraIssueStateRepository:
                     """,
                     (current_time, date_prefix)
                 )
-            results = []
-            for row in cursor.fetchall():
-                d = dict(row)
-                if d.get("raw_reference"):
-                    try:
-                        d["raw_reference"] = json.loads(d["raw_reference"])
-                    except Exception:
-                        pass
-                results.append(d)
-            return results
+            return [self._format_row(dict(row)) for row in cursor.fetchall()]
 
     def get_reopened_candidates(
         self,
@@ -939,16 +1016,7 @@ class JiraIssueStateRepository:
                     ORDER BY updated_at DESC, jira_issue_key ASC
                     """
                 )
-            results = []
-            for row in cursor.fetchall():
-                d = dict(row)
-                if d.get("raw_reference"):
-                    try:
-                        d["raw_reference"] = json.loads(d["raw_reference"])
-                    except Exception:
-                        pass
-                results.append(d)
-            return results
+            return [self._format_row(dict(row)) for row in cursor.fetchall()]
 
     def get_unassigned_candidates(
         self,
@@ -978,16 +1046,7 @@ class JiraIssueStateRepository:
                     ORDER BY updated_at DESC, jira_issue_key ASC
                     """
                 )
-            results = []
-            for row in cursor.fetchall():
-                d = dict(row)
-                if d.get("raw_reference"):
-                    try:
-                        d["raw_reference"] = json.loads(d["raw_reference"])
-                    except Exception:
-                        pass
-                results.append(d)
-            return results
+            return [self._format_row(dict(row)) for row in cursor.fetchall()]
 
     def get_active_issues_for_resource(
         self,
@@ -1037,16 +1096,7 @@ class JiraIssueStateRepository:
                 """
 
             cursor = conn.execute(query, params)
-            results = []
-            for row in cursor.fetchall():
-                d = dict(row)
-                if d.get("raw_reference"):
-                    try:
-                        d["raw_reference"] = json.loads(d["raw_reference"])
-                    except Exception:
-                        pass
-                results.append(d)
-            return results
+            return [self._format_row(dict(row)) for row in cursor.fetchall()]
 
     def list_all(self, limit: int = 100) -> List[Dict[str, Any]]:
         with self.mgr.session() as conn:
@@ -1054,7 +1104,7 @@ class JiraIssueStateRepository:
                 "SELECT * FROM jira_issue_state ORDER BY last_seen_at DESC LIMIT ?",
                 (limit,)
             )
-            return [dict(r) for r in cursor.fetchall()]
+            return [self._format_row(dict(r)) for r in cursor.fetchall()]
 
 
 class JiraWorklogRepository:
@@ -1308,7 +1358,7 @@ class PerformanceRepository:
     def upsert_profile(self, p: Dict[str, Any]) -> None:
         """Insert or update a ResourcePerformanceProfile record."""
         rec_id = f"perf:{p['account_id']}:{p['analysis_run_id']}"
-        raw_json = json.dumps(p)
+        raw_json = p.get("raw_profile_json")
         with self.mgr.session() as conn:
             conn.execute(
                 """

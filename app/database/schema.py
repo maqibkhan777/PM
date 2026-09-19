@@ -149,12 +149,38 @@ CREATE TABLE IF NOT EXISTS jira_issue_state (
     last_activity_at TEXT NOT NULL,
     project_key TEXT,
     raw_reference TEXT, -- JSON string
-    team_group TEXT
+    team_group TEXT,
+    issue_type TEXT,
+    labels TEXT, -- JSON list of label strings
+    components TEXT, -- JSON list of component names
+    subtask_count INTEGER NOT NULL DEFAULT 0,
+    original_estimate_seconds INTEGER,
+    time_spent_seconds INTEGER,
+    creator_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_jira_issue_state_status ON jira_issue_state(status);
 CREATE INDEX IF NOT EXISTS idx_jira_issue_state_due_date ON jira_issue_state(due_date);
 CREATE INDEX IF NOT EXISTS idx_jira_issue_state_last_activity ON jira_issue_state(last_activity_at);
+CREATE INDEX IF NOT EXISTS idx_jira_issue_state_type ON jira_issue_state(issue_type);
+
+-- Retention Run History table (Records execution of retention policies)
+CREATE TABLE IF NOT EXISTS retention_run_history (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    policy_version TEXT NOT NULL DEFAULT '1.0.0',
+    dry_run INTEGER NOT NULL DEFAULT 0,
+    rows_deleted INTEGER NOT NULL DEFAULT 0,
+    tables_processed INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'COMPLETED',
+    error_summary TEXT,
+    execution_duration_ms INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_retention_run_history_started ON retention_run_history(started_at);
+CREATE INDEX IF NOT EXISTS idx_retention_run_history_status ON retention_run_history(status);
 
 -- Jira Worklogs (Local normalized worklog data for team reporting)
 CREATE TABLE IF NOT EXISTS jira_worklogs (
@@ -624,7 +650,7 @@ CREATE INDEX IF NOT EXISTS idx_plugin_board_int_key ON plugin_board_registry(int
 
 
 def _migrate_jira_issue_state(conn) -> None:
-    """Idempotently ensure jira_issue_state schema contains all expected columns."""
+    """Idempotently ensure jira_issue_state schema contains all expected canonical columns and backfill."""
     cursor = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='jira_issue_state'"
     )
@@ -638,10 +664,86 @@ def _migrate_jira_issue_state(conn) -> None:
         for row in rows
     }
 
-    if "team_group" not in existing_columns:
-        logger.info("Migrating database: adding 'team_group' column to jira_issue_state table...")
-        conn.execute("ALTER TABLE jira_issue_state ADD COLUMN team_group TEXT")
-        logger.info("Database migration complete: 'team_group' column added successfully.")
+    expected_columns = {
+        "team_group": "TEXT",
+        "issue_type": "TEXT",
+        "labels": "TEXT",
+        "components": "TEXT",
+        "subtask_count": "INTEGER NOT NULL DEFAULT 0",
+        "original_estimate_seconds": "INTEGER",
+        "time_spent_seconds": "INTEGER",
+        "creator_id": "TEXT",
+    }
+    for col_name, col_type in expected_columns.items():
+        if col_name not in existing_columns:
+            logger.info(f"Migrating database: adding '{col_name}' column to jira_issue_state table...")
+            conn.execute(f"ALTER TABLE jira_issue_state ADD COLUMN {col_name} {col_type}")
+
+    # Backfill canonical columns from raw_reference JSON where canonical fields are unpopulated
+    try:
+        import json
+        cur = conn.execute(
+            """
+            SELECT jira_issue_key, raw_reference, issue_type, labels, components,
+                   subtask_count, original_estimate_seconds, time_spent_seconds, creator_id
+            FROM jira_issue_state
+            WHERE raw_reference IS NOT NULL AND raw_reference != ''
+              AND (issue_type IS NULL OR labels IS NULL OR components IS NULL)
+            """
+        )
+        backfill_rows = cur.fetchall()
+        if backfill_rows:
+            logger.info(f"Backfilling canonical fields for {len(backfill_rows)} jira_issue_state rows...")
+            for r in backfill_rows:
+                r_dict = dict(r)
+                key = r_dict["jira_issue_key"]
+                raw_ref_str = r_dict.get("raw_reference")
+                if not raw_ref_str:
+                    continue
+                try:
+                    raw_ref = json.loads(raw_ref_str)
+                except Exception:
+                    continue
+                if not isinstance(raw_ref, dict):
+                    continue
+                fields = raw_ref.get("fields", {}) if isinstance(raw_ref.get("fields"), dict) else {}
+
+                itype = r_dict.get("issue_type") or fields.get("issuetype", {}).get("name") or raw_ref.get("issue_type") or "Task"
+                labels_raw = fields.get("labels") if fields.get("labels") is not None else raw_ref.get("labels", [])
+                labels_val = json.dumps(labels_raw) if isinstance(labels_raw, list) else (str(labels_raw) if labels_raw is not None else None)
+
+                comps_raw = fields.get("components") if fields.get("components") is not None else raw_ref.get("components", [])
+                if isinstance(comps_raw, list):
+                    comp_names = [c.get("name") if isinstance(c, dict) else str(c) for c in comps_raw]
+                    comps_val = json.dumps(comp_names)
+                else:
+                    comps_val = json.dumps([])
+
+                subtasks_raw = fields.get("subtasks") if fields.get("subtasks") is not None else raw_ref.get("subtasks", [])
+                sub_count = len(subtasks_raw) if isinstance(subtasks_raw, list) else int(r_dict.get("subtask_count") or 0)
+
+                orig_est = fields.get("timeoriginalestimate") or fields.get("timetracking", {}).get("originalEstimateSeconds") or r_dict.get("original_estimate_seconds")
+                time_spent = fields.get("timespent") or fields.get("timetracking", {}).get("timeSpentSeconds") or r_dict.get("time_spent_seconds")
+                creator = fields.get("creator", {}) if isinstance(fields.get("creator"), dict) else {}
+                creator_id = creator.get("accountId") or creator.get("name") or r_dict.get("creator_id")
+
+                conn.execute(
+                    """
+                    UPDATE jira_issue_state
+                    SET issue_type = COALESCE(?, issue_type),
+                        labels = COALESCE(?, labels),
+                        components = COALESCE(?, components),
+                        subtask_count = COALESCE(?, subtask_count),
+                        original_estimate_seconds = COALESCE(?, original_estimate_seconds),
+                        time_spent_seconds = COALESCE(?, time_spent_seconds),
+                        creator_id = COALESCE(?, creator_id)
+                    WHERE jira_issue_key = ?
+                    """,
+                    (itype, labels_val, comps_val, sub_count, orig_est, time_spent, creator_id, key)
+                )
+            logger.info("Canonical backfill complete.")
+    except Exception as e:
+        logger.warning(f"Non-blocking notice during canonical backfill: {e}")
 
 
 def _migrate_jira_worklogs(conn) -> None:
@@ -1510,6 +1612,9 @@ def _ensure_post_migration_indexes(conn) -> None:
     """Create indexes that depend on migrated columns safely after columns exist."""
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_jira_issue_state_team_group ON jira_issue_state(team_group)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jira_issue_state_type ON jira_issue_state(issue_type)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_jira_worklogs_team ON jira_worklogs(team_group)"

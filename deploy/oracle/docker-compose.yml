@@ -8,9 +8,10 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile
-    image: pm-operations-agent:v1.2.2
+    image: pm-operations-agent:v1.2.3
     container_name: pm-agent
     restart: unless-stopped
+    user: "10001:10001"
     
     # Secure runtime environment injection from local protected file (/opt/pm/.env)
     env_file:
@@ -31,10 +32,22 @@ services:
     # Persistent SQLite database storage mapping to host filesystem
     volumes:
       - /opt/pm/data:/app/data
+      - /opt/pm/backups:/opt/pm/backups
+      - /opt/pm/secrets:/opt/pm/secrets:ro
       
-    # Security hardening
+    # Security hardening (Phase 7)
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 100
+
+    # Docker log rotation (Phase 7)
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
       
     # Resource constraints tailored for Oracle Always Free ARM64 (Ampere A1)
     deploy:

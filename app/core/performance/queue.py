@@ -186,19 +186,45 @@ class CurrentQueueAnalyzer:
             due_date = issue.get("due_date") or fields.get("duedate")
             summary = issue.get("summary") or fields.get("summary") or "Untitled"
 
+            comps_val = issue.get("components")
+            if isinstance(comps_val, list):
+                components = comps_val
+            elif isinstance(comps_val, str) and comps_val:
+                try:
+                    components = json.loads(comps_val)
+                except Exception:
+                    components = [comps_val]
+            else:
+                components = [c.get("name") if isinstance(c, dict) else str(c) for c in fields.get("components", []) if isinstance(c, (dict, str))]
+
+            labels_val = issue.get("labels")
+            if isinstance(labels_val, list):
+                labels = labels_val
+            elif isinstance(labels_val, str) and labels_val:
+                try:
+                    labels = json.loads(labels_val)
+                except Exception:
+                    labels = [labels_val]
+            else:
+                labels = fields.get("labels", []) if isinstance(fields.get("labels"), list) else []
+
+            subtask_count = int(issue.get("subtask_count", 0)) if issue.get("subtask_count") is not None else (len(fields.get("subtasks", [])) if isinstance(fields.get("subtasks"), list) else 0)
+            orig_est_secs = issue.get("original_estimate_seconds") or fields.get("timeoriginalestimate") or (fields.get("timetracking", {}).get("originalEstimateSeconds") if isinstance(fields.get("timetracking"), dict) else None)
+
             # Parse complexity
             complexity = TaskComplexityCalculator.calculate_complexity(
                 issue_type=itype,
                 priority=priority,
                 project_key=issue.get("project_key"),
-                components=[c.get("name") for c in fields.get("components", []) if isinstance(c, dict)],
-                labels=fields.get("labels"),
-                original_estimate_seconds=fields.get("timeoriginalestimate"),
+                components=components,
+                labels=labels,
+                subtask_count=subtask_count,
+                original_estimate_seconds=orig_est_secs,
                 summary=summary,
             )
 
             # Jira raw estimates (Preserve un-mutated)
-            raw_orig_est_secs = fields.get("timeoriginalestimate")
+            raw_orig_est_secs = orig_est_secs
             raw_rem_est_secs = fields.get("timeestimate")
             jira_remaining_hours = (
                 round(float(raw_rem_est_secs) / 3600.0, 2)

@@ -342,10 +342,30 @@ class PerformanceAnalysisEngine:
             due_date = issue.get("due_date") or fields.get("duedate")
             summary = issue.get("summary") or fields.get("summary") or "Untitled"
 
-            components = [c.get("name") for c in fields.get("components", []) if isinstance(c, dict)]
-            labels = fields.get("labels", [])
-            subtasks = fields.get("subtasks", [])
-            orig_est_secs = fields.get("timeoriginalestimate")
+            comps_val = issue.get("components")
+            if isinstance(comps_val, list):
+                components = comps_val
+            elif isinstance(comps_val, str) and comps_val:
+                try:
+                    components = json.loads(comps_val)
+                except Exception:
+                    components = [comps_val]
+            else:
+                components = [c.get("name") if isinstance(c, dict) else str(c) for c in fields.get("components", []) if isinstance(c, (dict, str))]
+
+            labels_val = issue.get("labels")
+            if isinstance(labels_val, list):
+                labels = labels_val
+            elif isinstance(labels_val, str) and labels_val:
+                try:
+                    labels = json.loads(labels_val)
+                except Exception:
+                    labels = [labels_val]
+            else:
+                labels = fields.get("labels", []) if isinstance(fields.get("labels"), list) else []
+
+            subtask_count = int(issue.get("subtask_count", 0)) if issue.get("subtask_count") is not None else (len(fields.get("subtasks", [])) if isinstance(fields.get("subtasks"), list) else 0)
+            orig_est_secs = issue.get("original_estimate_seconds") or fields.get("timeoriginalestimate") or (fields.get("timetracking", {}).get("originalEstimateSeconds") if isinstance(fields.get("timetracking"), dict) else None)
 
             # Determine task complexity using characteristics
             complexity = TaskComplexityCalculator.calculate_complexity(
@@ -354,15 +374,15 @@ class PerformanceAnalysisEngine:
                 project_key=project_key,
                 components=components,
                 labels=labels,
-                subtask_count=len(subtasks) if isinstance(subtasks, list) else 0,
+                subtask_count=subtask_count,
                 original_estimate_seconds=orig_est_secs,
                 summary=summary,
             )
 
             # Task logged hours
             task_logged_secs = issue.get("logged_seconds", 0)
-            if not task_logged_secs and fields.get("timespent"):
-                task_logged_secs = int(fields.get("timespent", 0))
+            if not task_logged_secs:
+                task_logged_secs = int(issue.get("time_spent_seconds") or fields.get("timespent") or 0)
             task_hours = round(task_logged_secs / 3600.0, 2)
 
             # Analyze blockers conservatively
@@ -830,10 +850,31 @@ class PerformanceAnalysisEngine:
 
             itype = str(issue.get("issue_type") or fields.get("issuetype", {}).get("name") or "Task").strip().lower()
             priority = str(issue.get("priority") or fields.get("priority", {}).get("name") or "Medium").strip().lower()
-            components = [c.get("name") for c in fields.get("components", []) if isinstance(c, dict)]
-            labels = fields.get("labels", [])
-            subtasks = fields.get("subtasks", [])
-            orig_est_secs = fields.get("timeoriginalestimate")
+
+            comps_val = issue.get("components")
+            if isinstance(comps_val, list):
+                components = comps_val
+            elif isinstance(comps_val, str) and comps_val:
+                try:
+                    components = json.loads(comps_val)
+                except Exception:
+                    components = [comps_val]
+            else:
+                components = [c.get("name") if isinstance(c, dict) else str(c) for c in fields.get("components", []) if isinstance(c, (dict, str))]
+
+            labels_val = issue.get("labels")
+            if isinstance(labels_val, list):
+                labels = labels_val
+            elif isinstance(labels_val, str) and labels_val:
+                try:
+                    labels = json.loads(labels_val)
+                except Exception:
+                    labels = [labels_val]
+            else:
+                labels = fields.get("labels", []) if isinstance(fields.get("labels"), list) else []
+
+            subtask_count = int(issue.get("subtask_count", 0)) if issue.get("subtask_count") is not None else (len(fields.get("subtasks", [])) if isinstance(fields.get("subtasks"), list) else 0)
+            orig_est_secs = issue.get("original_estimate_seconds") or fields.get("timeoriginalestimate") or (fields.get("timetracking", {}).get("originalEstimateSeconds") if isinstance(fields.get("timetracking"), dict) else None)
 
             complexity = TaskComplexityCalculator.calculate_complexity(
                 issue_type=itype,
@@ -841,13 +882,13 @@ class PerformanceAnalysisEngine:
                 project_key=issue.get("project_key"),
                 components=components,
                 labels=labels,
-                subtask_count=len(subtasks) if isinstance(subtasks, list) else 0,
+                subtask_count=subtask_count,
                 original_estimate_seconds=orig_est_secs,
             )
 
             logged_secs = issue.get("logged_seconds", 0)
-            if not logged_secs and fields.get("timespent"):
-                logged_secs = int(fields.get("timespent", 0))
+            if not logged_secs:
+                logged_secs = int(issue.get("time_spent_seconds") or fields.get("timespent") or 0)
 
             if logged_secs > 0:
                 h = round(logged_secs / 3600.0, 2)
@@ -1143,7 +1184,7 @@ class PerformanceAnalysisEngine:
             "forecast_reason": profile.forecast.get("reason"),
             "projected_queue_completion_date": profile.forecast.get("projected_completion"),
             "confidence_level": profile.confidence_level.value,
-            "raw_profile_json": profile.model_dump_json(),
+            "raw_profile_json": None,
             "created_at": now_str,
             "updated_at": now_str,
         }

@@ -236,15 +236,41 @@ class HistoricalIntelligenceEngine:
             issue_data["logged_hours"] = spent_h
 
             # Components & Labels
-            raw_comps = fields.get("components", []) if isinstance(fields, dict) else []
-            comps = [c.get("name") if isinstance(c, dict) else str(c) for c in raw_comps]
-            labels = fields.get("labels", []) if isinstance(fields, dict) else []
+            comps_val = row.get("components")
+            if isinstance(comps_val, list):
+                comps = comps_val
+            elif isinstance(comps_val, str) and comps_val:
+                try:
+                    comps = json.loads(comps_val)
+                except Exception:
+                    comps = [comps_val]
+            else:
+                raw_comps = fields.get("components", []) if isinstance(fields, dict) else []
+                comps = [c.get("name") if isinstance(c, dict) else str(c) for c in raw_comps]
+
+            labels_val = row.get("labels")
+            if isinstance(labels_val, list):
+                labels = labels_val
+            elif isinstance(labels_val, str) and labels_val:
+                try:
+                    labels = json.loads(labels_val)
+                except Exception:
+                    labels = [labels_val]
+            else:
+                labels = fields.get("labels", []) if isinstance(fields, dict) else []
+
             issue_data["components"] = comps
             issue_data["labels"] = labels
 
             # Issue type
-            itype = (fields.get("issuetype", {}).get("name") if isinstance(fields, dict) and isinstance(fields.get("issuetype"), dict) else None) or row.get("issue_type") or "Task"
+            itype = row.get("issue_type") or (fields.get("issuetype", {}).get("name") if isinstance(fields, dict) and isinstance(fields.get("issuetype"), dict) else None) or "Task"
             issue_data["issue_type"] = itype
+
+            orig_est_secs = (
+                row.get("original_estimate_seconds")
+                or (int(float(issue_data.get("original_estimate_hours") or 0) * 3600) if issue_data.get("original_estimate_hours") else None)
+                or fields.get("timeoriginalestimate")
+            )
 
             # Derive complexity score if not present
             if not issue_data.get("complexity_score"):
@@ -253,7 +279,7 @@ class HistoricalIntelligenceEngine:
                     summary=issue_data.get("summary", ""),
                     components=comps,
                     labels=labels,
-                    original_estimate_seconds=int(float(issue_data.get("original_estimate_hours") or 0) * 3600) if issue_data.get("original_estimate_hours") else None,
+                    original_estimate_seconds=orig_est_secs,
                 )
                 issue_data["complexity_score"] = calc.complexity_score
                 issue_data["complexity_band"] = f"Band_{calc.complexity_score}"

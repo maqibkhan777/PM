@@ -186,6 +186,15 @@ class ResourceQueueReportGenerator:
             assignee_name = assignee_obj.get("displayName") or assignee_obj.get("name") or assignee_obj.get("accountId")
             project_obj = fields.get("project") or {}
             project_key = project_obj.get("key")
+            issuetype_obj = fields.get("issuetype") or {}
+            components_raw = fields.get("components", []) if isinstance(fields.get("components"), list) else []
+            components_list = [c.get("name") if isinstance(c, dict) else str(c) for c in components_raw]
+            labels_list = fields.get("labels", []) if isinstance(fields.get("labels"), list) else []
+            subtasks_raw = fields.get("subtasks", []) if isinstance(fields.get("subtasks"), list) else []
+            orig_est_secs = fields.get("timeoriginalestimate") or (fields.get("timetracking", {}).get("originalEstimateSeconds") if isinstance(fields.get("timetracking"), dict) else None)
+            time_spent_secs = fields.get("timespent") or (fields.get("timetracking", {}).get("timeSpentSeconds") if isinstance(fields.get("timetracking"), dict) else None)
+            creator_obj = fields.get("creator") or fields.get("reporter") or {}
+            creator_id = creator_obj.get("accountId") or creator_obj.get("name") if isinstance(creator_obj, dict) else str(creator_obj)
 
             # Warm/update local SQLite issue cache without throwing or deleting existing records
             try:
@@ -199,8 +208,15 @@ class ResourceQueueReportGenerator:
                     updated_at=updated_str,
                     last_seen_at=now_str,
                     project_key=project_key,
-                    raw_reference=item,
+                    raw_reference=None,
                     team_group=team_group,
+                    issue_type=issuetype_obj.get("name", "Task") if isinstance(issuetype_obj, dict) else "Task",
+                    labels=labels_list,
+                    components=components_list,
+                    subtask_count=len(subtasks_raw),
+                    original_estimate_seconds=orig_est_secs,
+                    time_spent_seconds=time_spent_secs,
+                    creator_id=creator_id,
                 )
             except Exception as e:
                 logger.debug(f"Non-fatal error updating local issue state cache for {tkey}: {e}")

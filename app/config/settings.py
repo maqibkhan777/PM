@@ -28,6 +28,16 @@ class Settings(BaseSettings):
     # SQLite Database
     DB_PATH: str = "data/pm_operations.db"
     DATABASE_PATH: Optional[str] = None  # Optional alias for DB_PATH
+    BACKUP_DIR: str = "/opt/pm/backups"
+
+    # Backup Encryption & Google Drive Integration
+    BACKUP_ENCRYPTION_ENABLED: bool = True
+    BACKUP_ENCRYPTION_KEY: Optional[str] = None
+    GDRIVE_ENABLED: bool = False
+    GDRIVE_FOLDER_ID: Optional[str] = None
+    GDRIVE_SERVICE_ACCOUNT_FILE: Optional[str] = None
+    GDRIVE_BACKUP_FILENAME: str = "PM_Operations_Latest.db.gz.enc"
+    GDRIVE_CHECKSUM_FILENAME: str = "PM_Operations_Latest.db.gz.enc.sha256"
 
     # API Documentation Exposure
     DOCS_ENABLED: bool = True
@@ -264,6 +274,24 @@ class Settings(BaseSettings):
             and self.MATTERMOST_TOKEN
             and self.MATTERMOST_TOKEN.strip()
             and self.MATTERMOST_TOKEN != "placeholder_mm_token"
+        )
+
+    def is_gdrive_configured(self) -> bool:
+        """Check if Google Drive backup integration is configured and enabled."""
+        return bool(
+            self.GDRIVE_ENABLED
+            and self.GDRIVE_FOLDER_ID
+            and self.GDRIVE_FOLDER_ID.strip()
+            and self.GDRIVE_SERVICE_ACCOUNT_FILE
+            and os.path.isfile(self.GDRIVE_SERVICE_ACCOUNT_FILE)
+        )
+
+    def is_backup_encryption_configured(self) -> bool:
+        """Check if backup encryption is enabled and key is supplied."""
+        return bool(
+            self.BACKUP_ENCRYPTION_ENABLED
+            and self.BACKUP_ENCRYPTION_KEY
+            and self.BACKUP_ENCRYPTION_KEY.strip()
         )
 
     def is_jira_team_group_configured(self) -> bool:
