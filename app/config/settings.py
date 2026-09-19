@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     DISCORD_GUILD_ID: Optional[str] = None  # Optional: specific guild ID for instant dev slash-command registration
     DISCORD_PM_ALLOWED_USERS: str = ""  # Comma-separated Discord user IDs allowed to run /pm commands
     DISCORD_PM_COMMAND_ENABLED: bool = True
+    DISCORD_PM_CHANNEL_ID: Optional[str] = None  # Authoritative Discord Snowflake ID for #pm-alerts
     PM_DISCORD_CHANNEL: str = "pm-alerts"
     JIRA_NOTIFICATION_DISCORD_CHANNEL: str = "notifications"
 

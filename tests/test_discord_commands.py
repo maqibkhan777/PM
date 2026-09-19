@@ -152,19 +152,29 @@ def slash_setup(temp_db):
     handler = DiscordSlashCommandHandler(user_repo=user_repo, action_engine=engine)
     bot = DiscordBotConnector(bot_token="test_token_123", slash_handler=handler)
 
-    # Wrap execute_subcommand for test suite convenience: default channel_id to pm-alerts
+    # Wrap execute_subcommand for test suite convenience: default channel_id to configured DISCORD_PM_CHANNEL_ID
     orig_exec = handler.execute_subcommand
-    async def _test_execute_subcommand(subcommand: str, options: Dict[str, Any], discord_user_id: Optional[str] = None, channel_id: Optional[str] = None):
+    _UNSPECIFIED = object()
+
+    async def _test_execute_subcommand(
+        subcommand: str,
+        options: Dict[str, Any],
+        discord_user_id: Optional[str] = None,
+        channel_id: Any = _UNSPECIFIED,
+    ):
+        cid = (getattr(settings, "DISCORD_PM_CHANNEL_ID", None) or "1547090800771604482") if channel_id is _UNSPECIFIED else channel_id
         return await orig_exec(
             subcommand=subcommand,
             options=options,
             discord_user_id=discord_user_id,
-            channel_id="pm-alerts" if channel_id is None else channel_id,
+            channel_id=cid,
         )
+
     handler.execute_subcommand = _test_execute_subcommand
 
-    # Setup allowed user
+    # Setup allowed user and test channel
     settings.DISCORD_PM_ALLOWED_USERS = "123456789,987654321"
+    settings.DISCORD_PM_CHANNEL_ID = "1547090800771604482"
     settings.DRY_RUN = False
 
     return handler, bot, mock_jira_client, engine, temp_db
@@ -471,7 +481,7 @@ async def test_discord_interaction_payload_handling(slash_setup):
     # 2. Type 2: APPLICATION_COMMAND (/pm status WSSS-326)
     cmd_payload = {
         "type": 2,
-        "channel_id": "pm-alerts",
+        "channel_id": "1547090800771604482",
         "data": {
             "name": "pm",
             "options": [
@@ -639,7 +649,7 @@ async def test_gateway_process_interaction_create_flow(slash_setup):
         "id": "int_999",
         "token": "tok_888",
         "type": 2,
-        "channel_id": "pm-alerts",
+        "channel_id": "1547090800771604482",
         "data": {
             "name": "pm",
             "options": [
@@ -1280,6 +1290,7 @@ async def test_slash_command_report_worklog_deferral_lifecycle(slash_setup):
         "id": "int_worklog_1",
         "token": "tok_worklog_1",
         "type": 2,
+        "channel_id": "1547090800771604482",
         "data": {
             "name": "pm",
             "options": [
@@ -1345,6 +1356,7 @@ async def test_slash_command_worklog_direct_alias_deferral_lifecycle(slash_setup
         "id": "int_worklog_2",
         "token": "tok_worklog_2",
         "type": 2,
+        "channel_id": "1547090800771604482",
         "data": {
             "name": "pm",
             "options": [
@@ -2444,3 +2456,125 @@ class TestManualMubashirReportCommand:
             discord_user_id="123456789"
         )
         assert isinstance(res_act, dict) and "embeds" in res_act
+
+
+# ==============================================================================
+# 25. PM SLASH COMMAND CHANNEL AUTHORIZATION TESTS
+# ==============================================================================
+
+class TestDiscordPMChannelAuthorization:
+    """Test suite for _is_allowed_pm_channel() and channel-level authorization enforcement."""
+
+    def test_a_correct_channel_id(self, slash_setup, monkeypatch):
+        """A. Correct channel ID matches configured DISCORD_PM_CHANNEL_ID."""
+        handler, _, _, _, _ = slash_setup
+        monkeypatch.setattr(settings, "DISCORD_PM_CHANNEL_ID", "1547090800771604482")
+        assert handler._is_allowed_pm_channel("1547090800771604482") is True
+
+    def test_b_wrong_channel_id(self, slash_setup, monkeypatch):
+        """B. Wrong channel ID (e.g. notifications) is rejected."""
+        handler, _, _, _, _ = slash_setup
+        monkeypatch.setattr(settings, "DISCORD_PM_CHANNEL_ID", "1547090800771604482")
+        assert handler._is_allowed_pm_channel("1550794364492578876") is False
+
+    def test_c_arbitrary_channel_id(self, slash_setup, monkeypatch):
+        """C. Another arbitrary channel ID is rejected."""
+        handler, _, _, _, _ = slash_setup
+        monkeypatch.setattr(settings, "DISCORD_PM_CHANNEL_ID", "1547090800771604482")
+        assert handler._is_allowed_pm_channel("999999999999999999") is False
+
+    def test_d_missing_incoming_channel_id(self, slash_setup, monkeypatch):
+        """D. Missing incoming channel_id (None or empty/whitespace) is rejected."""
+        handler, _, _, _, _ = slash_setup
+        monkeypatch.setattr(settings, "DISCORD_PM_CHANNEL_ID", "1547090800771604482")
+        assert handler._is_allowed_pm_channel(None) is False
+        assert handler._is_allowed_pm_channel("") is False
+        assert handler._is_allowed_pm_channel("   ") is False
+
+    def test_e_missing_discord_pm_channel_id(self, slash_setup, monkeypatch):
+        """E. Missing or empty DISCORD_PM_CHANNEL_ID is rejected."""
+        handler, _, _, _, _ = slash_setup
+        monkeypatch.setattr(settings, "DISCORD_PM_CHANNEL_ID", None)
+        assert handler._is_allowed_pm_channel("1547090800771604482") is False
+        monkeypatch.setattr(settings, "DISCORD_PM_CHANNEL_ID", "")
+        assert handler._is_allowed_pm_channel("1547090800771604482") is False
+        monkeypatch.setattr(settings, "DISCORD_PM_CHANNEL_ID", "   ")
+        assert handler._is_allowed_pm_channel("1547090800771604482") is False
+
+    def test_f_whitespace_normalization(self, slash_setup, monkeypatch):
+        """F. Whitespace normalization on incoming and configured channel ID."""
+        handler, _, _, _, _ = slash_setup
+        monkeypatch.setattr(settings, "DISCORD_PM_CHANNEL_ID", "1547090800771604482")
+        assert handler._is_allowed_pm_channel(" 1547090800771604482 ") is True
+
+        monkeypatch.setattr(settings, "DISCORD_PM_CHANNEL_ID", " 1547090800771604482 ")
+        assert handler._is_allowed_pm_channel("1547090800771604482") is True
+        assert handler._is_allowed_pm_channel("  1547090800771604482  ") is True
+
+    def test_g_human_readable_channel_name_does_not_authorize(self, slash_setup, monkeypatch):
+        """G. Human-readable 'pm-alerts' does NOT authorize when ID is configured."""
+        handler, _, _, _, _ = slash_setup
+        monkeypatch.setattr(settings, "DISCORD_PM_CHANNEL_ID", "1547090800771604482")
+        assert handler._is_allowed_pm_channel("pm-alerts") is False
+
+    def test_h_hash_human_readable_channel_name_does_not_authorize(self, slash_setup, monkeypatch):
+        """H. '#pm-alerts' does NOT authorize when ID is configured."""
+        handler, _, _, _, _ = slash_setup
+        monkeypatch.setattr(settings, "DISCORD_PM_CHANNEL_ID", "1547090800771604482")
+        assert handler._is_allowed_pm_channel("#pm-alerts") is False
+
+    @pytest.mark.asyncio
+    async def test_execute_subcommand_channel_restriction_enforcement(self, slash_setup, monkeypatch):
+        """Integration: execute_subcommand enforces channel restrictions with configured DISCORD_PM_CHANNEL_ID."""
+        handler, _, _, _, _ = slash_setup
+        monkeypatch.setattr(settings, "DISCORD_PM_CHANNEL_ID", "1547090800771604482")
+
+        # 1. Allowed channel
+        res_ok = await handler.execute_subcommand(
+            subcommand="help",
+            options={},
+            discord_user_id="123456789",
+            channel_id="1547090800771604482"
+        )
+        assert "PM Commands" in res_ok
+
+        # 2. Wrong channel (e.g. notifications)
+        res_wrong = await handler.execute_subcommand(
+            subcommand="help",
+            options={},
+            discord_user_id="123456789",
+            channel_id="1550794364492578876"
+        )
+        assert res_wrong == "❌ PM commands can only be used in #pm-alerts. Please use #pm-alerts for PM operations."
+
+        # 3. Channel name string instead of Snowflake ID
+        res_name = await handler.execute_subcommand(
+            subcommand="help",
+            options={},
+            discord_user_id="123456789",
+            channel_id="pm-alerts"
+        )
+        assert res_name == "❌ PM commands can only be used in #pm-alerts. Please use #pm-alerts for PM operations."
+
+        # 4. None / missing channel_id is strictly rejected (fails closed, no bypass)
+        res_none = await handler.execute_subcommand(
+            subcommand="help",
+            options={},
+            discord_user_id="123456789",
+            channel_id=None
+        )
+        assert res_none == "❌ PM commands can only be used in #pm-alerts. Please use #pm-alerts for PM operations."
+
+    @pytest.mark.asyncio
+    async def test_execute_subcommand_rejects_none_channel_id(self, slash_setup, monkeypatch):
+        """execute_subcommand fails closed when channel_id is None."""
+        handler, _, _, _, _ = slash_setup
+        monkeypatch.setattr(settings, "DISCORD_PM_CHANNEL_ID", "1547090800771604482")
+
+        res = await handler.execute_subcommand(
+            subcommand="help",
+            options={},
+            discord_user_id="123456789",
+            channel_id=None
+        )
+        assert res == "❌ PM commands can only be used in #pm-alerts. Please use #pm-alerts for PM operations."
