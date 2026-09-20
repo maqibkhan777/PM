@@ -32,6 +32,9 @@ class DeepSeekProviderError(Exception):
     pass
 
 
+AI_PROMPT_VERSION = "attention-v1"
+AI_DECISION_PROMPT_VERSION = "decision-v1"
+
 SYSTEM_PROMPT_DECISION = """You are an expert Project Management Decision Support Assistant.
 Analyze the supplied bounded context regarding Jira tasks, resources, and project metrics.
 You MUST output a valid JSON object matching this schema:
