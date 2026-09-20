@@ -56,6 +56,7 @@ def slash_setup(temp_db):
     bot = DiscordBotConnector(bot_token="test_token_123", slash_handler=handler)
 
     settings.DISCORD_PM_ALLOWED_USERS = "123456789,987654321"
+    settings.DISCORD_PM_CHANNEL_ID = "1547090800771604482"
     settings.DRY_RUN = False
 
     return handler, bot, mock_jira_client, engine, temp_db
@@ -325,7 +326,7 @@ async def test_slash_command_queue_and_report_equivalence(slash_setup):
         subcommand="queue",
         options={"user": "Abdul Subhan"},
         discord_user_id="123456789",
-        channel_id="pm-alerts",
+        channel_id=settings.DISCORD_PM_CHANNEL_ID,
     )
 
     # 2. /pm report name:queue user:Abdul Subhan
@@ -333,7 +334,7 @@ async def test_slash_command_queue_and_report_equivalence(slash_setup):
         subcommand="report",
         options={"name": "queue", "user": "Abdul Subhan"},
         discord_user_id="123456789",
-        channel_id="pm-alerts",
+        channel_id=settings.DISCORD_PM_CHANNEL_ID,
     )
 
     assert isinstance(res_direct, dict) and "embeds" in res_direct

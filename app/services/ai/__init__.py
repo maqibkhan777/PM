@@ -1,10 +1,10 @@
-"""AI Foundation domain exports for PM Operations Agent."""
-
 from app.services.ai.models import (
     AIContext,
     AIDecision,
     AIDecisionType,
     AIRecommendationType,
+    AttentionItemAnalysis,
+    PMAttentionAnalysis,
     MetricSummaryContext,
     ProposedAction,
     ResourceSummaryContext,
@@ -21,12 +21,20 @@ from app.services.ai.safety import (
     AISafetyViolation,
 )
 from app.services.ai.decision import AIDecisionService
+from app.services.ai.report_formatter import AIAttentionReportFormatter
+from app.services.ai.config import (
+    AIConfigurationError,
+    AIProviderConfig,
+    resolve_ai_provider,
+)
 
 __all__ = [
     "AIContext",
     "AIDecision",
     "AIDecisionType",
     "AIRecommendationType",
+    "AttentionItemAnalysis",
+    "PMAttentionAnalysis",
     "MetricSummaryContext",
     "ProposedAction",
     "ResourceSummaryContext",
@@ -38,4 +46,8 @@ __all__ = [
     "AISafetyGate",
     "AISafetyViolation",
     "AIDecisionService",
+    "AIAttentionReportFormatter",
+    "AIConfigurationError",
+    "AIProviderConfig",
+    "resolve_ai_provider",
 ]

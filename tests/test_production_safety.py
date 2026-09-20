@@ -302,6 +302,7 @@ async def test_development_auth_empty_allowed_users_remains_permissive(slash_han
     monkeypatch.setattr(settings, "APP_ENV", "development")
     monkeypatch.setattr(settings, "DISCORD_PM_ALLOWED_USERS", "")
     monkeypatch.setattr(settings, "DISCORD_PM_COMMAND_ENABLED", True)
+    monkeypatch.setattr(settings, "DISCORD_PM_CHANNEL_ID", "1547090800771604482")
 
     assert settings.is_production() is False
     assert settings.is_discord_user_allowed("123456789") is True
@@ -311,7 +312,7 @@ async def test_development_auth_empty_allowed_users_remains_permissive(slash_han
         subcommand="help",
         options={},
         discord_user_id="123456789",
-        channel_id="pm-alerts",
+        channel_id=settings.DISCORD_PM_CHANNEL_ID,
     )
     assert "PM Commands" in res
 

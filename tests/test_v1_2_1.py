@@ -146,19 +146,20 @@ class TestDateSelectors:
         """Verify strict YYYY-MM-DD format and calendar validity."""
         handler = DiscordSlashCommandHandler(manager=test_db)
         settings.DISCORD_PM_ALLOWED_USERS = "*"
+        settings.DISCORD_PM_CHANNEL_ID = "1547090800771604482"
 
         # Invalid format
-        res1 = await handler.execute_subcommand("overdue", {"date": "2026/09/12"}, discord_user_id="user1", channel_id="pm-alerts")
+        res1 = await handler.execute_subcommand("overdue", {"date": "2026/09/12"}, discord_user_id="user1", channel_id=settings.DISCORD_PM_CHANNEL_ID)
         assert "Invalid date format" in res1
 
-        res2 = await handler.execute_subcommand("worklog", {"date": "yesterday"}, discord_user_id="user1", channel_id="pm-alerts")
+        res2 = await handler.execute_subcommand("worklog", {"date": "yesterday"}, discord_user_id="user1", channel_id=settings.DISCORD_PM_CHANNEL_ID)
         assert "Invalid date format" in res2
 
         # Invalid calendar date (e.g. Feb 31)
-        res3 = await handler.execute_subcommand("overdue", {"date": "2026-02-31"}, discord_user_id="user1", channel_id="pm-alerts")
+        res3 = await handler.execute_subcommand("overdue", {"date": "2026-02-31"}, discord_user_id="user1", channel_id=settings.DISCORD_PM_CHANNEL_ID)
         assert "Invalid calendar date" in res3
 
-        res4 = await handler.execute_subcommand("report", {"name": "attention", "date": "2026-13-45"}, discord_user_id="user1", channel_id="pm-alerts")
+        res4 = await handler.execute_subcommand("report", {"name": "attention", "date": "2026-13-45"}, discord_user_id="user1", channel_id=settings.DISCORD_PM_CHANNEL_ID)
         assert "Invalid calendar date" in res4
 
     @pytest.mark.asyncio
@@ -166,9 +167,10 @@ class TestDateSelectors:
         """Verify valid date is accepted and processed without error."""
         handler = DiscordSlashCommandHandler(manager=test_db)
         settings.DISCORD_PM_ALLOWED_USERS = "*"
+        settings.DISCORD_PM_CHANNEL_ID = "1547090800771604482"
 
         # Valid date for attention digest
-        res = await handler.execute_subcommand("attention", {"date": "2026-09-10"}, discord_user_id="user1", channel_id="pm-alerts")
+        res = await handler.execute_subcommand("attention", {"date": "2026-09-10"}, discord_user_id="user1", channel_id=settings.DISCORD_PM_CHANNEL_ID)
         if isinstance(res, dict) and "embeds" in res:
             desc = res["embeds"][0].get("description", "")
             title = res["embeds"][0].get("title", "")

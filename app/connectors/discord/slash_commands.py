@@ -40,6 +40,7 @@ PM_HELP_TEXT = """**PM Commands**
 `/pm queue <user> [date]`
 `/pm attention [date]`
 `/pm activity [date]`
+`/pm ai attention`
 `/pm transition <ticket> <status>`
 `/pm assign <ticket> <user>`
 `/pm comment <ticket> <comment>`
@@ -359,6 +360,32 @@ class DiscordSlashCommandHandler:
         except Exception as e:
             logger.error(f"Error generating active queue report: {e}", exc_info=True)
             return "❌ Unable to generate the active queue report right now."
+
+    async def handle_ai_attention_command(self, actor: str = "discord:user") -> Union[str, Dict[str, Any]]:
+        """Handle read-only /pm ai attention command (Phase 2B).
+        
+        Evaluates PM attention signals via AIDecisionService, formats result as Discord embeds.
+        Advisory only: does NOT create actions, execute mutations, or call ActionEngine.
+        """
+        try:
+            from app.services.ai.decision import AIDecisionService
+            from app.services.ai.report_formatter import AIAttentionReportFormatter
+            from app.services.ai.safety import AISafetyViolation
+            from app.config.settings import settings
+
+            if not getattr(settings, "AI_ENABLED", False):
+                return "ℹ️ AI decision support is currently disabled in system configuration (`AI_ENABLED=false`)."
+
+            ai_service = AIDecisionService(manager=self.mgr)
+            analysis = await ai_service.evaluate_attention(actor=actor)
+            return AIAttentionReportFormatter.format_discord_embeds(analysis)
+
+        except AISafetyViolation as sv:
+            logger.warning(f"AISafetyViolation during /pm ai attention: {sv}")
+            return f"❌ AI Attention Analysis failed safety verification: {sv}"
+        except Exception as e:
+            logger.error(f"Error executing AI attention analysis: {e}", exc_info=True)
+            return "❌ Unable to generate the AI attention analysis right now. Please check logs."
 
     async def handle_attention_command(self, target_date: Optional[str] = None) -> Union[str, Dict[str, Any]]:
         """Handle /pm attention command (canonical handler for PM attention digest)."""
@@ -697,12 +724,16 @@ class DiscordSlashCommandHandler:
         if sub in ("activity", "daily", "daily_activity"):
             return await self.handle_activity_command(target_date=target_date)
 
-        # 6. Deprecated /pm report compatibility shim
+        # 6. PM AI Attention Analysis (Phase 2B: read-only, advisory only)
+        if sub in ("ai attention", "ai_attention") or (sub == "ai" and (options.get("subcommand") == "attention" or options.get("action") == "attention" or options.get("type") == "attention" or options.get("name") == "attention" or not options)):
+            return await self.handle_ai_attention_command(actor=actor)
+
+        # 7. Deprecated /pm report compatibility shim
         if sub == "report":
             report_name = (options.get("name") or options.get("report") or options.get("type") or "").strip().lower()
             return await self.handle_report_command(report_name=report_name, user_input=user_input, target_date=target_date)
 
-        # 7. Mutation subcommands -> pass exclusively through ActionEngine
+        # 8. Mutation subcommands -> pass exclusively through ActionEngine
         if sub == "transition":
             ticket = options.get("ticket") or options.get("task_key", "")
             target_status = options.get("status") or options.get("target_status", "")
@@ -763,8 +794,18 @@ class DiscordSlashCommandHandler:
         if not options_list:
             return "help", {}
 
-        # Check if first option is a SUB_COMMAND (type 1)
         first_opt = options_list[0]
+        # Check if first option is a SUB_COMMAND_GROUP (type 2) or has nested subcommands
+        if first_opt.get("type") == 2 or (first_opt.get("options") and isinstance(first_opt.get("options"), list) and first_opt["options"] and first_opt["options"][0].get("type") == 1):
+            group_name = first_opt.get("name", "")
+            sub_opt = first_opt["options"][0]
+            sub_name = sub_opt.get("name", "")
+            subcommand = f"{group_name} {sub_name}".strip()
+            inner_opts = sub_opt.get("options", [])
+            extracted = {o.get("name"): o.get("value") for o in inner_opts if "name" in o}
+            return subcommand, extracted
+
+        # Check if first option is a SUB_COMMAND (type 1)
         if first_opt.get("type") == 1 or "options" in first_opt:
             subcommand = first_opt.get("name", "help")
             inner_opts = first_opt.get("options", [])

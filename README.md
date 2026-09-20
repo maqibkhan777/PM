@@ -263,6 +263,16 @@ The PM Operations Agent includes an isolated AI decision support layer (`app/ser
 * **Decision Support Only**: AI serves purely as an advisory intelligence layer. It produces structured data models (`AIDecision`), not executable code.
 * **No Direct External Calls**: AI never calls Jira or Discord connectors directly. All external mutations remain strictly governed by the centralized Action Engine.
 * **Strict Safety Gate & Approval Boundary**: All proposed actions from AI must pass through `AISafetyGate` and require human or supervisor approval (`requires_approval=True`). Destructive operations are strictly rejected.
-* **Provider Abstraction**: Provider interaction is decoupled behind the `AIProvider` protocol, enabling seamless plugging of models (Gemini, Anthropic, OpenAI, local LLMs) or deterministic test mocks (`MockAIProvider`, `NullAIProvider`).
+* **Provider Abstraction**: Provider interaction is decoupled behind the `AIProvider` protocol, enabling seamless plugging of models or deterministic test mocks (`MockAIProvider`, `NullAIProvider`).
 * **Bounded Context**: `ContextBuilder` aggregates strictly scoped task, resource, and metric domain summaries, systematically redacting secrets and credentials before AI evaluation.
 * **Disabled by Default**: AI features are guarded by `AI_ENABLED=false` and remain completely inactive unless explicitly enabled.
+
+### AI Provider Configuration (Phase 2C)
+
+The AI layer exposes a provider-neutral configuration model:
+- `AI_ENABLED`: Set to `false` by default. When `false`, all AI operations return deterministic no-ops; no network calls or provider initializations are performed.
+- `AI_PROVIDER`: Selected provider implementation (`mock` or `null`). Defaults to `mock`. Any unsupported or uninstalled provider fails closed with a clear configuration error.
+- `AI_TIMEOUT_SECONDS`: Request timeout limit (default `30.0`s, max `300.0`s).
+- `AI_MAX_INPUT_TOKENS` & `AI_MAX_OUTPUT_TOKENS`: Bounded token ceilings (defaults `4000` and `2000`).
+- `AI_API_KEY`: Credential placeholder. Kept strictly out of logs, contexts, and audit traces.
+

@@ -53,9 +53,12 @@ def reset_state():
         display_name="Aqib Khan",
     )
     prev_users = settings.DISCORD_PM_ALLOWED_USERS
+    prev_channel_id = settings.DISCORD_PM_CHANNEL_ID
     settings.DISCORD_PM_ALLOWED_USERS = "*"
+    settings.DISCORD_PM_CHANNEL_ID = "1547090800771604482"
     yield
     settings.DISCORD_PM_ALLOWED_USERS = prev_users
+    settings.DISCORD_PM_CHANNEL_ID = prev_channel_id
     notification_dedup_service.clear_all()
 
 
@@ -421,9 +424,9 @@ async def test_pm_attention_digest_remains_in_pm_alerts(temp_db):
 
 
 @pytest.mark.asyncio
-async def test_daily_activity_report_remains_in_pm_alerts():
+async def test_daily_activity_report_remains_in_pm_alerts(temp_db):
     """17. Daily Activity Report MUST route to DAILY_ACTIVITY_REPORT_CHANNEL / pm-alerts."""
-    gen = DailyActivityReportGenerator()
+    gen = DailyActivityReportGenerator(manager=temp_db)
     mock_data = {
         "date": "2026-09-19",
         "formatted_date": "Saturday, Sep 19, 2026",
@@ -549,7 +552,7 @@ async def test_pm_slash_command_in_pm_alerts_succeeds():
         subcommand="help",
         options={},
         discord_user_id="123456789",
-        channel_id="pm-alerts",
+        channel_id=settings.DISCORD_PM_CHANNEL_ID,
     )
     assert "PM Commands" in str(res)
 
@@ -659,7 +662,7 @@ async def test_pm_slash_command_rbac_preserved():
             subcommand="help",
             options={},
             discord_user_id="111222333",  # Not in allowlist
-            channel_id="pm-alerts",
+            channel_id=settings.DISCORD_PM_CHANNEL_ID,
         )
         assert "❌ You are not authorized to use PM commands." in str(unauth_res)
 
@@ -668,7 +671,7 @@ async def test_pm_slash_command_rbac_preserved():
             subcommand="help",
             options={},
             discord_user_id="999888777",  # In allowlist
-            channel_id="pm-alerts",
+            channel_id=settings.DISCORD_PM_CHANNEL_ID,
         )
         assert "PM Commands" in str(auth_res)
     finally:

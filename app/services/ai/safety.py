@@ -62,6 +62,64 @@ class AISafetyGate:
         return True, None
 
     @classmethod
+    def validate_attention_analysis(cls, analysis: "PMAttentionAnalysis") -> Tuple[bool, Optional[str]]:
+        """Validate a PMAttentionAnalysis against core safety and structural principles.
+        
+        Rules:
+        1. Confidence must be bounded [0.0, 1.0].
+        2. requires_human_review must be True (AI is strictly advisory).
+        3. All attention items must have valid confidence [0.0, 1.0] and non-empty reasons.
+        4. Any proposed actions on analysis or items must obey allowlisted ActionType, non-empty targets,
+           and no destructive operations.
+        """
+        from app.services.ai.models import PMAttentionAnalysis
+        if not isinstance(analysis, PMAttentionAnalysis):
+            return False, f"Expected PMAttentionAnalysis instance, got {type(analysis)}"
+
+        if analysis.confidence < 0.0 or analysis.confidence > 1.0:
+            return False, f"Analysis confidence out of bounds [0.0, 1.0]: {analysis.confidence}"
+
+        if not analysis.requires_human_review:
+            return False, "PMAttentionAnalysis must have requires_human_review=True (advisory only)"
+
+        # Validate top-level proposed action if present
+        if analysis.proposed_action:
+            p = analysis.proposed_action
+            action_type_enum = ActionType.from_str(p.action_type)
+            if not action_type_enum:
+                return False, f"Unrecognized ActionType in attention analysis: {p.action_type}"
+            if not p.target_system or not p.target_system.strip():
+                return False, "Target system must not be empty"
+            if not p.target_id or not p.target_id.strip():
+                return False, "Target ID must not be empty"
+            sanitized_params = sanitize_dict(p.parameters)
+            params_str = str(sanitized_params).lower()
+            if "delete" in params_str or "drop" in params_str or "truncate" in params_str:
+                return False, "Destructive operations are strictly prohibited for AI proposed actions"
+
+        # Validate individual attention items
+        for idx, item in enumerate(analysis.attention_items):
+            if item.confidence < 0.0 or item.confidence > 1.0:
+                return False, f"Item {idx} ({item.issue_key}) confidence out of bounds: {item.confidence}"
+            if not item.attention_reason or not item.attention_reason.strip():
+                return False, f"Item {idx} ({item.issue_key}) must have non-empty attention_reason"
+            if item.proposed_action:
+                ip = item.proposed_action
+                action_type_enum = ActionType.from_str(ip.action_type)
+                if not action_type_enum:
+                    return False, f"Item {idx} ({item.issue_key}) has unrecognized ActionType: {ip.action_type}"
+                if not ip.target_system or not ip.target_system.strip():
+                    return False, f"Item {idx} ({item.issue_key}) target system must not be empty"
+                if not ip.target_id or not ip.target_id.strip():
+                    return False, f"Item {idx} ({item.issue_key}) target ID must not be empty"
+                sanitized_params = sanitize_dict(ip.parameters)
+                params_str = str(sanitized_params).lower()
+                if "delete" in params_str or "drop" in params_str or "truncate" in params_str:
+                    return False, "Destructive operations are strictly prohibited for AI proposed actions"
+
+        return True, None
+
+    @classmethod
     def to_staged_action(cls, decision: AIDecision, requested_by: str = "AIEngine") -> Optional[BaseAction]:
         """Convert a validated AIDecision's proposed action into an unexecuted BaseAction requiring approval.
         
@@ -92,3 +150,4 @@ class AISafetyGate:
         )
         action.ensure_idempotency_key()
         return action
+

@@ -102,3 +102,55 @@ class AIDecision(BaseModel):
         if not (0.0 <= v <= 1.0):
             raise ValueError("confidence must be between 0.0 and 1.0 inclusive")
         return round(float(v), 4)
+
+
+class AttentionItemAnalysis(BaseModel):
+    """Structured analysis for an individual Jira issue or task requiring attention."""
+    issue_key: str
+    title: str
+    current_status: str
+    assignee: Optional[str] = None
+    priority: Optional[str] = None
+    due_date: Optional[str] = None
+    updated_at: Optional[str] = None
+    inactivity_duration: Optional[str] = None
+    attention_reason: str
+    supporting_evidence: List[str] = Field(default_factory=list)
+    recommendation: str
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    uncertainty_or_missing_info: Optional[str] = None
+    proposed_action: Optional[ProposedAction] = None
+
+    @field_validator("confidence")
+    @classmethod
+    def validate_item_confidence(cls, v: float) -> float:
+        if not (0.0 <= v <= 1.0):
+            raise ValueError("confidence must be between 0.0 and 1.0 inclusive")
+        return round(float(v), 4)
+
+
+class PMAttentionAnalysis(BaseModel):
+    """Typed domain model for a comprehensive PM Attention Analysis.
+    
+    Provides structured recommendations for human review across flagged items.
+    Purely advisory; never executes external mutations.
+    """
+    analysis_id: str
+    generated_at: str
+    scope_team: str
+    summary: str
+    attention_items: List[AttentionItemAnalysis] = Field(default_factory=list)
+    evidence: List[str] = Field(default_factory=list)
+    recommendation: str
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    uncertainty_or_missing_info: Optional[str] = None
+    proposed_action: Optional[ProposedAction] = None
+    requires_human_review: bool = True
+
+    @field_validator("confidence")
+    @classmethod
+    def validate_analysis_confidence(cls, v: float) -> float:
+        if not (0.0 <= v <= 1.0):
+            raise ValueError("confidence must be between 0.0 and 1.0 inclusive")
+        return round(float(v), 4)
+

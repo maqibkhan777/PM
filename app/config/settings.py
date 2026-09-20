@@ -27,6 +27,13 @@ class Settings(BaseSettings):
 
     # AI Foundation (Phase 1 Decision Support — Disabled by default)
     AI_ENABLED: bool = False
+    AI_PROVIDER: str = "mock"  # Provider identifier: "mock", "null", or future provider names
+    AI_MODEL: Optional[str] = None  # Optional model identifier (e.g. "default")
+    AI_BASE_URL: Optional[str] = None  # Optional custom base URL for provider endpoint
+    AI_API_KEY: Optional[str] = None  # Provider API Key (treated strictly as sensitive secret)
+    AI_TIMEOUT_SECONDS: float = 30.0  # Timeout for AI provider operations (must be > 0 and <= 300)
+    AI_MAX_INPUT_TOKENS: int = 4000  # Conservative bounded context limit (must be > 0 and <= 128000)
+    AI_MAX_OUTPUT_TOKENS: int = 2000  # Conservative response limit (must be > 0 and <= 16000)
 
     # SQLite Database
     DB_PATH: str = "data/pm_operations.db"
