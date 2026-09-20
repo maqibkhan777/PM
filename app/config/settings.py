@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     # Dry Run Mode (Default: True for safety)
     DRY_RUN: bool = True
 
+    # AI Foundation (Phase 1 Decision Support — Disabled by default)
+    AI_ENABLED: bool = False
+
     # SQLite Database
     DB_PATH: str = "data/pm_operations.db"
     DATABASE_PATH: Optional[str] = None  # Optional alias for DB_PATH

@@ -253,3 +253,16 @@ pytest
 ```
 
 **Verified Test Status**: **376 passed, 1 skipped** (100% operational test pass rate).
+
+---
+
+## 10. AI Foundation Architecture (Phase 1 — Decision Support)
+
+The PM Operations Agent includes an isolated AI decision support layer (`app/services/ai/`) designed to provide structured insights without compromising operational safety:
+
+* **Decision Support Only**: AI serves purely as an advisory intelligence layer. It produces structured data models (`AIDecision`), not executable code.
+* **No Direct External Calls**: AI never calls Jira or Discord connectors directly. All external mutations remain strictly governed by the centralized Action Engine.
+* **Strict Safety Gate & Approval Boundary**: All proposed actions from AI must pass through `AISafetyGate` and require human or supervisor approval (`requires_approval=True`). Destructive operations are strictly rejected.
+* **Provider Abstraction**: Provider interaction is decoupled behind the `AIProvider` protocol, enabling seamless plugging of models (Gemini, Anthropic, OpenAI, local LLMs) or deterministic test mocks (`MockAIProvider`, `NullAIProvider`).
+* **Bounded Context**: `ContextBuilder` aggregates strictly scoped task, resource, and metric domain summaries, systematically redacting secrets and credentials before AI evaluation.
+* **Disabled by Default**: AI features are guarded by `AI_ENABLED=false` and remain completely inactive unless explicitly enabled.
