@@ -267,12 +267,35 @@ The PM Operations Agent includes an isolated AI decision support layer (`app/ser
 * **Bounded Context**: `ContextBuilder` aggregates strictly scoped task, resource, and metric domain summaries, systematically redacting secrets and credentials before AI evaluation.
 * **Disabled by Default**: AI features are guarded by `AI_ENABLED=false` and remain completely inactive unless explicitly enabled.
 
-### AI Provider Configuration (Phase 2C)
+### AI Provider Configuration (Phase 2C & Phase 2D)
 
 The AI layer exposes a provider-neutral configuration model:
 - `AI_ENABLED`: Set to `false` by default. When `false`, all AI operations return deterministic no-ops; no network calls or provider initializations are performed.
-- `AI_PROVIDER`: Selected provider implementation (`mock` or `null`). Defaults to `mock`. Any unsupported or uninstalled provider fails closed with a clear configuration error.
+- `AI_PROVIDER`: Selected provider implementation (`mock`, `null`, or `deepseek`). Defaults to `mock`. Any unsupported provider fails closed with a clear configuration error.
+- `AI_MODEL`: Model identifier (e.g. `deepseek-chat`). Defaults to `deepseek-chat` for the DeepSeek provider.
+- `AI_BASE_URL`: API base URL endpoint (defaults to `https://api.deepseek.com` for DeepSeek).
 - `AI_TIMEOUT_SECONDS`: Request timeout limit (default `30.0`s, max `300.0`s).
 - `AI_MAX_INPUT_TOKENS` & `AI_MAX_OUTPUT_TOKENS`: Bounded token ceilings (defaults `4000` and `2000`).
-- `AI_API_KEY`: Credential placeholder. Kept strictly out of logs, contexts, and audit traces.
+- `AI_API_KEY`: Provider API key. Kept strictly out of logs, contexts, and audit traces. Required when `AI_PROVIDER=deepseek` and `AI_ENABLED=true`.
+
+### DeepSeek Provider Adapter (Phase 2D)
+
+The `DeepSeekAIProvider` implements the `AIProvider` protocol, connecting to DeepSeek's OpenAI-compatible Chat Completions API with robust production safety:
+- **JSON Schema Enforcement**: Strict structured JSON output validated against typed domain models (`AIDecision` and `PMAttentionAnalysis`).
+- **Resilience & Bounded Retries**: Transient HTTP 5xx errors and network timeouts execute bounded exponential backoff (up to 3 attempts). HTTP 4xx client errors fail closed immediately without retry.
+- **Fail-Closed Safety**: Malformed JSON, empty responses, and Pydantic validation failures fail closed and raise safe exceptions.
+- **Credential Protection**: Redacts Authorization bearer tokens and API keys from all error messages and logs.
+
+#### Manual Verification with a Live DeepSeek Key (Optional)
+
+To test the DeepSeek provider locally without altering `.env` or committing credentials:
+
+```powershell
+$env:AI_ENABLED="true"
+$env:AI_PROVIDER="deepseek"
+$env:AI_MODEL="deepseek-chat"
+$env:AI_API_KEY="sk-your-actual-deepseek-key-here"
+
+python -c "import asyncio; from app.services.ai.config import resolve_ai_provider; from app.services.ai.context import ContextBuilder; p = resolve_ai_provider(); ctx = ContextBuilder().build_attention_context(); res = asyncio.run(p.analyze_attention(ctx)); print(res.model_dump_json(indent=2))"
+```
 

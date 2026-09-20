@@ -10,6 +10,7 @@ from app.services.ai.models import (
     PMAttentionAnalysis,
     ProposedAction,
 )
+from app.services.ai.providers.deepseek import DeepSeekAIProvider
 
 
 @runtime_checkable

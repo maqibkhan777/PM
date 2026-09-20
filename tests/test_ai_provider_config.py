@@ -47,7 +47,7 @@ def test_explicit_null_provider_resolution():
 
 def test_unimplemented_future_provider_fails_closed():
     """5. When AI_ENABLED=True and AI_PROVIDER is a future provider key (e.g. gemini, openai), fail closed."""
-    for prov in ("gemini", "openai", "anthropic", "deepseek"):
+    for prov in ("gemini", "openai", "anthropic"):
         cfg = AIProviderConfig(enabled=True, provider=prov)
         with pytest.raises(AIConfigurationError) as excinfo:
             resolve_ai_provider(cfg)

@@ -108,17 +108,25 @@ def resolve_ai_provider(
     if provider_name == "mock":
         return custom_mock or MockAIProvider()
 
-    # 4. Known future provider keys reserving clean extension points
+    # 4. DeepSeek Provider Adapter (Phase 2D)
+    if provider_name == "deepseek":
+        if not config.api_key or not str(config.api_key).strip():
+            raise AIConfigurationError(
+                "DeepSeek API key is required when AI_PROVIDER='deepseek'. Ensure AI_API_KEY is configured."
+            )
+        from app.services.ai.providers.deepseek import DeepSeekAIProvider
+        return DeepSeekAIProvider(config=config)
+
+    # 5. Known future provider keys reserving clean extension points
     # When real providers are implemented, they will be registered here explicitly.
-    # In Phase 2C, attempting to select a real provider fails closed immediately.
-    SUPPORTED_FUTURE_PROVIDERS = {"gemini", "openai", "anthropic", "deepseek"}
+    SUPPORTED_FUTURE_PROVIDERS = {"gemini", "openai", "anthropic"}
     if provider_name in SUPPORTED_FUTURE_PROVIDERS:
         raise AIConfigurationError(
             f"AI provider '{provider_name}' is not yet implemented or enabled in this phase. "
-            f"Phase 2C supports 'mock' and 'null' only. Do not attempt live connection."
+            f"Phase 2D supports 'mock', 'null', and 'deepseek'."
         )
 
-    # 5. Unsupported provider name -> fail closed
+    # 6. Unsupported provider name -> fail closed
     raise AIConfigurationError(
-        f"Unsupported AI provider '{config.provider}'. Supported providers: 'mock', 'null'."
+        f"Unsupported AI provider '{config.provider}'. Supported providers: 'mock', 'null', 'deepseek'."
     )
