@@ -145,6 +145,7 @@ class DeepSeekAIProvider:
             self.max_output_tokens = int(max_output_tokens)
 
         self._custom_client = client
+        self.last_usage: Dict[str, Any] = {}
 
     def _sanitize_error_message(self, message: str) -> str:
         """Ensure no API keys, tokens, or bearer headers leak in exception strings."""
@@ -334,6 +335,7 @@ class DeepSeekAIProvider:
         latency = round(time.monotonic() - t0, 3)
 
         usage = raw_response.get("usage", {})
+        self.last_usage = usage
         logger.info(
             f"DeepSeek analyze_attention completed in {latency}s (prompt_tokens={usage.get('prompt_tokens')}, completion_tokens={usage.get('completion_tokens')})"
         )

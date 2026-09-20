@@ -64,11 +64,20 @@ class EvaluationHarness:
             # Validate grounding
             grounding_result = GroundingValidator.validate(analysis, scenario)
 
+            # Extract token usage if available
+            usage = getattr(self.provider, "last_usage", {}) or {}
+            pt = usage.get("prompt_tokens")
+            ct = usage.get("completion_tokens")
+            tt = usage.get("total_tokens") or ((pt or 0) + (ct or 0) if pt or ct else None)
+
             return ScenarioEvaluationResult(
                 scenario_id=scenario.scenario_id,
                 scenario_name=scenario.name,
                 success=True,
                 latency_seconds=latency,
+                prompt_tokens=pt,
+                completion_tokens=ct,
+                total_tokens=tt,
                 schema_valid=True,
                 grounding=grounding_result,
                 analysis=analysis,
