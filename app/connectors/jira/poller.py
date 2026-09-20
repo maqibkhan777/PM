@@ -24,6 +24,7 @@ from app.database.repositories import (
     JiraPollingStateRepository,
     JiraIssueStateRepository,
     JiraWorklogRepository,
+    JiraIssueLinkRepository,
 )
 from app.utils.logger import logger
 from app.utils.time import utc_now, utc_now_iso, parse_iso_datetime, format_iso
@@ -60,6 +61,7 @@ class JiraPoller:
         self.polling_state_repo = JiraPollingStateRepository(self.mgr)
         self.issue_state_repo = JiraIssueStateRepository(self.mgr)
         self.worklog_repo = JiraWorklogRepository(self.mgr)
+        self.link_repo = JiraIssueLinkRepository(self.mgr)
         self.normalizer = JiraEventNormalizer()
 
     async def poll(self) -> Dict[str, Any]:
@@ -581,6 +583,56 @@ class JiraPoller:
             time_spent_seconds=time_spent_secs,
             creator_id=creator_acc_id,
         )
+
+        # ----------------------------------------------------------------------
+        # Update Local jira_issue_links Projection (Normalized Relationships)
+        # ----------------------------------------------------------------------
+        issuelinks_raw = fields.get("issuelinks", []) if isinstance(fields.get("issuelinks"), list) else []
+        for raw_link in issuelinks_raw:
+            if not isinstance(raw_link, dict):
+                continue
+            l_type = raw_link.get("type", {}) if isinstance(raw_link.get("type"), dict) else {}
+            link_name = l_type.get("name")
+            if not link_name:
+                continue
+
+            inward_desc = l_type.get("inward")
+            outward_desc = l_type.get("outward")
+            inward_issue = raw_link.get("inwardIssue")
+            outward_issue = raw_link.get("outwardIssue")
+
+            # In Jira link semantics:
+            # - If raw_link has outwardIssue, this issue (task_key) is the source and outwardIssue is the target.
+            # - If raw_link has inwardIssue, inwardIssue is the source and this issue (task_key) is the target.
+            if outward_issue and isinstance(outward_issue, dict) and outward_issue.get("key"):
+                src_key = task_key
+                tgt_key = outward_issue.get("key")
+                src_id = issue.get("id")
+                tgt_id = outward_issue.get("id")
+            elif inward_issue and isinstance(inward_issue, dict) and inward_issue.get("key"):
+                src_key = inward_issue.get("key")
+                tgt_key = task_key
+                src_id = inward_issue.get("id")
+                tgt_id = issue.get("id")
+            else:
+                continue
+
+            try:
+                self.link_repo.upsert_link(
+                    source_issue_key=src_key,
+                    target_issue_key=tgt_key,
+                    link_type_name=link_name,
+                    inward_description=inward_desc,
+                    outward_description=outward_desc,
+                    source_issue_id=src_id,
+                    target_issue_id=tgt_id,
+                    observed_at=now_str,
+                    is_active=True,
+                )
+            except Exception as link_err:
+                logger.warning(
+                    f"Notice during issue link normalization ({src_key} -> {tgt_key}, {link_name}): {link_err}"
+                )
 
         # ----------------------------------------------------------------------
         # Emit Events through Orchestrator Ingestion

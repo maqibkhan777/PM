@@ -203,6 +203,27 @@ CREATE INDEX IF NOT EXISTS idx_jira_worklogs_started ON jira_worklogs(started_at
 CREATE INDEX IF NOT EXISTS idx_jira_worklogs_author ON jira_worklogs(author_account_id);
 CREATE INDEX IF NOT EXISTS idx_jira_worklogs_team ON jira_worklogs(team_group);
 
+-- Jira Issue Links (Normalized local projection of directed Jira issue relationships)
+CREATE TABLE IF NOT EXISTS jira_issue_links (
+    id TEXT PRIMARY KEY,
+    source_issue_key TEXT NOT NULL,
+    target_issue_key TEXT NOT NULL,
+    link_type_name TEXT NOT NULL,
+    inward_description TEXT,
+    outward_description TEXT,
+    classification TEXT NOT NULL DEFAULT 'UNKNOWN',
+    source_issue_id TEXT,
+    target_issue_id TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_jira_issue_links_source ON jira_issue_links(source_issue_key);
+CREATE INDEX IF NOT EXISTS idx_jira_issue_links_target ON jira_issue_links(target_issue_key);
+CREATE INDEX IF NOT EXISTS idx_jira_issue_links_type ON jira_issue_links(link_type_name);
+CREATE INDEX IF NOT EXISTS idx_jira_issue_links_class ON jira_issue_links(classification);
+
 -- Daily Report History (Records generated/sent reports for idempotency)
 CREATE TABLE IF NOT EXISTS daily_report_history (
     id TEXT PRIMARY KEY,
@@ -924,6 +945,59 @@ def _migrate_employee_roles(conn) -> None:
         logger.info("Database migration complete: 'jira_queue_filter_id' column added successfully.")
 
 
+def _migrate_jira_issue_links(conn) -> None:
+    """Idempotently ensure jira_issue_links table and required columns exist."""
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='jira_issue_links'"
+    )
+    if not cursor.fetchone():
+        logger.info("Migrating database: creating jira_issue_links table...")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS jira_issue_links (
+                id TEXT PRIMARY KEY,
+                source_issue_key TEXT NOT NULL,
+                target_issue_key TEXT NOT NULL,
+                link_type_name TEXT NOT NULL,
+                inward_description TEXT,
+                outward_description TEXT,
+                classification TEXT NOT NULL DEFAULT 'UNKNOWN',
+                source_issue_id TEXT,
+                target_issue_id TEXT,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+        return
+
+    cursor = conn.execute("PRAGMA table_info(jira_issue_links)")
+    rows = cursor.fetchall()
+    existing_columns = {
+        row["name"] if hasattr(row, "keys") and "name" in row.keys() else row[1]
+        for row in rows
+    }
+
+    expected_columns = {
+        "source_issue_key": "TEXT",
+        "target_issue_key": "TEXT",
+        "link_type_name": "TEXT",
+        "inward_description": "TEXT",
+        "outward_description": "TEXT",
+        "classification": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
+        "source_issue_id": "TEXT",
+        "target_issue_id": "TEXT",
+        "first_seen_at": "TEXT",
+        "last_seen_at": "TEXT",
+        "is_active": "INTEGER NOT NULL DEFAULT 1",
+    }
+    for col_name, col_type in expected_columns.items():
+        if col_name not in existing_columns:
+            logger.info(f"Migrating database: adding '{col_name}' column to jira_issue_links table...")
+            conn.execute(f"ALTER TABLE jira_issue_links ADD COLUMN {col_name} {col_type}")
+
+
 # Authoritative employee designations and Jira saved filter assignments
 AUTHORITATIVE_EMPLOYEE_ROLES = [
     {
@@ -1603,6 +1677,7 @@ def _apply_migrations(conn) -> None:
     """Execute all registered schema migrations safely and idempotently."""
     _migrate_jira_issue_state(conn)
     _migrate_jira_worklogs(conn)
+    _migrate_jira_issue_links(conn)
     _migrate_actions(conn)
     _migrate_performance_tables(conn)
     _migrate_employee_roles(conn)
@@ -1618,6 +1693,18 @@ def _ensure_post_migration_indexes(conn) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_jira_worklogs_team ON jira_worklogs(team_group)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jira_issue_links_source ON jira_issue_links(source_issue_key)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jira_issue_links_target ON jira_issue_links(target_issue_key)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jira_issue_links_type ON jira_issue_links(link_type_name)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jira_issue_links_class ON jira_issue_links(classification)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_perf_profiles_run ON resource_performance_profiles(analysis_run_id)"

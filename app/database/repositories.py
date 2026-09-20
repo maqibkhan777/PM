@@ -1236,6 +1236,132 @@ class JiraWorklogRepository:
             return cursor.fetchone()[0]
 
 
+class JiraIssueLinkRepository:
+    """Repository for persisting, querying, and normalizing directed Jira issue links."""
+
+    def __init__(self, manager: Optional[DatabaseManager] = None):
+        self.mgr = manager or db_manager
+
+    @staticmethod
+    def _generate_link_id(source_key: str, target_key: str, link_type_name: str) -> str:
+        """Deterministic ID for idempotent upsert: source_key:target_key:normalized_link_type."""
+        norm_type = link_type_name.strip().lower()
+        return f"{source_key.strip().upper()}:{target_key.strip().upper()}:{norm_type}"
+
+    def upsert_link(
+        self,
+        source_issue_key: str,
+        target_issue_key: str,
+        link_type_name: str,
+        inward_description: Optional[str] = None,
+        outward_description: Optional[str] = None,
+        classification: Optional[str] = None,
+        source_issue_id: Optional[str] = None,
+        target_issue_id: Optional[str] = None,
+        observed_at: Optional[str] = None,
+        is_active: bool = True,
+    ) -> str:
+        """Idempotently insert or update a normalized Jira issue link."""
+        from app.core.models.planning import classify_jira_link_type
+        
+        link_id = self._generate_link_id(source_issue_key, target_issue_key, link_type_name)
+        now_str = observed_at or utc_now_iso()
+        classified = classification or classify_jira_link_type(link_type_name).value
+
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO jira_issue_links (
+                    id, source_issue_key, target_issue_key, link_type_name,
+                    inward_description, outward_description, classification,
+                    source_issue_id, target_issue_id, first_seen_at, last_seen_at, is_active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    link_type_name = excluded.link_type_name,
+                    inward_description = COALESCE(excluded.inward_description, jira_issue_links.inward_description),
+                    outward_description = COALESCE(excluded.outward_description, jira_issue_links.outward_description),
+                    classification = excluded.classification,
+                    source_issue_id = COALESCE(excluded.source_issue_id, jira_issue_links.source_issue_id),
+                    target_issue_id = COALESCE(excluded.target_issue_id, jira_issue_links.target_issue_id),
+                    last_seen_at = excluded.last_seen_at,
+                    is_active = excluded.is_active
+                """,
+                (
+                    link_id,
+                    source_issue_key.strip().upper(),
+                    target_issue_key.strip().upper(),
+                    link_type_name.strip(),
+                    inward_description,
+                    outward_description,
+                    classified,
+                    source_issue_id,
+                    target_issue_id,
+                    now_str,
+                    now_str,
+                    1 if is_active else 0,
+                )
+            )
+        return link_id
+
+    def get_by_id(self, link_id: str) -> Optional[Dict[str, Any]]:
+        with self.mgr.session() as conn:
+            cursor = conn.execute("SELECT * FROM jira_issue_links WHERE id = ?", (link_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def list_links_for_source(self, source_issue_key: str, active_only: bool = True) -> List[Dict[str, Any]]:
+        """Find all links where this issue is the predecessor/source."""
+        clean_key = source_issue_key.strip().upper()
+        query = "SELECT * FROM jira_issue_links WHERE source_issue_key = ?"
+        params: List[Any] = [clean_key]
+        if active_only:
+            query += " AND is_active = 1"
+        query += " ORDER BY target_issue_key ASC"
+        with self.mgr.session() as conn:
+            cursor = conn.execute(query, tuple(params))
+            return [dict(r) for r in cursor.fetchall()]
+
+    def list_links_for_target(self, target_issue_key: str, active_only: bool = True) -> List[Dict[str, Any]]:
+        """Find all links where this issue is the successor/target (e.g. blockers of this issue)."""
+        clean_key = target_issue_key.strip().upper()
+        query = "SELECT * FROM jira_issue_links WHERE target_issue_key = ?"
+        params: List[Any] = [clean_key]
+        if active_only:
+            query += " AND is_active = 1"
+        query += " ORDER BY source_issue_key ASC"
+        with self.mgr.session() as conn:
+            cursor = conn.execute(query, tuple(params))
+            return [dict(r) for r in cursor.fetchall()]
+
+    def list_all_links(
+        self,
+        classification: Optional[str] = None,
+        active_only: bool = True,
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        """Query issue links with optional classification filter."""
+        query = "SELECT * FROM jira_issue_links WHERE 1=1"
+        params: List[Any] = []
+        if active_only:
+            query += " AND is_active = 1"
+        if classification:
+            query += " AND classification = ?"
+            params.append(classification)
+        query += " ORDER BY source_issue_key ASC, target_issue_key ASC LIMIT ?"
+        params.append(limit)
+        with self.mgr.session() as conn:
+            cursor = conn.execute(query, tuple(params))
+            return [dict(r) for r in cursor.fetchall()]
+
+    def count(self, active_only: bool = True) -> int:
+        with self.mgr.session() as conn:
+            if active_only:
+                cursor = conn.execute("SELECT COUNT(*) FROM jira_issue_links WHERE is_active = 1")
+            else:
+                cursor = conn.execute("SELECT COUNT(*) FROM jira_issue_links")
+            return cursor.fetchone()[0]
+
+
 class DailyReportHistoryRepository:
     """Repository for recording and checking daily report generation history for idempotency."""
 
