@@ -27,6 +27,20 @@ def clean_notification_dedup():
     notification_dedup_service.clear_all()
 
 
+@pytest.fixture(autouse=True)
+def isolate_test_settings():
+    """Ensure mutable global settings are isolated and restored across tests."""
+    prev_channel_id = getattr(settings, "DISCORD_PM_CHANNEL_ID", None)
+    prev_allowed_users = getattr(settings, "DISCORD_PM_ALLOWED_USERS", None)
+    prev_cmd_enabled = getattr(settings, "DISCORD_PM_COMMAND_ENABLED", True)
+    prev_dry_run = getattr(settings, "DRY_RUN", False)
+    yield
+    settings.DISCORD_PM_CHANNEL_ID = prev_channel_id
+    settings.DISCORD_PM_ALLOWED_USERS = prev_allowed_users
+    settings.DISCORD_PM_COMMAND_ENABLED = prev_cmd_enabled
+    settings.DRY_RUN = prev_dry_run
+
+
 @pytest.fixture
 def temp_db():
     """Create an isolated temporary SQLite database for testing."""

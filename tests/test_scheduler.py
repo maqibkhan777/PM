@@ -198,7 +198,7 @@ async def test_scheduler_daily_activity_report_at_or_after_scheduled_time(temp_d
         res = await scheduler._evaluate_daily_activity_report()
         assert res is not None
         assert res.get("status").lower() in ("success", "simulated", "dry_run_simulated")
-        assert res.get("date") == "2026-09-20"
+        assert res.get("date") == "2026-09-19"
         assert res.get("recorded_history") is True
 
         # Second evaluation should be skipped due to persistent idempotency

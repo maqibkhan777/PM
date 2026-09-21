@@ -101,8 +101,8 @@ def test_mention_extraction_from_adf_and_text():
     assert "jira-user-me-123" in acc_ids2
 
 
-def test_customer_support_reply_without_mention_produces_no_notification():
-    """Customer or support reply on team ticket without mention must NOT notify PM."""
+def test_customer_support_reply_without_mention_produces_generic_notification():
+    """Customer or support reply on team ticket without PM mention produces generic comment notification."""
     rule = CommentNotificationRule()
 
     event = TaskCommentAdded(
@@ -120,7 +120,9 @@ def test_customer_support_reply_without_mention_produces_no_notification():
     )
 
     actions = rule.evaluate(event)
-    assert len(actions) == 0, "Support reply without PM mention should be suppressed from Discord"
+    assert len(actions) == 1, "All team-scoped comments produce notifications in #notifications"
+    # Should be a generic comment notification, NOT a mention notification (PM is not mentioned)
+    assert "💬" in actions[0].parameters["title"]
 
 
 def test_comment_mentioning_me_produces_personal_discord_notification():

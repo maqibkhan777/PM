@@ -497,10 +497,8 @@ class CommentNotificationRule(BaseRule):
             if my_identity and f"@{my_identity.lower()}" in comment_body.lower():
                 is_mentioned = True
 
-        # If not mentioned and not configured to notify all comments, do NOT notify PM
-        if not is_mentioned and not settings.COMMENT_NOTIFY_ALL:
-            logger.debug(f"Comment on {task_key} by {author_name} does not mention PM. Suppressing Discord alert.")
-            return []
+        # All team-scoped comments produce notifications in #notifications.
+        # Mention-priority formatting is applied below via the is_mentioned branch.
 
         # Deduplication check: notify once per comment
         condition_key = f"comment_{comment_id}"

@@ -371,7 +371,11 @@ class PeriodicScheduler:
         return actions
 
     async def _evaluate_daily_worklog_report(self) -> Optional[Dict[str, Any]]:
-        """Check if daily worklog report should be triggered based on scheduled time (23:59 Asia/Karachi)."""
+        """Check if daily worklog report should be triggered based on scheduled time (23:59 Asia/Karachi).
+
+        Handles midnight boundary: if the scheduler ticks after midnight but within
+        a grace window, the report fires for the previous calendar day (the intended date).
+        """
         if not settings.DAILY_WORKLOG_REPORT_ENABLED:
             return None
 
@@ -382,26 +386,43 @@ class PeriodicScheduler:
         except Exception:
             now_tz = datetime.now()
 
-        today_str = now_tz.strftime("%Y-%m-%d")
         current_time_str = now_tz.strftime("%H:%M")
-
         scheduled_time = (settings.DAILY_WORKLOG_REPORT_TIME or settings.get_worklog_report_time()).strip()
-        if current_time_str >= scheduled_time:
-            from app.core.reports.worklog_report import DailyWorklogReportGenerator
-            generator = DailyWorklogReportGenerator(manager=self.mgr)
-            team_group = settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else "Team"
 
-            # Check idempotency: skip if already sent today
-            if not generator.history_repo.has_report_been_sent(team_group, today_str):
-                logger.info(
-                    f"Triggering scheduled daily worklog report for team '{team_group}' on {today_str} "
-                    f"(current_time={current_time_str}, scheduled_time={scheduled_time})"
-                )
-                return await generator.send_report_to_discord(
-                    target_date=today_str,
-                    force=False,
-                    sync_jira=True
-                )
+        # Determine the report date based on when the scheduler fires:
+        # Case 1: current_time >= scheduled_time (same day, on time) → report for today
+        # Case 2: current_time < scheduled_time AND within grace window after midnight
+        #         (00:00–01:30) → report for yesterday (the intended calendar day)
+        # Case 3: outside both windows → skip (too early for today's report)
+        GRACE_WINDOW_MINUTES = 90  # generous enough for delayed scheduler ticks
+
+        report_date_str = None
+        if current_time_str >= scheduled_time:
+            # Same-day execution (e.g. 23:59 tick or later same day)
+            report_date_str = now_tz.strftime("%Y-%m-%d")
+        elif now_tz.hour * 60 + now_tz.minute < GRACE_WINDOW_MINUTES:
+            # Post-midnight grace window: report for the PREVIOUS calendar day
+            yesterday_tz = now_tz - timedelta(days=1)
+            report_date_str = yesterday_tz.strftime("%Y-%m-%d")
+        else:
+            # Outside both windows — too early for today's report
+            return None
+
+        from app.core.reports.worklog_report import DailyWorklogReportGenerator
+        generator = DailyWorklogReportGenerator(manager=self.mgr)
+        team_group = settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else "Team"
+
+        # Check idempotency: skip if already sent for this report date
+        if not generator.history_repo.has_report_been_sent(team_group, report_date_str):
+            logger.info(
+                f"Triggering scheduled daily worklog report for team '{team_group}' on {report_date_str} "
+                f"(current_time={current_time_str}, scheduled_time={scheduled_time})"
+            )
+            return await generator.send_report_to_discord(
+                target_date=report_date_str,
+                force=False,
+                sync_jira=True
+            )
         return None
 
     async def _evaluate_daily_overdue_digest(self) -> Optional[Dict[str, Any]]:
@@ -539,7 +560,7 @@ class PeriodicScheduler:
             }
 
     async def _evaluate_daily_activity_report(self) -> Optional[Dict[str, Any]]:
-        """Check if daily activity report should be triggered based on scheduled time (08:40 Asia/Karachi)."""
+        """Check if daily activity report should be triggered for previous calendar day."""
         if not settings.DAILY_ACTIVITY_REPORT_ENABLED:
             return None
 
@@ -551,26 +572,32 @@ class PeriodicScheduler:
             tz = zoneinfo.ZoneInfo("Asia/Karachi")
             now_tz = datetime.now(tz)
 
-        today_str = now_tz.strftime("%Y-%m-%d")
         current_time_str = now_tz.strftime("%H:%M")
-
         scheduled_time = (settings.DAILY_ACTIVITY_REPORT_TIME or settings.get_default_report_time()).strip()
-        if current_time_str >= scheduled_time:
-            from app.core.reports.daily_report import DailyActivityReportGenerator
-            generator = DailyActivityReportGenerator(manager=self.mgr)
-            team_group = settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else "Mursaleen Cluster"
 
-            # Check persistent idempotency: skip if already sent today
-            if not generator.history_repo.has_report_been_sent(team_group, today_str, report_type="daily_activity_report"):
-                logger.info(
-                    f"Triggering scheduled daily activity report for team '{team_group}' on {today_str} "
-                    f"(current_time={current_time_str}, scheduled_time={scheduled_time})"
-                )
-                return await generator.send_report_to_discord(
-                    target_date=today_str,
-                    force=False,
-                    record_history=True
-                )
+        if current_time_str < scheduled_time:
+            return None
+
+        # Critical Date Rule: target date is PREVIOUS calendar day in configured timezone
+        # A morning report (e.g. 08:40) summarizes the completed previous day's activity.
+        yesterday_tz = now_tz - timedelta(days=1)
+        target_date_str = yesterday_tz.strftime("%Y-%m-%d")
+
+        from app.core.reports.daily_report import DailyActivityReportGenerator
+        generator = DailyActivityReportGenerator(manager=self.mgr)
+        team_group = settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else "Mursaleen Cluster"
+
+        # Check persistent idempotency: skip if already sent for that previous-day date
+        if not generator.history_repo.has_report_been_sent(team_group, target_date_str, report_type="daily_activity_report"):
+            logger.info(
+                f"Triggering scheduled daily activity report for team '{team_group}' on {target_date_str} "
+                f"(current_time={current_time_str}, scheduled_time={scheduled_time})"
+            )
+            return await generator.send_report_to_discord(
+                target_date=target_date_str,
+                force=False,
+                record_history=True
+            )
         return None
 
     async def _evaluate_performance_analysis(self) -> Optional[Dict[str, Any]]:
