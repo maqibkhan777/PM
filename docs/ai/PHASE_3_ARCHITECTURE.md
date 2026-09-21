@@ -542,4 +542,47 @@ Deterministic enum `DependencyClassification` mapped in `app/core/models/plannin
 - They are NOT authoritative Jira links and MUST NOT be converted into `HARD_BLOCK` edges in `DependencyGraph`.
 - `DependencyGraph` remains strictly reserved for confirmed, authoritative Jira dependency semantics.
 
+---
+
+## 26. Phase 3C Implementation: Resource Queue & Capacity Intelligence Composition
+
+### 26.1 Principles & Separation of Concerns
+- **Core Mission**: Composes existing Phase A/B intelligence engines and Phase 3A/3B dependency models into a coherent, deterministic, and explainable `ResourceQueueSnapshot`.
+- **Strict Non-Goals**:
+  - Does NOT generate Jira due dates or estimates.
+  - Does NOT reschedule or mutate Jira tasks.
+  - Does NOT rank, score, or evaluate employees hierarchically.
+  - Does NOT build the AI `PlanningContext` (reserved for Phase 3E).
+  - Does NOT call DeepSeek or Action Engine.
+- Answers: *"What is this resource currently carrying, what has their historical throughput looked like, and what capacity and dependency information is available?"*
+
+### 26.2 Reused Intelligence Engines
+Phase 3C cleanly orchestrates existing tested components without redundant calculations:
+1. **`CurrentQueueAnalyzer`** (`app/core/performance/queue.py`): Active queue analysis using the 7-tier expected-effort inference hierarchy with explicit Jira raw remaining separation.
+2. **`CapacityCalculator`** (`app/core/performance/capacity.py`): Nominal (6.75h/day), observed logged capacity, and bounded forecast capacity calculation over configurable planning horizons (default: 10 working days).
+3. **`HistoricalPaceAnalyzer`** (`app/core/performance/pace.py`): Percentile-based effort statistics (mean, median, P25, P75) and sample-size-driven confidence tracking.
+4. **`WorkloadPressureAnalyzer`** (`app/core/intelligence/workload.py`): Contextual workload vs. capacity ratio and deadline pressure (`LOW`, `NORMAL`, `ELEVATED`, `HIGH`).
+5. **`TaskComplexityCalculator`** (`app/core/performance/complexity.py`): Intrinsic characteristic complexity scoring (1 to 5).
+6. **`TaskNatureClassifier`** (`app/core/intelligence/classifier.py`): 17 deterministic functional categories.
+7. **`BlockerAnalyzer`** (`app/core/performance/blockers.py`): Conservative evidence-based blocker detection.
+8. **`JiraIssueLinkRepository`** (`app/database/repositories.py`): Direct Phase 3A hard blocker and predecessor/successor link queries.
+9. **`ArtifactEngine`** (`app/core/planning/artifacts.py`): Phase 3B produced and consumed deliverable reference lookup.
+
+### 26.3 Domain Models
+Implemented in `app/core/models/planning.py`:
+- **`QueueTaskDetail`**: Bounded facts for active assigned tasks (issue key, summary, status, priority, issue type, task nature, project, due date, complexity, estimates, spent, remaining, overdue, stale, blocked, reopened flags, hard blockers, and artifact references).
+- **`ResourcePaceSummary`**: Completed task count, P25, median, mean, P75, pace factor, confidence, and fallback indicator.
+- **`ResourceCapacitySummary`**: Nominal, observed, and forecast daily capacity, planning horizon (working days), available capacity, committed workload, remaining capacity, and `CapacityState` (`UNDER_UTILIZED`, `BALANCED`, `OVERLOADED`, `SATURATED`).
+- **`ResourceDependencyContext`**: Total dependencies, hard blocker count, blocked issue keys, and downstream dependent keys.
+- **`ResourceArtifactContext`**: Total artifacts, produced artifact IDs, and consumed artifact IDs.
+- **`ResourceQueueSnapshot`**: Canonical resource ID, display name, designation, role category, team group, timestamp, active task details and counts, priority/type/nature summaries, workload pressure, dependency and artifact summaries, and explicit data quality ratings.
+- **`TeamWorkloadSnapshot`**: Deterministic aggregation of multiple `ResourceQueueSnapshot` instances without employee ranking.
+
+### 26.4 Data Quality & Freshness Semantics
+- **History Completeness**: `SUFFICIENT_HISTORY` ($\ge 15$ completed tasks, $\ge 30$ active days), `LIMITED_HISTORY`, `NO_HISTORY`.
+- **Capacity Quality**: `CAPACITY_KNOWN` ($\ge 15$ active days), `CAPACITY_PARTIAL`, `CAPACITY_UNAVAILABLE`.
+- **Queue Completeness**: `QUEUE_COMPLETE` (all tasks estimated), `QUEUE_PARTIAL` (relying on complexity fallbacks), `QUEUE_EMPTY`.
+- **Freshness**: On-demand calculation querying local SQLite projections with zero background workers or persistent snapshot table bloat.
+
+
 

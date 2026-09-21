@@ -168,3 +168,171 @@ class ArtifactRelationshipRecord(BaseModel):
         populate_by_name = True
         extra = "allow"
 
+
+# -------------------------------------------------------------------------
+# Phase 3C: Resource Queue & Capacity Intelligence Composition Models
+# -------------------------------------------------------------------------
+
+class CapacityState(str, Enum):
+    """Deterministic capacity utilization classification."""
+    UNDER_UTILIZED = "UNDER_UTILIZED"  # committed < 0.6 * available
+    BALANCED = "BALANCED"              # 0.6 <= committed <= 1.0 * available
+    OVERLOADED = "OVERLOADED"          # 1.0 < committed <= 1.4 * available
+    SATURATED = "SATURATED"            # committed > 1.4 * available
+    UNKNOWN = "UNKNOWN"
+
+
+class QueueTaskDetail(BaseModel):
+    """Deterministic, bounded representation of an active assigned Jira task."""
+    issue_key: str
+    summary: str = "Untitled"
+    status: str = "Unknown"
+    priority: str = "Medium"
+    issue_type: str = "Task"
+    task_nature: str = "UNKNOWN"
+    project_key: str = "UNKNOWN"
+    due_date: Optional[str] = None
+    complexity_score: int = 3
+    complexity_confidence: str = "medium"
+    original_estimate_hours: Optional[float] = None
+    time_spent_hours: float = 0.0
+    remaining_hours: float = 0.0
+    expected_effort_hours: float = 0.0
+    expected_effort_source: str = "unavailable"
+    expected_effort_confidence: str = "unavailable"
+    is_overdue: bool = False
+    is_stale: bool = False
+    is_blocked: bool = False
+    is_reopened: bool = False
+    hard_blocker_keys: List[str] = Field(default_factory=list)
+    produced_artifact_names: List[str] = Field(default_factory=list)
+    consumed_artifact_names: List[str] = Field(default_factory=list)
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+
+class ResourcePaceSummary(BaseModel):
+    """Bounded historical pace metrics for a resource."""
+    completed_task_count: int = 0
+    mean_hours: float = 0.0
+    median_hours: float = 0.0
+    p25_hours: float = 0.0
+    p75_hours: float = 0.0
+    min_hours: float = 0.0
+    max_hours: float = 0.0
+    pace_factor: float = 1.0
+    confidence: str = "INSUFFICIENT"
+    is_fallback: bool = False
+
+
+class ResourceCapacitySummary(BaseModel):
+    """Deterministic capacity metrics for an operational planning horizon."""
+    nominal_daily_capacity_hours: float = 6.75
+    observed_daily_capacity_hours: float = 6.75
+    forecast_daily_capacity_hours: float = 6.75
+    horizon_working_days: int = 10  # Standard 2-week planning horizon
+    available_capacity_hours: float = 67.5
+    committed_workload_hours: float = 0.0
+    remaining_capacity_hours: float = 67.5
+    capacity_state: CapacityState = CapacityState.BALANCED
+    capacity_method: str = "nominal_baseline_default"
+    confidence: str = "LOW"
+
+
+class ResourceDependencyContext(BaseModel):
+    """Compact summary of dependency constraints involving this resource's tasks."""
+    total_dependencies: int = 0
+    hard_blocker_count: int = 0
+    blocked_issue_keys: List[str] = Field(default_factory=list)
+    downstream_dependent_keys: List[str] = Field(default_factory=list)
+
+
+class ResourceArtifactContext(BaseModel):
+    """Compact summary of work product handoffs involving this resource's tasks."""
+    total_artifacts: int = 0
+    produced_artifact_ids: List[str] = Field(default_factory=list)
+    consumed_artifact_ids: List[str] = Field(default_factory=list)
+
+
+class ResourceQueueSnapshot(BaseModel):
+    """Deterministic, unified snapshot of a resource's active queue, capacity, and performance.
+    
+    Combines Phase A & B intelligence engines with Phase 3A & 3B dependencies.
+    Strictly operational and analytical: contains ZERO employee rankings, scores, or due-date assignments.
+    """
+    # 1. Identity & Scope
+    resource_id: str = Field(..., description="Authoritative canonical Atlassian account ID")
+    display_name: str
+    designation: Optional[str] = None
+    role_category: Optional[str] = None
+    team_group: Optional[str] = None
+    snapshot_timestamp: str
+
+    # 2. Current Active Queue Facts
+    active_tasks: List[QueueTaskDetail] = Field(default_factory=list)
+    active_task_count: int = 0
+    overdue_task_count: int = 0
+    stale_task_count: int = 0
+    blocked_task_count: int = 0
+    reopened_task_count: int = 0
+    unestimated_task_count: int = 0  # Tasks lacking Jira original_estimate
+    priority_summary: Dict[str, int] = Field(default_factory=dict)
+    task_type_summary: Dict[str, int] = Field(default_factory=dict)
+    task_nature_summary: Dict[str, int] = Field(default_factory=dict)
+    total_inferred_remaining_hours: float = 0.0
+    total_logged_hours: float = 0.0
+    total_review_buffer_hours: float = 0.0
+
+    # 3. Historical Performance Metrics
+    historical_completed_tasks: int = 0
+    historical_active_working_days: int = 0
+    historical_pace: ResourcePaceSummary = Field(default_factory=ResourcePaceSummary)
+    personal_baseline_summary: Optional[Dict[str, Any]] = None
+
+    # 4. Capacity Model
+    capacity: ResourceCapacitySummary = Field(default_factory=ResourceCapacitySummary)
+
+    # 5. Workload Pressure & Signals
+    workload_pressure_level: str = "UNKNOWN"
+    workload_pressure_explanation: str = ""
+    tasks_due_within_7_days: int = 0
+    high_complexity_tasks_count: int = 0
+
+    # 6. Dependency & Artifact Reference Context
+    dependency_context: ResourceDependencyContext = Field(default_factory=ResourceDependencyContext)
+    artifact_context: ResourceArtifactContext = Field(default_factory=ResourceArtifactContext)
+
+    # 7. Data Quality & Readiness
+    history_completeness: str = "NO_HISTORY"  # "SUFFICIENT_HISTORY", "LIMITED_HISTORY", "NO_HISTORY"
+    capacity_quality: str = "CAPACITY_UNAVAILABLE"  # "CAPACITY_KNOWN", "CAPACITY_PARTIAL", "CAPACITY_UNAVAILABLE"
+    queue_completeness: str = "QUEUE_EMPTY"  # "QUEUE_COMPLETE", "QUEUE_PARTIAL", "QUEUE_EMPTY"
+    data_quality_notes: List[str] = Field(default_factory=list)
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+
+class TeamWorkloadSnapshot(BaseModel):
+    """Deterministic collection of ResourceQueueSnapshots for a team or project group.
+    
+    Provides foundational evidence for future TeamScheduleForecaster and PlanningContextBuilder.
+    Does NOT score, rank, or compare employees hierarchically.
+    """
+    snapshot_timestamp: str
+    team_group: Optional[str] = None
+    resources_count: int = 0
+    total_active_tasks: int = 0
+    total_remaining_workload_hours: float = 0.0
+    total_available_capacity_hours: float = 0.0
+    total_overdue_tasks: int = 0
+    total_blocked_tasks: int = 0
+    resource_snapshots: List[ResourceQueueSnapshot] = Field(default_factory=list)
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+
