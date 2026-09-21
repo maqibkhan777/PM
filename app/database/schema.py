@@ -224,6 +224,44 @@ CREATE INDEX IF NOT EXISTS idx_jira_issue_links_target ON jira_issue_links(targe
 CREATE INDEX IF NOT EXISTS idx_jira_issue_links_type ON jira_issue_links(link_type_name);
 CREATE INDEX IF NOT EXISTS idx_jira_issue_links_class ON jira_issue_links(classification);
 
+-- Project Artifacts (Normalized local representation of work products/deliverables)
+CREATE TABLE IF NOT EXISTS project_artifacts (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    project_key TEXT NOT NULL,
+    artifact_type TEXT NOT NULL DEFAULT 'GENERIC',
+    status TEXT NOT NULL DEFAULT 'PLANNED',
+    producer_issue_key TEXT,
+    provenance TEXT NOT NULL DEFAULT 'EXPLICIT_JIRA_LABEL',
+    confidence TEXT NOT NULL DEFAULT 'HIGH',
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_artifacts_proj ON project_artifacts(project_key);
+CREATE INDEX IF NOT EXISTS idx_project_artifacts_name ON project_artifacts(name);
+CREATE INDEX IF NOT EXISTS idx_project_artifacts_prod ON project_artifacts(producer_issue_key);
+CREATE INDEX IF NOT EXISTS idx_project_artifacts_prov ON project_artifacts(provenance);
+
+-- Artifact Dependencies (Producer/Consumer relationships linking tasks to artifacts)
+CREATE TABLE IF NOT EXISTS artifact_dependencies (
+    id TEXT PRIMARY KEY,
+    artifact_id TEXT NOT NULL,
+    issue_key TEXT NOT NULL,
+    relationship_type TEXT NOT NULL, -- 'PRODUCES' or 'CONSUMES'
+    provenance TEXT NOT NULL DEFAULT 'EXPLICIT_JIRA_LABEL',
+    confidence TEXT NOT NULL DEFAULT 'HIGH',
+    is_inferred INTEGER NOT NULL DEFAULT 0,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_art_dep_art ON artifact_dependencies(artifact_id);
+CREATE INDEX IF NOT EXISTS idx_art_dep_issue ON artifact_dependencies(issue_key);
+CREATE INDEX IF NOT EXISTS idx_art_dep_rel ON artifact_dependencies(relationship_type);
+
 -- Daily Report History (Records generated/sent reports for idempotency)
 CREATE TABLE IF NOT EXISTS daily_report_history (
     id TEXT PRIMARY KEY,
@@ -998,6 +1036,95 @@ def _migrate_jira_issue_links(conn) -> None:
             conn.execute(f"ALTER TABLE jira_issue_links ADD COLUMN {col_name} {col_type}")
 
 
+def _migrate_artifact_tables(conn) -> None:
+    """Idempotently ensure project_artifacts and artifact_dependencies tables exist."""
+    # 1. project_artifacts
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='project_artifacts'"
+    )
+    if not cursor.fetchone():
+        logger.info("Migrating database: creating project_artifacts table...")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS project_artifacts (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                project_key TEXT NOT NULL,
+                artifact_type TEXT NOT NULL DEFAULT 'GENERIC',
+                status TEXT NOT NULL DEFAULT 'PLANNED',
+                producer_issue_key TEXT,
+                provenance TEXT NOT NULL DEFAULT 'EXPLICIT_JIRA_LABEL',
+                confidence TEXT NOT NULL DEFAULT 'HIGH',
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+    else:
+        cursor = conn.execute("PRAGMA table_info(project_artifacts)")
+        existing = {
+            row["name"] if hasattr(row, "keys") and "name" in row.keys() else row[1]
+            for row in cursor.fetchall()
+        }
+        for col, col_type in {
+            "name": "TEXT NOT NULL",
+            "project_key": "TEXT NOT NULL",
+            "artifact_type": "TEXT NOT NULL DEFAULT 'GENERIC'",
+            "status": "TEXT NOT NULL DEFAULT 'PLANNED'",
+            "producer_issue_key": "TEXT",
+            "provenance": "TEXT NOT NULL DEFAULT 'EXPLICIT_JIRA_LABEL'",
+            "confidence": "TEXT NOT NULL DEFAULT 'HIGH'",
+            "first_seen_at": "TEXT NOT NULL",
+            "last_seen_at": "TEXT NOT NULL",
+            "is_active": "INTEGER NOT NULL DEFAULT 1",
+        }.items():
+            if col not in existing:
+                conn.execute(f"ALTER TABLE project_artifacts ADD COLUMN {col} {col_type}")
+
+    # 2. artifact_dependencies
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='artifact_dependencies'"
+    )
+    if not cursor.fetchone():
+        logger.info("Migrating database: creating artifact_dependencies table...")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS artifact_dependencies (
+                id TEXT PRIMARY KEY,
+                artifact_id TEXT NOT NULL,
+                issue_key TEXT NOT NULL,
+                relationship_type TEXT NOT NULL,
+                provenance TEXT NOT NULL DEFAULT 'EXPLICIT_JIRA_LABEL',
+                confidence TEXT NOT NULL DEFAULT 'HIGH',
+                is_inferred INTEGER NOT NULL DEFAULT 0,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+    else:
+        cursor = conn.execute("PRAGMA table_info(artifact_dependencies)")
+        existing = {
+            row["name"] if hasattr(row, "keys") and "name" in row.keys() else row[1]
+            for row in cursor.fetchall()
+        }
+        for col, col_type in {
+            "artifact_id": "TEXT NOT NULL",
+            "issue_key": "TEXT NOT NULL",
+            "relationship_type": "TEXT NOT NULL",
+            "provenance": "TEXT NOT NULL DEFAULT 'EXPLICIT_JIRA_LABEL'",
+            "confidence": "TEXT NOT NULL DEFAULT 'HIGH'",
+            "is_inferred": "INTEGER NOT NULL DEFAULT 0",
+            "first_seen_at": "TEXT NOT NULL",
+            "last_seen_at": "TEXT NOT NULL",
+            "is_active": "INTEGER NOT NULL DEFAULT 1",
+        }.items():
+            if col not in existing:
+                conn.execute(f"ALTER TABLE artifact_dependencies ADD COLUMN {col} {col_type}")
+
+
 # Authoritative employee designations and Jira saved filter assignments
 AUTHORITATIVE_EMPLOYEE_ROLES = [
     {
@@ -1678,6 +1805,7 @@ def _apply_migrations(conn) -> None:
     _migrate_jira_issue_state(conn)
     _migrate_jira_worklogs(conn)
     _migrate_jira_issue_links(conn)
+    _migrate_artifact_tables(conn)
     _migrate_actions(conn)
     _migrate_performance_tables(conn)
     _migrate_employee_roles(conn)
@@ -1705,6 +1833,27 @@ def _ensure_post_migration_indexes(conn) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_jira_issue_links_class ON jira_issue_links(classification)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_project_artifacts_proj ON project_artifacts(project_key)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_project_artifacts_name ON project_artifacts(name)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_project_artifacts_prod ON project_artifacts(producer_issue_key)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_project_artifacts_prov ON project_artifacts(provenance)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_art_dep_art ON artifact_dependencies(artifact_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_art_dep_issue ON artifact_dependencies(issue_key)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_art_dep_rel ON artifact_dependencies(relationship_type)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_perf_profiles_run ON resource_performance_profiles(analysis_run_id)"

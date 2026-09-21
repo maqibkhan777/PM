@@ -26,6 +26,7 @@ from app.database.repositories import (
     JiraWorklogRepository,
     JiraIssueLinkRepository,
 )
+from app.core.planning.artifacts import ArtifactEngine
 from app.utils.logger import logger
 from app.utils.time import utc_now, utc_now_iso, parse_iso_datetime, format_iso
 
@@ -62,6 +63,7 @@ class JiraPoller:
         self.issue_state_repo = JiraIssueStateRepository(self.mgr)
         self.worklog_repo = JiraWorklogRepository(self.mgr)
         self.link_repo = JiraIssueLinkRepository(self.mgr)
+        self.artifact_engine = ArtifactEngine(self.mgr)
         self.normalizer = JiraEventNormalizer()
 
     async def poll(self) -> Dict[str, Any]:
@@ -632,6 +634,22 @@ class JiraPoller:
             except Exception as link_err:
                 logger.warning(
                     f"Notice during issue link normalization ({src_key} -> {tgt_key}, {link_name}): {link_err}"
+                )
+
+        # ----------------------------------------------------------------------
+        # Update Local project_artifacts Projection (Opt-in Label Convention)
+        # ----------------------------------------------------------------------
+        if labels_list:
+            try:
+                self.artifact_engine.extract_artifacts_from_labels(
+                    issue_key=task_key,
+                    project_key=project_key or "GLOBAL",
+                    labels=labels_list,
+                    observed_at=now_str,
+                )
+            except Exception as art_err:
+                logger.warning(
+                    f"Notice during artifact label extraction for {task_key}: {art_err}"
                 )
 
         # ----------------------------------------------------------------------

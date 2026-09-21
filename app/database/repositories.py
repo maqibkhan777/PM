@@ -1362,6 +1362,187 @@ class JiraIssueLinkRepository:
             return cursor.fetchone()[0]
 
 
+class ArtifactRepository:
+    """Repository for persisting, querying, and managing work products and their dependencies."""
+
+    def __init__(self, manager: Optional[DatabaseManager] = None):
+        self.mgr = manager or db_manager
+
+    @staticmethod
+    def _generate_artifact_id(project_key: str, artifact_name: str) -> str:
+        """Deterministic ID: project_key:normalized_artifact_name."""
+        p_key = project_key.strip().upper() if project_key else "GLOBAL"
+        a_name = artifact_name.strip().lower()
+        return f"{p_key}:{a_name}"
+
+    @staticmethod
+    def _generate_relationship_id(artifact_id: str, issue_key: str, relationship_type: str) -> str:
+        """Deterministic ID: artifact_id:issue_key:relationship_type."""
+        return f"{artifact_id}:{issue_key.strip().upper()}:{relationship_type.strip().upper()}"
+
+    def upsert_artifact(
+        self,
+        name: str,
+        project_key: str,
+        artifact_type: str = "GENERIC",
+        status: str = "PLANNED",
+        producer_issue_key: Optional[str] = None,
+        provenance: str = "EXPLICIT_JIRA_LABEL",
+        confidence: str = "HIGH",
+        observed_at: Optional[str] = None,
+        is_active: bool = True,
+    ) -> str:
+        """Idempotently insert or update a tracked work product artifact."""
+        clean_name = name.strip().lower()
+        clean_proj = project_key.strip().upper() if project_key else "GLOBAL"
+        art_id = self._generate_artifact_id(clean_proj, clean_name)
+        now_str = observed_at or utc_now_iso()
+        prod_key = producer_issue_key.strip().upper() if producer_issue_key else None
+
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO project_artifacts (
+                    id, name, project_key, artifact_type, status,
+                    producer_issue_key, provenance, confidence,
+                    first_seen_at, last_seen_at, is_active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    artifact_type = excluded.artifact_type,
+                    status = excluded.status,
+                    producer_issue_key = COALESCE(excluded.producer_issue_key, project_artifacts.producer_issue_key),
+                    provenance = excluded.provenance,
+                    confidence = excluded.confidence,
+                    last_seen_at = excluded.last_seen_at,
+                    is_active = excluded.is_active
+                """,
+                (
+                    art_id,
+                    clean_name,
+                    clean_proj,
+                    artifact_type,
+                    status,
+                    prod_key,
+                    provenance,
+                    confidence,
+                    now_str,
+                    now_str,
+                    1 if is_active else 0,
+                ),
+            )
+        return art_id
+
+    def upsert_relationship(
+        self,
+        artifact_id: str,
+        issue_key: str,
+        relationship_type: str,
+        provenance: str = "EXPLICIT_JIRA_LABEL",
+        confidence: str = "HIGH",
+        is_inferred: bool = False,
+        observed_at: Optional[str] = None,
+        is_active: bool = True,
+    ) -> str:
+        """Idempotently insert or update an artifact producer/consumer relationship."""
+        clean_issue = issue_key.strip().upper()
+        clean_rel = relationship_type.strip().upper()
+        rel_id = self._generate_relationship_id(artifact_id, clean_issue, clean_rel)
+        now_str = observed_at or utc_now_iso()
+
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO artifact_dependencies (
+                    id, artifact_id, issue_key, relationship_type,
+                    provenance, confidence, is_inferred,
+                    first_seen_at, last_seen_at, is_active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    provenance = excluded.provenance,
+                    confidence = excluded.confidence,
+                    is_inferred = excluded.is_inferred,
+                    last_seen_at = excluded.last_seen_at,
+                    is_active = excluded.is_active
+                """,
+                (
+                    rel_id,
+                    artifact_id,
+                    clean_issue,
+                    clean_rel,
+                    provenance,
+                    confidence,
+                    1 if is_inferred else 0,
+                    now_str,
+                    now_str,
+                    1 if is_active else 0,
+                ),
+            )
+        return rel_id
+
+    def get_artifact(self, artifact_id: str) -> Optional[Dict[str, Any]]:
+        with self.mgr.session() as conn:
+            cursor = conn.execute("SELECT * FROM project_artifacts WHERE id = ?", (artifact_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def list_artifacts_by_project(self, project_key: str, active_only: bool = True) -> List[Dict[str, Any]]:
+        clean_proj = project_key.strip().upper()
+        query = "SELECT * FROM project_artifacts WHERE project_key = ?"
+        params: List[Any] = [clean_proj]
+        if active_only:
+            query += " AND is_active = 1"
+        query += " ORDER BY name ASC"
+        with self.mgr.session() as conn:
+            cursor = conn.execute(query, tuple(params))
+            return [dict(r) for r in cursor.fetchall()]
+
+    def list_all_artifacts(self, active_only: bool = True) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM project_artifacts"
+        if active_only:
+            query += " WHERE is_active = 1"
+        query += " ORDER BY project_key ASC, name ASC"
+        with self.mgr.session() as conn:
+            cursor = conn.execute(query)
+            return [dict(r) for r in cursor.fetchall()]
+
+    def list_relationships_for_artifact(self, artifact_id: str, active_only: bool = True) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM artifact_dependencies WHERE artifact_id = ?"
+        params: List[Any] = [artifact_id]
+        if active_only:
+            query += " AND is_active = 1"
+        query += " ORDER BY relationship_type ASC, issue_key ASC"
+        with self.mgr.session() as conn:
+            cursor = conn.execute(query, tuple(params))
+            return [dict(r) for r in cursor.fetchall()]
+
+    def list_relationships_for_issue(self, issue_key: str, active_only: bool = True) -> List[Dict[str, Any]]:
+        clean_issue = issue_key.strip().upper()
+        query = "SELECT * FROM artifact_dependencies WHERE issue_key = ?"
+        params: List[Any] = [clean_issue]
+        if active_only:
+            query += " AND is_active = 1"
+        query += " ORDER BY relationship_type ASC, artifact_id ASC"
+        with self.mgr.session() as conn:
+            cursor = conn.execute(query, tuple(params))
+            return [dict(r) for r in cursor.fetchall()]
+
+    def count_artifacts(self, active_only: bool = True) -> int:
+        with self.mgr.session() as conn:
+            if active_only:
+                cursor = conn.execute("SELECT COUNT(*) FROM project_artifacts WHERE is_active = 1")
+            else:
+                cursor = conn.execute("SELECT COUNT(*) FROM project_artifacts")
+            return cursor.fetchone()[0]
+
+    def count_relationships(self, active_only: bool = True) -> int:
+        with self.mgr.session() as conn:
+            if active_only:
+                cursor = conn.execute("SELECT COUNT(*) FROM artifact_dependencies WHERE is_active = 1")
+            else:
+                cursor = conn.execute("SELECT COUNT(*) FROM artifact_dependencies")
+            return cursor.fetchone()[0]
+
+
 class DailyReportHistoryRepository:
     """Repository for recording and checking daily report generation history for idempotency."""
 

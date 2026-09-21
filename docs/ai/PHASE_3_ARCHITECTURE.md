@@ -511,3 +511,35 @@ Deterministic enum `DependencyClassification` mapped in `app/core/models/plannin
 - **Topological Sorting**: Kahn's algorithm with deterministic tie-breaking on sorted issue keys.
 - **Cross-Resource Support**: Graph operations operate purely on issue keys ($A \to B$), naturally accommodating cross-resource handoffs without coupling to individual employee identities.
 
+---
+
+## 25. Phase 3B Implementation: Artifact Model & Work Product Handoff Foundation
+
+### 25.1 Canonical Artifact Models & Persistence
+- Normalized tables added in `app/database/schema.py`:
+  - **`project_artifacts`**: `id (PK: project_key:name)`, `name`, `project_key`, `artifact_type`, `status`, `producer_issue_key`, `provenance`, `confidence`, `first_seen_at`, `last_seen_at`, `is_active`.
+  - **`artifact_dependencies`**: `id (PK: artifact_id:issue_key:relationship_type)`, `artifact_id`, `issue_key`, `relationship_type` (`PRODUCES` / `CONSUMES`), `provenance`, `confidence`, `is_inferred`, `first_seen_at`, `last_seen_at`, `is_active`.
+  - Supported `ArtifactType`: `SPECIFICATION`, `DESIGN_ASSET`, `API_CONTRACT`, `DATABASE_MIGRATION`, `BUILD_PACKAGE`, `TEST_SUITE`, `DOCUMENTATION`, `GENERIC`.
+  - Supported `ArtifactProvenance`: `EXPLICIT_JIRA_LABEL`, `EXPLICIT_JIRA_COMPONENT`, `EXPLICIT_CONFIGURATION`, `TASK_NATURE_INFERENCE`, `MANUAL`.
+  - Supported `ArtifactStatus`: `PLANNED`, `IN_PROGRESS`, `AVAILABLE`, `SUPERSEDED`, `UNKNOWN`.
+  - Idempotent upsert via `ArtifactRepository` in `app/database/repositories.py`.
+
+### 25.2 Explicit Opt-In Label Convention
+- The system recognizes opt-in labels on Jira issues:
+  - `artifact:<name>` (e.g. `artifact:api-spec`): Declares interest in an artifact without fixed producer/consumer role.
+  - `produces:<name>` or `produces:artifact:<name>`: Explicitly records the task as the authoritative `PRODUCES` entity.
+  - `consumes:<name>` or `consumes:artifact:<name>`: Explicitly records the task as a `CONSUMES` entity.
+- Non-artifact labels (e.g., `bug`, `frontend`, `v1.2.3`) and malformed labels are strictly ignored without logging noise or exceptions.
+- Integrated directly into `JiraPoller` without making additional Jira API calls.
+
+### 25.3 Task-Nature Advisory Inference
+- Implemented in `ArtifactEngine.infer_handoff_artifact()`:
+  - Evaluates functional transitions between dependent tasks (e.g., `DESIGN` $\to$ `DEVELOPMENT` generates `design-asset`, `DEVELOPMENT` $\to$ `QA_TESTING` generates `build-package`).
+  - Marked with `provenance=TASK_NATURE_INFERENCE`, `confidence=MEDIUM`, and `is_inferred=True`.
+
+### 25.4 Strict Separation from HARD_BLOCK Scheduling
+- **Critical Architectural Invariant**: Inferred artifacts are advisory evidence.
+- They are NOT authoritative Jira links and MUST NOT be converted into `HARD_BLOCK` edges in `DependencyGraph`.
+- `DependencyGraph` remains strictly reserved for confirmed, authoritative Jira dependency semantics.
+
+

@@ -96,3 +96,75 @@ class TopologicalSortResult(BaseModel):
     is_acyclic: bool
     ordered_keys: List[str] = Field(default_factory=list, description="Deterministically ordered issue keys")
     cycle_details: Optional[CycleDetectionResult] = None
+
+
+# -------------------------------------------------------------------------
+# Phase 3B: Artifact & Work Product Domain Models
+# -------------------------------------------------------------------------
+
+class ArtifactType(str, Enum):
+    """Standard categorized work product types."""
+    SPECIFICATION = "SPECIFICATION"
+    DESIGN_ASSET = "DESIGN_ASSET"
+    API_CONTRACT = "API_CONTRACT"
+    DATABASE_MIGRATION = "DATABASE_MIGRATION"
+    BUILD_PACKAGE = "BUILD_PACKAGE"
+    TEST_SUITE = "TEST_SUITE"
+    DOCUMENTATION = "DOCUMENTATION"
+    GENERIC = "GENERIC"
+
+
+class ArtifactProvenance(str, Enum):
+    """Authoritative source or method through which the artifact/relationship was identified."""
+    EXPLICIT_JIRA_LABEL = "EXPLICIT_JIRA_LABEL"
+    EXPLICIT_JIRA_COMPONENT = "EXPLICIT_JIRA_COMPONENT"
+    EXPLICIT_CONFIGURATION = "EXPLICIT_CONFIGURATION"
+    TASK_NATURE_INFERENCE = "TASK_NATURE_INFERENCE"
+    MANUAL = "MANUAL"
+
+
+class ArtifactStatus(str, Enum):
+    """Operational status of a work artifact."""
+    PLANNED = "PLANNED"
+    IN_PROGRESS = "IN_PROGRESS"
+    AVAILABLE = "AVAILABLE"
+    SUPERSEDED = "SUPERSEDED"
+    UNKNOWN = "UNKNOWN"
+
+
+class ArtifactRecord(BaseModel):
+    """Canonical model for a tracked work product or deliverable."""
+    id: str = Field(..., description="Deterministic unique ID: project_key:normalized_artifact_name")
+    name: str = Field(..., description="Normalized artifact name e.g. 'api-spec', 'figma-design'")
+    project_key: str = Field(..., description="Scoping Jira project key e.g. 'WSSS', 'GLOBAL'")
+    artifact_type: ArtifactType = Field(default=ArtifactType.GENERIC)
+    status: ArtifactStatus = Field(default=ArtifactStatus.PLANNED)
+    producer_issue_key: Optional[str] = Field(None, description="Jira issue key that produces this artifact")
+    provenance: ArtifactProvenance = Field(default=ArtifactProvenance.EXPLICIT_JIRA_LABEL)
+    confidence: str = Field(default="HIGH", description="Confidence level: HIGH, MEDIUM, LOW")
+    first_seen_at: str
+    last_seen_at: str
+    is_active: bool = True
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+
+class ArtifactRelationshipRecord(BaseModel):
+    """Relationship indicating that a task produces or consumes an artifact."""
+    id: str = Field(..., description="Deterministic unique ID: artifact_id:issue_key:relationship_type")
+    artifact_id: str = Field(..., description="ID of the associated artifact")
+    issue_key: str = Field(..., description="Jira issue key")
+    relationship_type: str = Field(..., description="'PRODUCES' or 'CONSUMES'")
+    provenance: ArtifactProvenance = Field(default=ArtifactProvenance.EXPLICIT_JIRA_LABEL)
+    confidence: str = Field(default="HIGH")
+    is_inferred: bool = Field(default=False, description="True if inferred rather than explicitly declared")
+    first_seen_at: str
+    last_seen_at: str
+    is_active: bool = True
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
