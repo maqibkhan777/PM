@@ -179,6 +179,9 @@ class Settings(BaseSettings):
     PERFORMANCE_FALLBACK_HOURS_COMPLEXITY_4: float = 8.0
     PERFORMANCE_FALLBACK_HOURS_COMPLEXITY_5: float = 14.0
 
+    # Deterministic Planning Horizon (Phase 3)
+    PLANNING_HORIZON_WORKING_DAYS: int = 10  # Standard 2-week planning horizon (Mon-Fri)
+
     # Live QA Framework Settings
     LIVE_QA_ENABLED: bool = False
     LIVE_QA_JIRA_ISSUE: str = "TREN-378"

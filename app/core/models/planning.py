@@ -336,3 +336,102 @@ class TeamWorkloadSnapshot(BaseModel):
         extra = "allow"
 
 
+# -------------------------------------------------------------------------
+# Phase 3D: Deterministic Team Timeline & Bottleneck Forecasting Models
+# -------------------------------------------------------------------------
+
+class BottleneckType(str, Enum):
+    """Deterministic categorization of operational and schedule bottlenecks."""
+    OVERLOADED_RESOURCE = "OVERLOADED_RESOURCE"
+    DEPENDENCY_CHAIN = "DEPENDENCY_CHAIN"
+    BLOCKED_TASK = "BLOCKED_TASK"
+    ARTIFACT_HANDOFF = "ARTIFACT_HANDOFF"
+    INSUFFICIENT_CAPACITY = "INSUFFICIENT_CAPACITY"
+    LONG_DURATION_TASK = "LONG_DURATION_TASK"
+    DEPENDENCY_CYCLE = "DEPENDENCY_CYCLE"
+    MISSING_DURATION_EVIDENCE = "MISSING_DURATION_EVIDENCE"
+
+
+class Bottleneck(BaseModel):
+    """Deterministic, rule-based operational bottleneck signal.
+    
+    Contains strictly operational and analytical planning facts.
+    Contains ZERO employee scoring, rankings, or productivity ratings.
+    """
+    type: BottleneckType
+    affected_issue_key: Optional[str] = None
+    affected_resource_id: Optional[str] = None
+    severity: str = "MEDIUM"  # "HIGH", "MEDIUM", "LOW"
+    evidence: str = ""
+    data_quality: str = "UNKNOWN"  # "HIGH", "MEDIUM", "LOW", "UNKNOWN"
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+
+class ScheduleConstraint(BaseModel):
+    """A directed dependency or handoff constraint between two tasks in the timeline."""
+    source_issue_key: str
+    target_issue_key: str
+    constraint_type: str  # "HARD_BLOCK", "ARTIFACT_HANDOFF", "CAUSAL_DEPENDENCY", "VERIFICATION_DEPENDENCY", etc.
+    is_hard_block: bool = True
+    description: str = ""
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+
+class TaskScheduleProjection(BaseModel):
+    """Deterministic projected schedule timeline for an individual active task.
+    
+    All dates are analytical projections, NOT committed Jira due dates or Jira mutations.
+    """
+    issue_key: str
+    resource_id: str
+    resource_display_name: str
+    current_status: str = "Unknown"
+    estimated_effort_hours: float = 0.0
+    duration_evidence_source: str = "unavailable"
+    duration_confidence: str = "UNKNOWN"
+    dependency_predecessors: List[str] = Field(default_factory=list)
+    dependency_successors: List[str] = Field(default_factory=list)
+    earliest_feasible_start_date: str  # YYYY-MM-DD
+    projected_start_date: str          # YYYY-MM-DD
+    projected_completion_date: str     # YYYY-MM-DD
+    working_days_needed: float = 0.0
+    is_blocked_by_dependency: bool = False
+    is_beyond_horizon: bool = False
+    critical_chain_position: Optional[int] = None
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+
+class TeamScheduleProjection(BaseModel):
+    """Deterministic team-level timeline projection and bottleneck analysis.
+    
+    Composes ResourceQueueSnapshots, DependencyDAG, and Artifact handoffs.
+    Does NOT write to Jira, reschedule tasks, or call AI/DeepSeek.
+    """
+    forecast_timestamp: str
+    anchor_date: str  # YYYY-MM-DD
+    planning_horizon_working_days: int = 10
+    horizon_end_date: str  # YYYY-MM-DD
+    schedule_valid: bool = True
+    tasks_projected_count: int = 0
+    tasks_beyond_horizon_count: int = 0
+    task_projections: List[TaskScheduleProjection] = Field(default_factory=list)
+    longest_dependency_chain: List[str] = Field(default_factory=list)
+    dependency_constraints: List[ScheduleConstraint] = Field(default_factory=list)
+    bottlenecks: List[Bottleneck] = Field(default_factory=list)
+    data_quality_summary: Dict[str, Any] = Field(default_factory=dict)
+    error_message: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+

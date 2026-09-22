@@ -584,5 +584,53 @@ Implemented in `app/core/models/planning.py`:
 - **Queue Completeness**: `QUEUE_COMPLETE` (all tasks estimated), `QUEUE_PARTIAL` (relying on complexity fallbacks), `QUEUE_EMPTY`.
 - **Freshness**: On-demand calculation querying local SQLite projections with zero background workers or persistent snapshot table bloat.
 
+---
 
+## 27. Phase 3D Implementation: Deterministic Team Timeline & Bottleneck Forecaster
 
+### 27.1 Purpose & Architectural Separation
+- **Core Mission**: Build a deterministic `TeamScheduleForecaster` that composes `ResourceQueueSnapshot`s, `DependencyGraph` DAGs, and `ArtifactEngine` handoff relationships to produce a feasible, explainable timeline projection and bottleneck analysis.
+- **Analytical Evidence Only**: Projected dates are analytical evidence intended exclusively for Phase 3E (`PlanningContext`) and downstream AI reasoning.
+- **Strict Invariants & Non-Goals**:
+  - ZERO AI calls (no DeepSeek, no OpenAI).
+  - ZERO Jira mutations (no writing Jira due dates, comments, fields, or priorities).
+  - ZERO Action Engine executions.
+  - ZERO automatic reassignments or task rescheduling.
+  - ZERO employee scoring, rankings, or productivity leaderboards.
+
+### 27.2 Multi-Resource Concurrency & Single-Resource Serialization
+- **Parallel Work**: Different resources execute their respective queues concurrently in parallel.
+- **Single-Resource Serialization**: Each resource works on assigned tasks sequentially based on established queue priority (priority rank, due date, issue key).
+- **DAG Gating**: For any task $T$, its projected start date is:
+  $$\text{projected\_start}(T) = \max(\text{resource\_available}(\text{assignee}), \max_{P \in \text{HARD\_PREDECESSORS}}(\text{projected\_completion}(P)))$$
+- **Non-Hard Dependencies**: Causal, verification, informational, and unknown link types do not block scheduling serially. They are preserved as structured `ScheduleConstraint` records.
+
+### 27.3 Artifact Handoffs
+- Explicit and inferred artifact relationships from Phase 3B are surfaced as `ScheduleConstraint` records and advisory `Bottleneck` signals (`type=ARTIFACT_HANDOFF`).
+- Inferred artifacts remain advisory and are never promoted into `HARD_BLOCK` scheduling constraints.
+
+### 27.4 Cycle Detection & Graceful Fallback
+- `DependencyGraph.detect_cycles()` is evaluated prior to simulation.
+- If a cycle is detected:
+  - `schedule_valid` is set to `False`.
+  - A `DEPENDENCY_CYCLE` bottleneck (`severity=HIGH`) is generated detailing the cycle path.
+  - A structured, non-failing placeholder projection is returned without crashing the PM Agent.
+
+### 27.5 Working Days, Calendar & Horizon
+- Uses `CapacityCalculator.project_completion_date` to advance work across standard working days (Mon-Fri) while strictly skipping weekends.
+- Planning horizon defaults to `settings.PLANNING_HORIZON_WORKING_DAYS` (10 working days / 2 weeks), with explicit per-call override support.
+- Tasks completing past the horizon boundary are flagged with `is_beyond_horizon=True` and accounted for in `tasks_beyond_horizon_count` without discarding them.
+
+### 27.6 Bottleneck Detection Rules
+Deterministic, rule-based operational bottleneck detection:
+1. `OVERLOADED_RESOURCE`: Committed workload exceeds available capacity over the planning horizon (`HIGH` severity if ratio $\ge 1.4$ or `SATURATED`).
+2. `INSUFFICIENT_CAPACITY`: Zero daily capacity or `CAPACITY_UNAVAILABLE`.
+3. `DEPENDENCY_CHAIN`: Sequential `HARD_BLOCK` chains with $\ge 3$ tasks (`HIGH` if $\ge 5$).
+4. `BLOCKED_TASK`: Tasks waiting on hard predecessors.
+5. `LONG_DURATION_TASK`: Tasks with estimated effort $\ge 20$ hours ($\ge 3$ working days).
+6. `MISSING_DURATION_EVIDENCE`: Unestimated tasks relying on fallback heuristics.
+7. `DEPENDENCY_CYCLE`: Circular dependencies blocking valid topological scheduling.
+8. `ARTIFACT_HANDOFF`: Contextual deliverable handoff between tasks.
+
+### 27.7 Input-Order Independence & Determinism
+All inputs, resource queues, link records, and ready queues are sorted by canonical keys (`resource_id`, `priority_rank`, `duedate`, `issue_key`) ensuring identical outputs regardless of input collection ordering.

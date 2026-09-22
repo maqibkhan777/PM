@@ -3,6 +3,7 @@
 from app.core.planning.dag import DependencyGraph
 from app.core.planning.artifacts import ArtifactEngine, parse_artifact_label, infer_artifact_type_from_name
 from app.core.planning.queue_composer import ResourceQueueComposer
+from app.core.planning.forecaster import TeamScheduleForecaster
 from app.core.models.planning import (
     DependencyClassification,
     JiraIssueLinkRecord,
@@ -23,6 +24,11 @@ from app.core.models.planning import (
     ResourceArtifactContext,
     ResourceQueueSnapshot,
     TeamWorkloadSnapshot,
+    BottleneckType,
+    Bottleneck,
+    ScheduleConstraint,
+    TaskScheduleProjection,
+    TeamScheduleProjection,
 )
 
 __all__ = [
@@ -50,6 +56,12 @@ __all__ = [
     "ResourceQueueSnapshot",
     "TeamWorkloadSnapshot",
     "ResourceQueueComposer",
+    "BottleneckType",
+    "Bottleneck",
+    "ScheduleConstraint",
+    "TaskScheduleProjection",
+    "TeamScheduleProjection",
+    "TeamScheduleForecaster",
 ]
 
 
