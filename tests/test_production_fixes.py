@@ -6,6 +6,7 @@
 
 import asyncio
 import datetime
+import json
 import zoneinfo
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
@@ -808,3 +809,339 @@ class TestDailyActivityScheduler:
             mock_settings.DAILY_ACTIVITY_REPORT_ENABLED = False
             result = await scheduler._evaluate_daily_activity_report()
         assert result is None
+
+
+# ============================================================================
+# REGRESSION SUITE FOR LIVE VM INVESTIGATION FIXES
+# ============================================================================
+
+class TestProductionReliabilityRegressions:
+    """Deterministic regression tests for all 4 production issues."""
+
+    # --- ISSUE 1: Customer Comments & Bot Suppression in #notifications ---
+
+    def test_customer_comment_suppressed(self):
+        """Customer comment with accountType='customer' must NOT reach #notifications."""
+        rule = CommentNotificationRule()
+        event = TaskCommentAdded(
+            source="jira",
+            external_event_id="jira:WPEPSUP-1962:comment:648055",
+            timestamp="2026-09-22T10:01:41+05:00",
+            actor_id="customer-acc-1",
+            actor_name="adambridewell@icloud.com",
+            project_key="WPEPSUP",
+            task_id="1962",
+            task_key="WPEPSUP-1962",
+            comment_id="648055",
+            comment_body="Opt-In to Recurring Payments for customers",
+            author_id="customer-acc-1",
+            author_name="adambridewell@icloud.com",
+            payload={
+                "issue": {
+                    "key": "WPEPSUP-1962",
+                    "fields": {
+                        "summary": "Customer Payment Issue",
+                        "status": {"name": "In Progress"},
+                        "customerRequestType": {"id": "1"},
+                    },
+                },
+                "comment": {
+                    "id": "648055",
+                    "author": {
+                        "accountId": "customer-acc-1",
+                        "displayName": "adambridewell@icloud.com",
+                        "accountType": "customer",
+                    },
+                },
+            },
+        )
+        actions = rule.evaluate(event)
+        assert len(actions) == 0, "Customer comments must be strictly suppressed"
+
+    def test_automation_for_jira_bot_comment_suppressed(self):
+        """'Automation for Jira' bot comment must NOT reach #notifications."""
+        rule = CommentNotificationRule()
+        event = TaskCommentAdded(
+            source="jira",
+            external_event_id="jira:AFMS-549:comment:648050",
+            timestamp="2026-09-22T04:01:51Z",
+            actor_id="bot-auto-jira",
+            actor_name="Automation for Jira",
+            project_key="AFMS",
+            task_id="549",
+            task_key="AFMS-549",
+            comment_id="648050",
+            comment_body="Hello, we are following up regarding your request...",
+            author_id="bot-auto-jira",
+            author_name="Automation for Jira",
+            payload={
+                "issue": {
+                    "key": "AFMS-549",
+                    "fields": {
+                        "summary": "Invoice Name Request",
+                        "status": {"name": "Waiting for customer"},
+                    },
+                },
+                "comment": {
+                    "id": "648050",
+                    "author": {
+                        "accountId": "bot-auto-jira",
+                        "displayName": "Automation for Jira",
+                        "accountType": "app",
+                    },
+                },
+            },
+        )
+        actions = rule.evaluate(event)
+        assert len(actions) == 0, "Bot comments must be strictly suppressed"
+
+    def test_customer_mentioning_pm_is_suppressed(self):
+        """Even if a customer mentions the PM, it must NOT reach #notifications."""
+        rule = CommentNotificationRule()
+        event = TaskCommentAdded(
+            source="jira",
+            external_event_id="jira:WPEPSUP-1963:comment:648056",
+            timestamp="2026-09-22T10:05:00+05:00",
+            actor_id="customer-acc-2",
+            actor_name="external_client@yahoo.com",
+            project_key="WPEPSUP",
+            task_id="1963",
+            task_key="WPEPSUP-1963",
+            comment_id="648056",
+            comment_body="Hey @Aqib Khan please fix this urgently!",
+            author_id="customer-acc-2",
+            author_name="external_client@yahoo.com",
+            mentioned_account_ids=["jira-user-me-123"],
+            mentioned_display_names=["Aqib Khan"],
+            payload={
+                "issue": {
+                    "key": "WPEPSUP-1963",
+                    "fields": {
+                        "summary": "Urgent Support Ticket",
+                        "status": {"name": "Open"},
+                    },
+                },
+                "comment": {
+                    "id": "648056",
+                    "author": {
+                        "accountId": "customer-acc-2",
+                        "displayName": "external_client@yahoo.com",
+                        "accountType": "customer",
+                    },
+                },
+            },
+        )
+        actions = rule.evaluate(event)
+        assert len(actions) == 0, "Customer mentions must NOT bypass author filtering"
+
+    def test_internal_member_comment_dispatches(self):
+        """Legitimate internal team member comment must reach #notifications."""
+        rule = CommentNotificationRule()
+        event = TaskCommentAdded(
+            source="jira",
+            external_event_id="jira:GF-412:comment:648058",
+            timestamp="2026-09-22T05:09:08Z",
+            actor_id="61ee41431c42100069344a09",
+            actor_name="Syed ali",
+            project_key="GF",
+            task_id="412",
+            task_key="GF-412",
+            comment_id="648058",
+            comment_body="Release branch created and PR submitted.",
+            author_id="61ee41431c42100069344a09",
+            author_name="Syed ali",
+            payload={
+                "issue": {
+                    "key": "GF-412",
+                    "fields": {
+                        "summary": "Release | Gutena Forms v 2.1.1",
+                        "status": {"name": "In Progress"},
+                    },
+                },
+            },
+        )
+        actions = rule.evaluate(event)
+        assert len(actions) == 1
+        assert actions[0].parameters["channel"] == settings.JIRA_NOTIFICATION_DISCORD_CHANNEL
+        assert "💬 Jira Comment Added" in actions[0].parameters["title"]
+
+    # --- ISSUE 2: Mubashir Stale Support Locked 5-Condition Logic ---
+
+    @pytest.mark.asyncio
+    async def test_mubashir_stale_support_negative_different_assignee(self):
+        """Ticket reported by Mubashir but assigned to someone else (e.g. Aqib Khan) must NOT qualify."""
+        from app.services.scheduler import PeriodicScheduler
+        scheduler = PeriodicScheduler()
+        mubashir_id = "712020:e268bcd8-d981-4b4d-992d-d5694745df8b"
+
+        candidate = {
+            "key": "SMTPSUPORT-1197",
+            "fields": {
+                "summary": "SMTP Support Request",
+                "status": {"name": "To Do"},
+                "reporter": {"accountId": mubashir_id},
+                "assignee": {"accountId": "712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0", "displayName": "Aqib Khan"},
+                "updated": "2026-09-15T10:00:00Z",
+                "issuetype": {"name": "Support"},
+            },
+            "last_activity_at": "2026-09-15T10:00:00Z",
+        }
+
+        with patch("app.services.scheduler.settings") as mock_settings:
+            mock_settings.MUBASHIR_STALE_SUPPORT_ENABLED = True
+            mock_settings.is_jira_configured.return_value = False
+            # Seed local projection cache with candidate
+            with scheduler.mgr.session() as conn:
+                conn.execute("DELETE FROM jira_issue_state")
+                conn.execute(
+                    """
+                    INSERT INTO jira_issue_state (
+                        jira_issue_key, summary, status, issue_type,
+                        assignee, last_seen_at, last_activity_at, raw_reference
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "SMTPSUPORT-1197",
+                        "SMTP Support Request",
+                        "To Do",
+                        "Support",
+                        "Aqib Khan",
+                        "2026-09-15T10:00:00Z",
+                        "2026-09-15T10:00:00Z",
+                        json.dumps(candidate),
+                    ),
+                )
+
+            actions = await scheduler._evaluate_mubashir_stale_support_tickets()
+            assert len(actions) == 0, "Ticket assigned to Aqib Khan must NOT be acted upon"
+
+    @pytest.mark.asyncio
+    async def test_mubashir_stale_support_negative_ready_to_release(self):
+        """Ticket in 'Ready to Release' status must NOT qualify."""
+        from app.services.scheduler import PeriodicScheduler
+        scheduler = PeriodicScheduler()
+        mubashir_id = "712020:e268bcd8-d981-4b4d-992d-d5694745df8b"
+
+        candidate = {
+            "key": "WSSS-410",
+            "fields": {
+                "summary": "Support Request",
+                "status": {"name": "Ready to Release"},
+                "reporter": {"accountId": mubashir_id},
+                "assignee": {"accountId": mubashir_id},
+                "updated": "2026-09-15T10:00:00Z",
+                "issuetype": {"name": "Support"},
+            },
+            "last_activity_at": "2026-09-15T10:00:00Z",
+        }
+
+        with patch("app.services.scheduler.settings") as mock_settings:
+            mock_settings.MUBASHIR_STALE_SUPPORT_ENABLED = True
+            mock_settings.is_jira_configured.return_value = False
+            with scheduler.mgr.session() as conn:
+                conn.execute("DELETE FROM jira_issue_state")
+                conn.execute(
+                    """
+                    INSERT INTO jira_issue_state (
+                        jira_issue_key, summary, status, issue_type,
+                        assignee, last_seen_at, last_activity_at, raw_reference
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "WSSS-410",
+                        "Support Request",
+                        "Ready to Release",
+                        "Support",
+                        "Mubashir Butt",
+                        "2026-09-15T10:00:00Z",
+                        "2026-09-15T10:00:00Z",
+                        json.dumps(candidate),
+                    ),
+                )
+
+            actions = await scheduler._evaluate_mubashir_stale_support_tickets()
+            assert len(actions) == 0, "Status 'Ready to Release' must be excluded"
+
+    @pytest.mark.asyncio
+    async def test_mubashir_stale_support_positive_all_conditions_met(self):
+        """Ticket meeting ALL 5 conditions (Support + Reporter Mubashir + Assignee Mubashir + In Progress + Inactive >= 3 days) triggers AddComment."""
+        from app.services.scheduler import PeriodicScheduler
+        scheduler = PeriodicScheduler()
+        mubashir_id = "712020:e268bcd8-d981-4b4d-992d-d5694745df8b"
+
+        candidate = {
+            "key": "WSSS-415",
+            "fields": {
+                "summary": "Qualifying Stale Support Ticket",
+                "status": {"name": "In Progress"},
+                "reporter": {"accountId": mubashir_id},
+                "assignee": {"accountId": mubashir_id},
+                "updated": "2026-09-15T10:00:00Z",
+                "issuetype": {"name": "Support"},
+            },
+            "last_activity_at": "2026-09-15T10:00:00Z",
+        }
+
+        with patch("app.services.scheduler.settings") as mock_settings:
+            mock_settings.MUBASHIR_STALE_SUPPORT_ENABLED = True
+            mock_settings.is_jira_configured.return_value = False
+            with scheduler.mgr.session() as conn:
+                conn.execute("DELETE FROM jira_issue_state")
+                conn.execute(
+                    """
+                    INSERT INTO jira_issue_state (
+                        jira_issue_key, summary, status, issue_type,
+                        assignee, last_seen_at, last_activity_at, raw_reference
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "WSSS-415",
+                        "Qualifying Stale Support Ticket",
+                        "In Progress",
+                        "Support",
+                        "Mubashir Butt",
+                        "2026-09-15T10:00:00Z",
+                        "2026-09-15T10:00:00Z",
+                        json.dumps(candidate),
+                    ),
+                )
+
+            actions = await scheduler._evaluate_mubashir_stale_support_tickets()
+            assert len(actions) == 1
+            assert actions[0].action_type == "AddComment"
+            assert actions[0].target_id == "WSSS-415"
+            assert "Mubashir Butt" in actions[0].parameters.get("comment", "")
+
+    # --- ISSUE 4: Worklog Report at 00:15 targets completed previous calendar day ---
+
+    @pytest.mark.asyncio
+    async def test_worklog_report_fires_at_0015_for_yesterday(self):
+        """At 00:15 Asia/Karachi on 2026-09-22, Daily Worklog Report must target 2026-09-21."""
+        from app.services.scheduler import PeriodicScheduler
+        scheduler = PeriodicScheduler()
+        tz = zoneinfo.ZoneInfo("Asia/Karachi")
+        mock_now = datetime.datetime(2026, 9, 22, 0, 15, 0, tzinfo=tz)
+        expected_report_date = "2026-09-21"
+
+        with patch("app.services.scheduler.datetime") as mock_dt, \
+             patch("app.services.scheduler.settings") as mock_settings, \
+             patch("app.services.scheduler.timedelta", side_effect=timedelta):
+            mock_dt.now.return_value = mock_now
+            mock_dt.side_effect = lambda *a, **k: datetime.datetime(*a, **k)
+            mock_settings.DAILY_WORKLOG_REPORT_ENABLED = True
+            mock_settings.DAILY_WORKLOG_REPORT_TIMEZONE = "Asia/Karachi"
+            mock_settings.DAILY_WORKLOG_REPORT_TIME = "00:15"
+            mock_settings.get_worklog_report_time.return_value = "00:15"
+            mock_settings.JIRA_TEAM_GROUP = "Mursaleen Cluster"
+            mock_settings.is_jira_team_group_configured.return_value = True
+
+            mock_generator = MagicMock()
+            mock_generator.history_repo.has_report_been_sent.return_value = False
+            mock_generator.send_report_to_discord = AsyncMock(return_value={"status": "success", "date": expected_report_date})
+
+            with patch("app.core.reports.worklog_report.DailyWorklogReportGenerator", return_value=mock_generator):
+                result = await scheduler._evaluate_daily_worklog_report()
+
+        assert result is not None
+        report_target_date = mock_generator.history_repo.has_report_been_sent.call_args[0][1]
+        assert report_target_date == expected_report_date, f"Expected {expected_report_date}, got {report_target_date}"

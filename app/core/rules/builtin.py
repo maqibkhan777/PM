@@ -497,7 +497,54 @@ class CommentNotificationRule(BaseRule):
             if my_identity and f"@{my_identity.lower()}" in comment_body.lower():
                 is_mentioned = True
 
-        # All team-scoped comments produce notifications in #notifications.
+        # Issue 1: Author validation against customer / bot actors.
+        # #notifications must only receive internal team comments/mentions.
+        # External customer comments, Service Management portal users, and bot actors
+        # (e.g. "Automation for Jira") must NOT dispatch notifications to Discord.
+        author_id = getattr(event, "author_id", None) or event.actor_id
+        raw_author_name = getattr(event, "author_name", None) or event.actor_name
+
+        # 1. Reject known automated/system bot accounts
+        if settings.is_canonical_excluded(author_id, raw_author_name):
+            logger.debug(f"CommentNotificationRule: Suppressing comment on {task_key} from excluded/bot author '{raw_author_name}' ({author_id})")
+            return []
+
+        # Reject common Jira bot actor names
+        if raw_author_name and any(bot_sig in raw_author_name.lower() for bot_sig in ("automation for jira", "jira automation")):
+            logger.debug(f"CommentNotificationRule: Suppressing bot comment on {task_key} by '{raw_author_name}'")
+            return []
+
+        # 2. Check Jira accountType if available in payload
+        issue_obj = event.payload.get("issue") if isinstance(event.payload, dict) and "issue" in event.payload else event.payload
+        if isinstance(event.payload, dict):
+            comment_payload = event.payload.get("comment", {})
+            author_obj = comment_payload.get("author", {}) if isinstance(comment_payload, dict) else {}
+            if isinstance(author_obj, dict):
+                account_type = author_obj.get("accountType", "").strip().lower()
+                if account_type in ("customer", "app"):
+                    logger.debug(f"CommentNotificationRule: Suppressing comment on {task_key} from Jira {account_type} author '{raw_author_name}'")
+                    return []
+
+        # 3. Detect external customer by email display name or customer email format
+        if raw_author_name and ("@" in raw_author_name and "." in raw_author_name.split("@")[-1]):
+            # If the author display name is an email address (e.g. adambridewell@icloud.com)
+            # check if it's an internal employee email. If not, it is an external customer.
+            from app.database.repositories import EmployeeRoleRepository
+            role_repo = EmployeeRoleRepository()
+            assignment = role_repo.get_by_display_name(raw_author_name)
+            if not assignment:
+                logger.debug(f"CommentNotificationRule: Suppressing customer email comment on {task_key} by '{raw_author_name}'")
+                return []
+
+        # 4. Check authoritative customer creation / portal indicator from TicketCreationPolicy
+        if TicketCreationPolicy.is_authoritatively_customer_created(
+            raw_payload=event.payload if isinstance(event.payload, dict) else None,
+            is_internal_employee=False,
+        ):
+            logger.debug(f"CommentNotificationRule: Suppressing customer portal comment on {task_key}")
+            return []
+
+        # All validated team-scoped comments produce notifications in #notifications.
         # Mention-priority formatting is applied below via the is_mentioned branch.
 
         # Deduplication check: notify once per comment
@@ -509,7 +556,6 @@ class CommentNotificationRule(BaseRule):
         ):
             return []
 
-        issue_obj = event.payload.get("issue") if isinstance(event.payload, dict) and "issue" in event.payload else event.payload
         fields = issue_obj.get("fields", {}) if isinstance(issue_obj, dict) else {}
         task_title = fields.get("summary", "")
         task_status = fields.get("status", {}).get("name", "")

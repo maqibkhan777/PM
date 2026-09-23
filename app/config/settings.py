@@ -105,7 +105,7 @@ class Settings(BaseSettings):
 
     # Daily Worklog Reporting Settings
     DAILY_WORKLOG_REPORT_ENABLED: bool = True
-    DAILY_WORKLOG_REPORT_TIME: str = "23:59"  # HH:MM format
+    DAILY_WORKLOG_REPORT_TIME: str = "00:15"  # HH:MM format (runs 00:15 PKT to reliably capture previous calendar day)
     DAILY_WORKLOG_REPORT_TIMEZONE: str = "Asia/Karachi"
     DAILY_WORKLOG_REPORT_CHANNEL: str = "pm-alerts"
     DAILY_WORKLOG_EXCLUDED_ACCOUNT_IDS: str = (

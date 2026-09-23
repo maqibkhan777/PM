@@ -56,6 +56,7 @@ def slash_setup(temp_db):
     bot = DiscordBotConnector(bot_token="test_token_123", slash_handler=handler)
 
     settings.DISCORD_PM_ALLOWED_USERS = "123456789,987654321"
+    settings.DISCORD_PM_CHANNEL_ID = "pm-alerts"
     settings.DRY_RUN = False
 
     return handler, bot, mock_jira_client, engine, temp_db

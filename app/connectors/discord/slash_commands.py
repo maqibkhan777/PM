@@ -240,10 +240,14 @@ class DiscordSlashCommandHandler:
             return False
 
         configured = (getattr(settings, "DISCORD_PM_CHANNEL_ID", None) or "").strip()
-        if not configured:
-            return False
+        if configured:
+            return str(channel_id).strip() == configured
 
-        return str(channel_id).strip() == configured
+        # If Snowflake ID is not explicitly configured (e.g. local dev / tests),
+        # accept the canonical PM channel name (#pm-alerts or pm-alerts)
+        clean = str(channel_id).strip().lower()
+        pm_chan = (getattr(settings, "PM_DISCORD_CHANNEL", "pm-alerts") or "pm-alerts").strip().lower()
+        return clean in {pm_chan, f"#{pm_chan}", "pm-alerts", "#pm-alerts"}
 
     # =========================================================================
     # Canonical Subcommand Handlers (Single Source of Truth)

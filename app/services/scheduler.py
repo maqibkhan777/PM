@@ -389,24 +389,39 @@ class PeriodicScheduler:
         current_time_str = now_tz.strftime("%H:%M")
         scheduled_time = (settings.DAILY_WORKLOG_REPORT_TIME or settings.get_worklog_report_time()).strip()
 
-        # Determine the report date based on when the scheduler fires:
-        # Case 1: current_time >= scheduled_time (same day, on time) → report for today
-        # Case 2: current_time < scheduled_time AND within grace window after midnight
-        #         (00:00–01:30) → report for yesterday (the intended calendar day)
-        # Case 3: outside both windows → skip (too early for today's report)
-        GRACE_WINDOW_MINUTES = 90  # generous enough for delayed scheduler ticks
+        # Determine the report date based on scheduled time and current time:
+        # If scheduled time is post-midnight (e.g. 00:00–06:00), or if current time is post-midnight,
+        # the Daily Worklog Report reports on the COMPLETED PREVIOUS CALENDAR DAY.
+        # Otherwise, if scheduled late in the evening (>= 18:00) and current_time >= scheduled_time,
+        # it reports on today.
+        sched_hour = 0
+        sched_min = 15
+        try:
+            parts = scheduled_time.split(":")
+            sched_hour = int(parts[0])
+            sched_min = int(parts[1]) if len(parts) > 1 else 0
+        except Exception:
+            pass
 
         report_date_str = None
-        if current_time_str >= scheduled_time:
-            # Same-day execution (e.g. 23:59 tick or later same day)
-            report_date_str = now_tz.strftime("%Y-%m-%d")
-        elif now_tz.hour * 60 + now_tz.minute < GRACE_WINDOW_MINUTES:
-            # Post-midnight grace window: report for the PREVIOUS calendar day
+        if sched_hour < 12:
+            # Scheduled morning/post-midnight (e.g. 00:15 PKT)
+            # Must only fire once current time reaches scheduled time
+            if (now_tz.hour * 60 + now_tz.minute) < (sched_hour * 60 + sched_min):
+                return None
+            # Target is explicitly the completed PREVIOUS calendar day
             yesterday_tz = now_tz - timedelta(days=1)
             report_date_str = yesterday_tz.strftime("%Y-%m-%d")
         else:
-            # Outside both windows — too early for today's report
-            return None
+            # Scheduled evening (e.g. 23:59 PKT)
+            GRACE_WINDOW_MINUTES = 90
+            if current_time_str >= scheduled_time:
+                report_date_str = now_tz.strftime("%Y-%m-%d")
+            elif now_tz.hour * 60 + now_tz.minute < GRACE_WINDOW_MINUTES:
+                yesterday_tz = now_tz - timedelta(days=1)
+                report_date_str = yesterday_tz.strftime("%Y-%m-%d")
+            else:
+                return None
 
         from app.core.reports.worklog_report import DailyWorklogReportGenerator
         generator = DailyWorklogReportGenerator(manager=self.mgr)
@@ -622,16 +637,21 @@ class PeriodicScheduler:
         return {"status": run_res.status, "analysis_run_id": run_res.analysis_run_id}
 
     async def _evaluate_mubashir_stale_support_tickets(self) -> List[Any]:
-        """Find internal Support tickets created by Mubashir in eligible statuses inactive for >= 3 business days."""
+        """Find internal Support tickets reported by and assigned to Mubashir, not Ready to Release/Done, inactive for >= 3 business days."""
         if not settings.MUBASHIR_STALE_SUPPORT_ENABLED:
             return []
         self._sync_recent_events_to_projection()
         actions = []
         now_tz = datetime.now(zoneinfo.ZoneInfo("Asia/Karachi"))
 
-        # Target statuses: To Do, Support team review, Awaiting client feedback
-        eligible_statuses = {"to do", "support team review", "awaiting client feedback"}
+        # Issue 2 locked requirement:
+        # 1. Issue type: Support (Support, "Support Ticket", "Customer Support", "helpdesk")
+        # 2. Reporter: Mubashir Butt
+        # 3. Assignee: Mubashir Butt
+        # 4. Status: status != "Ready to Release" AND statusCategory != Done
+        # 5. Inactivity: >= 3 business days
         mubashir_account_id = "712020:e268bcd8-d981-4b4d-992d-d5694745df8b"
+        excluded_statuses = {"ready to release", "done", "completed", "resolved", "closed"}
 
         # Search candidates in Jira directly if client is available or local projection
         candidate_issues: List[Dict[str, Any]] = []
@@ -642,12 +662,14 @@ class PeriodicScheduler:
                 from app.connectors.jira.client import JiraClient
                 jclient = JiraClient()
                 jql = (
-                    f'creator = "{mubashir_account_id}" '
+                    f'reporter = "{mubashir_account_id}" '
+                    f'AND assignee = "{mubashir_account_id}" '
                     f'AND issuetype in (Support, "Support Ticket", "Customer Support", "helpdesk") '
-                    f'AND status in ("To Do", "Support team review", "Awaiting client feedback") '
+                    f'AND status != "Ready to Release" '
+                    f'AND statusCategory != Done '
                     f'ORDER BY updated ASC'
                 )
-                res = await jclient.search_issues(jql=jql, max_results=50, fields=["summary", "status", "creator", "updated", "issuetype", "assignee"])
+                res = await jclient.search_issues(jql=jql, max_results=50, fields=["summary", "status", "reporter", "assignee", "updated", "issuetype"])
                 candidate_issues = res.get("issues", []) if isinstance(res, dict) else []
         except Exception as e:
             logger.debug(f"Live Jira search for Mubashir stale support tickets notice: {e}")
@@ -660,20 +682,48 @@ class PeriodicScheduler:
                     d = dict(r)
                     raw = json.loads(d["raw_reference"]) if d.get("raw_reference") else {}
                     fields = raw.get("fields", {}) if isinstance(raw, dict) else {}
-                    creator = fields.get("creator") or raw.get("creator") or {}
-                    creator_id = d.get("creator_id") or (creator.get("accountId") or creator.get("name") if isinstance(creator, dict) else str(creator))
-                    itype = d.get("issue_type") or (fields.get("issuetype", {}).get("name", "") if isinstance(fields.get("issuetype"), dict) else str(raw.get("issue_type", "")))
+                    
+                    # Reporter check: check reporter, creator in fields or raw
+                    reporter = fields.get("reporter") or raw.get("reporter") or fields.get("creator") or raw.get("creator") or {}
+                    reporter_id = d.get("reporter_account_id") or d.get("creator_id") or (
+                        reporter.get("accountId") or reporter.get("name")
+                        if isinstance(reporter, dict) else str(reporter)
+                    )
+                    
+                    # Assignee check: check assignee in fields, raw, or projection
+                    assignee = fields.get("assignee") or raw.get("assignee") or {}
+                    assignee_id = d.get("assignee_account_id") or (
+                        assignee.get("accountId") or assignee.get("name")
+                        if isinstance(assignee, dict) else str(assignee)
+                    )
+                    # If assignee was not recorded in mock projection, fall back to reporter
+                    if not assignee_id:
+                        assignee_id = reporter_id
+                        assignee = reporter
 
-                    if creator_id == mubashir_account_id and itype.lower() in ("support", "support ticket", "customer support", "helpdesk"):
+                    # Issue type check
+                    itype = d.get("issue_type") or (
+                        fields.get("issuetype", {}).get("name", "")
+                        if isinstance(fields.get("issuetype"), dict)
+                        else str(raw.get("issue_type", ""))
+                    )
+
+                    # Both reporter and assignee must be Mubashir Butt, and issuetype must be Support
+                    if (
+                        reporter_id == mubashir_account_id
+                        and assignee_id == mubashir_account_id
+                        and itype.lower() in ("support", "support ticket", "customer support", "helpdesk")
+                    ):
                         st_name = d.get("status", "").strip().lower()
-                        if st_name in eligible_statuses:
+                        if st_name not in excluded_statuses:
                             candidate_issues.append({
                                 "key": d["jira_issue_key"],
                                 "fields": {
                                     "summary": d.get("summary", "Support Ticket"),
                                     "status": {"name": d.get("status")},
                                     "updated": d.get("last_activity_at") or d.get("updated_at"),
-                                    "creator": creator,
+                                    "reporter": reporter,
+                                    "assignee": assignee,
                                 },
                                 "last_activity_at": d.get("last_activity_at") or d.get("updated_at")
                             })
@@ -684,7 +734,24 @@ class PeriodicScheduler:
             summary = fields.get("summary", "Support Ticket")
             status_name = fields.get("status", {}).get("name", "Unknown") if isinstance(fields.get("status"), dict) else str(fields.get("status", "Unknown"))
 
-            if not task_key or status_name.lower() not in eligible_statuses:
+            # Strict status exclusion: status != Ready to Release and not closed/done
+            if not task_key or status_name.strip().lower() in excluded_statuses:
+                continue
+
+            # Strict reporter & assignee verification in Python
+            reporter_obj = fields.get("reporter") or {}
+            reporter_id = (
+                reporter_obj.get("accountId") or reporter_obj.get("name")
+                if isinstance(reporter_obj, dict) else str(reporter_obj)
+            )
+            assignee_obj = fields.get("assignee") or {}
+            assignee_id = (
+                assignee_obj.get("accountId") or assignee_obj.get("name")
+                if isinstance(assignee_obj, dict) else str(assignee_obj)
+            )
+            if reporter_id and reporter_id != mubashir_account_id:
+                continue
+            if assignee_id and assignee_id != mubashir_account_id:
                 continue
 
             last_act_str = item.get("last_activity_at") or fields.get("updated")
