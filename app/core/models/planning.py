@@ -435,3 +435,194 @@ class TeamScheduleProjection(BaseModel):
         extra = "allow"
 
 
+# -------------------------------------------------------------------------
+# Phase 3E: Bounded, Provider-Agnostic Planning Context Domain Models
+# -------------------------------------------------------------------------
+
+class ContextTruncationMetadata(BaseModel):
+    """Deterministic metadata recording context bounds and any truncation."""
+    is_truncated: bool = False
+    original_resource_count: int = 0
+    included_resource_count: int = 0
+    original_task_count: int = 0
+    included_task_count: int = 0
+    original_dependency_count: int = 0
+    included_dependency_count: int = 0
+    original_artifact_count: int = 0
+    included_artifact_count: int = 0
+    original_bottleneck_count: int = 0
+    included_bottleneck_count: int = 0
+    truncation_reasons: List[str] = Field(default_factory=list)
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+
+class PlanningTeamSummary(BaseModel):
+    """Bounded, high-level summary of team capacity, queue depth, and schedule state."""
+    resource_count: int = 0
+    active_task_count: int = 0
+    overloaded_resource_count: int = 0
+    blocked_task_count: int = 0
+    overdue_task_count: int = 0
+    tasks_beyond_horizon_count: int = 0
+    total_remaining_effort_hours: float = 0.0
+    total_available_capacity_hours: float = 0.0
+    schedule_valid: bool = True
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+
+class PlanningResourceContext(BaseModel):
+    """Bounded, provider-neutral representation of a single resource's planning state."""
+    resource_id: str
+    display_name: str
+    role: Optional[str] = None
+    role_category: Optional[str] = None
+    team_group: Optional[str] = None
+    active_task_count: int = 0
+    current_workload_hours: float = 0.0
+    remaining_effort_hours: float = 0.0
+    available_capacity_hours: float = 0.0
+    capacity_state: CapacityState = CapacityState.BALANCED
+    workload_pressure: str = "UNKNOWN"
+    historical_pace: ResourcePaceSummary = Field(default_factory=ResourcePaceSummary)
+    personal_baseline: Optional[Dict[str, Any]] = None
+    history_completeness: str = "NO_HISTORY"
+    capacity_quality: str = "CAPACITY_UNAVAILABLE"
+    queue_completeness: str = "QUEUE_EMPTY"
+    data_quality_notes: List[str] = Field(default_factory=list)
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+
+class PlanningTaskContext(BaseModel):
+    """Bounded planning facts for an active Jira issue."""
+    issue_key: str
+    assigned_resource_id: Optional[str] = None
+    assigned_resource_name: Optional[str] = None
+    summary: str = "Untitled"
+    status: str = "Unknown"
+    priority: str = "Medium"
+    issue_type: str = "Task"
+    task_nature: str = "UNKNOWN"
+    project_key: str = "UNKNOWN"
+    estimated_remaining_hours: float = 0.0
+    duration_evidence_source: str = "unavailable"
+    duration_confidence: str = "unavailable"
+    due_date: Optional[str] = None
+    is_overdue: bool = False
+    is_stale: bool = False
+    is_blocked: bool = False
+    is_reopened: bool = False
+    projected_start_date: Optional[str] = None
+    projected_completion_date: Optional[str] = None
+    is_beyond_horizon: bool = False
+    predecessor_keys: List[str] = Field(default_factory=list)
+    successor_keys: List[str] = Field(default_factory=list)
+    produced_artifact_names: List[str] = Field(default_factory=list)
+    consumed_artifact_names: List[str] = Field(default_factory=list)
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+
+class PlanningDependencyContext(BaseModel):
+    """Normalized, bounded cross-task dependency relationship facts."""
+    source_issue_key: str
+    target_issue_key: str
+    link_type: str
+    classification: DependencyClassification
+    is_hard_block: bool = True
+    is_advisory: bool = False
+    provenance: str = "JIRA_ISSUE_LINK"
+    confidence: str = "HIGH"
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+
+class PlanningArtifactContext(BaseModel):
+    """Normalized, bounded work product handoff facts."""
+    artifact_name: str
+    project_key: str
+    artifact_type: ArtifactType = ArtifactType.GENERIC
+    status: ArtifactStatus = ArtifactStatus.PLANNED
+    producer_issue_key: Optional[str] = None
+    producer_resource_id: Optional[str] = None
+    consumer_issue_keys: List[str] = Field(default_factory=list)
+    consumer_resource_ids: List[str] = Field(default_factory=list)
+    relationship_type: str = "PRODUCES"
+    is_inferred: bool = False
+    is_advisory: bool = False
+    provenance: str = "EXPLICIT_JIRA_LABEL"
+    confidence: str = "HIGH"
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+
+class PlanningScheduleSummary(BaseModel):
+    """Bounded team timeline forecast summary and deterministic bottlenecks."""
+    schedule_valid: bool = True
+    anchor_date: str
+    planning_horizon_working_days: int = 10
+    horizon_end_date: str
+    tasks_projected_count: int = 0
+    tasks_beyond_horizon_count: int = 0
+    longest_dependency_chain: List[str] = Field(default_factory=list)
+    bottlenecks: List[Bottleneck] = Field(default_factory=list)
+    data_quality_summary: Dict[str, Any] = Field(default_factory=dict)
+    error_message: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+
+class PlanningContext(BaseModel):
+    """Provider-agnostic, bounded, typed planning context.
+    
+    Composes deterministic evidence from:
+    - ResourceQueueSnapshots (Phase 3C)
+    - DependencyGraph (Phase 3A)
+    - ArtifactEngine (Phase 3B)
+    - TeamScheduleProjection (Phase 3D)
+    
+    Strictly bounded, sanitized, and provider-agnostic.
+    Contains ZERO LLM calls, ZERO Jira mutations, and ZERO automated planning decisions.
+    """
+    context_version: str = "planning-v1"
+    generated_at: str
+    anchor_date: str
+    planning_horizon_working_days: int = 10
+    horizon_end_date: str
+    team_group: Optional[str] = None
+
+    # Summaries & Bounded Contexts
+    team_summary: PlanningTeamSummary = Field(default_factory=PlanningTeamSummary)
+    resources: List[PlanningResourceContext] = Field(default_factory=list)
+    tasks: List[PlanningTaskContext] = Field(default_factory=list)
+    dependencies: List[PlanningDependencyContext] = Field(default_factory=list)
+    artifacts: List[PlanningArtifactContext] = Field(default_factory=list)
+    schedule: PlanningScheduleSummary = Field(
+        default_factory=lambda: PlanningScheduleSummary(anchor_date="", horizon_end_date="")
+    )
+
+    # Context Bounds & Truncation Metadata
+    truncation: ContextTruncationMetadata = Field(default_factory=ContextTruncationMetadata)
+
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+
+

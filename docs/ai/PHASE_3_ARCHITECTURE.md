@@ -634,3 +634,108 @@ Deterministic, rule-based operational bottleneck detection:
 
 ### 27.7 Input-Order Independence & Determinism
 All inputs, resource queues, link records, and ready queues are sorted by canonical keys (`resource_id`, `priority_rank`, `duedate`, `issue_key`) ensuring identical outputs regardless of input collection ordering.
+
+---
+
+## 28. Phase 3E Implementation: Provider-Agnostic PlanningContext
+
+### 28.1 Purpose & Non-Goals
+- **Core Mission**: Build a bounded, typed, provider-agnostic `PlanningContext` and `PlanningContextBuilder` that composes existing deterministic planning intelligence (`ResourceQueueSnapshot`, `DependencyGraph`, `ArtifactEngine`, and `TeamScheduleProjection`) into a safe, compact representation ready for future AI consumption (DeepSeek V3 or MockAIProvider).
+- **Strict Invariants & Non-Goals**:
+  - **Context Construction Only**: Does NOT perform AI planning or decision support.
+  - **ZERO Planning Decisions**: Does NOT reassign resources, does NOT reschedule tasks, does NOT assign due dates, does NOT generate duration estimates, does NOT pick "best" resources.
+  - **ZERO AI / LLM Calls**: Pure local deterministic composition. Does not import or call DeepSeek or OpenAI.
+  - **ZERO Jira Mutations**: Does NOT create/update Jira issues, links, due dates, worklogs, or comments.
+  - **ZERO Action Engine Calls**: Does NOT execute actions or dispatch events.
+  - **Phase 4 is NOT Started**: Retains strict provider-neutral domain contract boundary.
+
+### 28.2 Composed Architecture & Data Flow
+```
+ResourceQueueSnapshot (Phase 3C)
+        +
+DependencyGraph (Phase 3A)
+        +
+Artifact relationships (Phase 3B)
+        +
+TeamScheduleProjection (Phase 3D)
+        +
+Historical intelligence / baseline
+        +
+Capacity & Workload evidence
+        ↓
+   PlanningContextBuilder
+        ↓
+   PlanningContext (Provider-Agnostic Domain Model)
+        ↓
+[ Future Phase 4: AI Provider Boundary / DeepSeek ]
+```
+
+### 28.3 Domain Models (`app/core/models/planning.py`)
+- **`PlanningContext`**: Root provider-neutral domain model containing:
+  - `context_version`: Schema version (e.g. `"planning-v1"`).
+  - `generated_at`: ISO8601 creation timestamp.
+  - `anchor_date`, `planning_horizon_working_days`, `horizon_end_date`, `team_group`.
+  - `team_summary`: High-level aggregated statistics (`resource_count`, `active_task_count`, `overloaded_resource_count`, `blocked_task_count`, `overdue_task_count`, `tasks_beyond_horizon_count`, `total_remaining_effort_hours`, `total_available_capacity_hours`, `schedule_valid`).
+  - `resources`: Bounded list of `PlanningResourceContext`.
+  - `tasks`: Bounded list of `PlanningTaskContext`.
+  - `dependencies`: Bounded list of `PlanningDependencyContext`.
+  - `artifacts`: Bounded list of `PlanningArtifactContext`.
+  - `schedule`: `PlanningScheduleSummary` containing schedule validity, horizon dates, longest chain, and `Bottleneck` signals.
+  - `truncation`: `ContextTruncationMetadata` tracking bounding and truncation details.
+
+- **`PlanningResourceContext`**:
+  - Canonical identity: `resource_id`, `display_name`, `role`, `role_category`, `team_group`.
+  - Operational metrics: `active_task_count`, `current_workload_hours`, `remaining_effort_hours`, `available_capacity_hours`, `capacity_state`, `workload_pressure`.
+  - Historical pace: `ResourcePaceSummary` (completed tasks, mean, median, P25, P75, pace factor, confidence).
+  - Data quality indicators: `history_completeness`, `capacity_quality`, `queue_completeness`, `data_quality_notes`.
+
+- **`PlanningTaskContext`**:
+  - Task identity & nature: `issue_key`, `assigned_resource_id`, `assigned_resource_name`, `summary`, `status`, `priority`, `issue_type`, `task_nature`, `project_key`.
+  - Estimates & Evidence: `estimated_remaining_hours`, `duration_evidence_source`, `duration_confidence`.
+  - Scheduling & Flags: `due_date`, `is_overdue`, `is_stale`, `is_blocked`, `is_reopened`, `projected_start_date`, `projected_completion_date`, `is_beyond_horizon`.
+  - Graph & Artifacts: `predecessor_keys`, `successor_keys`, `produced_artifact_names`, `consumed_artifact_names`.
+
+- **`PlanningDependencyContext`**:
+  - Directed relation: `source_issue_key`, `target_issue_key`, `link_type`, `classification`.
+  - Semantics: `is_hard_block`, `is_advisory`, `provenance`, `confidence`.
+
+- **`PlanningArtifactContext`**:
+  - Artifact info: `artifact_name`, `project_key`, `artifact_type`, `status`.
+  - Handoffs: `producer_issue_key`, `producer_resource_id`, `consumer_issue_keys`, `consumer_resource_ids`, `relationship_type`.
+  - Provenance & Truth: `is_inferred`, `is_advisory`, `provenance`, `confidence`.
+
+- **`ContextTruncationMetadata`**:
+  - Explicit bounding metadata: `is_truncated`, `original_resource_count`, `included_resource_count`, `original_task_count`, `included_task_count`, `original_dependency_count`, `included_dependency_count`, `original_artifact_count`, `included_artifact_count`, `original_bottleneck_count`, `included_bottleneck_count`, and `truncation_reasons`.
+
+### 28.4 Bounded Context & Truncation Semantics
+- Configurable limits via `PlanningContextBuilder`:
+  - `max_resources`: Default 50.
+  - `max_tasks_per_resource`: Default 50.
+  - `max_total_tasks`: Default 200.
+  - `max_dependencies`: Default 200.
+  - `max_artifacts`: Default 100.
+  - `max_bottlenecks`: Default 50.
+- When caps are exceeded, items are truncated deterministically (e.g. keeping highest priority items / canonical sorting) and `ContextTruncationMetadata` records exact original vs. included counts and human-readable truncation reasons.
+
+### 28.5 Deterministic Normalization & Input-Order Independence
+- Resources are sorted deterministically by canonical `resource_id`.
+- Tasks are sorted deterministically by `issue_key`.
+- Dependencies are sorted by `(source_issue_key, target_issue_key, link_type)`.
+- Artifacts are sorted by `(project_key, artifact_name)`.
+- Bottlenecks are sorted by `(severity_rank, type, affected_issue_key, affected_resource_id)`.
+- Equivalent inputs supplied in any order produce 100% byte-identical serialized JSON representations.
+
+### 28.6 Fact vs. Advisory Distinction
+- **Authoritative Facts**:
+  - Jira issue state, explicit link relationships (`Blocks` $\to$ `HARD_BLOCK`).
+  - Active queue counts, remaining hours from estimates.
+  - Historical worklogs and pace percentiles.
+- **Advisory Inferences**:
+  - Task-nature inferred artifacts (`provenance=TASK_NATURE_INFERENCE`, `is_inferred=True`, `is_advisory=True`).
+  - Non-hard dependencies (`Relates`, `Test`, `Problem/Incident` labeled `is_advisory=True`).
+  - Fallback duration estimates tagged `duration_confidence="low"` or `"unavailable"`.
+
+### 28.7 Credential & Secret Sanitization
+- All text fields in tasks (summaries), resources (display names, roles), bottlenecks (evidence strings), and metadata are scrubbed using `redact_text()` and `sanitize_dict()`.
+- Bearer tokens, API keys, passwords, webhook URLs, and credential patterns are masked (`******`) before the context is returned.
+

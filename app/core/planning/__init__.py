@@ -4,6 +4,7 @@ from app.core.planning.dag import DependencyGraph
 from app.core.planning.artifacts import ArtifactEngine, parse_artifact_label, infer_artifact_type_from_name
 from app.core.planning.queue_composer import ResourceQueueComposer
 from app.core.planning.forecaster import TeamScheduleForecaster
+from app.core.planning.context import PlanningContextBuilder
 from app.core.models.planning import (
     DependencyClassification,
     JiraIssueLinkRecord,
@@ -29,6 +30,14 @@ from app.core.models.planning import (
     ScheduleConstraint,
     TaskScheduleProjection,
     TeamScheduleProjection,
+    ContextTruncationMetadata,
+    PlanningTeamSummary,
+    PlanningResourceContext,
+    PlanningTaskContext,
+    PlanningDependencyContext,
+    PlanningArtifactContext,
+    PlanningScheduleSummary,
+    PlanningContext,
 )
 
 __all__ = [
@@ -62,6 +71,16 @@ __all__ = [
     "TaskScheduleProjection",
     "TeamScheduleProjection",
     "TeamScheduleForecaster",
+    "ContextTruncationMetadata",
+    "PlanningTeamSummary",
+    "PlanningResourceContext",
+    "PlanningTaskContext",
+    "PlanningDependencyContext",
+    "PlanningArtifactContext",
+    "PlanningScheduleSummary",
+    "PlanningContext",
+    "PlanningContextBuilder",
 ]
+
 
 
