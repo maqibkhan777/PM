@@ -38,6 +38,16 @@ from app.core.models.planning import (
     PlanningArtifactContext,
     PlanningScheduleSummary,
     PlanningContext,
+    EvidenceType,
+    EvidenceReference,
+    EstimateUnit,
+    PlanningEstimate,
+    PlanningAssumption,
+    SequencingProposal,
+    PlanningRiskType,
+    PlanningRiskSignal,
+    TaskPlanningProposal,
+    PlanningProposal,
 )
 
 __all__ = [
@@ -80,6 +90,16 @@ __all__ = [
     "PlanningScheduleSummary",
     "PlanningContext",
     "PlanningContextBuilder",
+    "EvidenceType",
+    "EvidenceReference",
+    "EstimateUnit",
+    "PlanningEstimate",
+    "PlanningAssumption",
+    "SequencingProposal",
+    "PlanningRiskType",
+    "PlanningRiskSignal",
+    "TaskPlanningProposal",
+    "PlanningProposal",
 ]
 
 

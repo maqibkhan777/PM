@@ -739,3 +739,85 @@ Capacity & Workload evidence
 - All text fields in tasks (summaries), resources (display names, roles), bottlenecks (evidence strings), and metadata are scrubbed using `redact_text()` and `sanitize_dict()`.
 - Bearer tokens, API keys, passwords, webhook URLs, and credential patterns are masked (`******`) before the context is returned.
 
+---
+
+## 29. Phase 4A Implementation: AI Planning Contracts
+
+### 29.1 Purpose & Architectural Principle
+- **Core Mission**: Define the strongly typed, provider-agnostic data contract (`PlanningProposal`) between the deterministic PM planning layer and the future AI planning/reasoning engine.
+- **Fundamental Rule**:
+  > **AI Output $\ne$ Jira Mutation.**  
+  > The AI produces a typed `PlanningProposal`.  
+  > The deterministic system later validates the proposal (Phase 4C).  
+  > Only after validation and human approval may an Action Engine eventually translate approved items into Jira actions.
+- **Strict Non-Goals**:
+  - ZERO LLM/DeepSeek calls (deferred to Phase 4B).
+  - ZERO prompt engineering or AI planning logic.
+  - ZERO proposal validation logic (deferred to Phase 4C).
+  - ZERO Jira mutations, field edits, comment creations, or due-date updates.
+  - ZERO Action Engine executions or human approval workflows.
+  - Phase 4B is NOT started.
+
+### 29.2 End-to-End Decision Flow
+```
+PlanningContext (Phase 3E)
+      ↓
+Future AI Planning Engine (Phase 4B)
+      ↓
+PlanningProposal (Phase 4A Contracts)
+      ↓
+Deterministic Proposal Validator (Phase 4C)
+      ↓
+Human Approval Gate (Phase 4D)
+      ↓
+Action Engine Execution (Phase 4E)
+      ↓
+Jira Cloud API
+```
+
+### 29.3 Root Model: `PlanningProposal`
+- `proposal_version`: Schema version (default `"proposal-v1"`).
+- `generated_at`: ISO8601 generation timestamp.
+- `context_version`: Reference to the input context schema version (`"planning-v1"`).
+- `anchor_date`: Horizon anchor date (`YYYY-MM-DD`).
+- `planning_horizon_working_days`: Business days horizon.
+- `requires_human_review`: Strict safety invariant defaulting to `True`.
+- `overall_confidence`: Bounded numeric float $[0.0, 1.0]$.
+- `summary`: High-level executive explanation of proposed planning decisions.
+- `task_proposals`: List of `TaskPlanningProposal` records for existing issues.
+- `sequencing_proposals`: List of `SequencingProposal` records.
+- `risk_signals`: List of `PlanningRiskSignal` records.
+- `assumptions`: List of `PlanningAssumption` records.
+- `evidence_references`: List of `EvidenceReference` records.
+
+### 29.4 Detailed Contract Specifications
+1. **`TaskPlanningProposal`**:
+   - `issue_key`: References an *existing* task in `PlanningContext`.
+   - `proposed_estimate`: `PlanningEstimate(value, unit="hours", confidence, rationale)`.
+   - `proposed_start_date` / `proposed_due_date`: Advisory dates formatted strictly as `YYYY-MM-DD`.
+   - `sequencing_position`: 1-indexed queue position.
+   - `proposed_predecessors` / `proposed_successors`: Bounded dependency proposals.
+   - `risk_level` / `risk_reason`: Contextual risk tags.
+   - `requires_human_review`: Defaults to `True`.
+
+2. **`SequencingProposal`**:
+   - Advisory queue ordering recommendations (`issue_key`, `position`, `rationale`, `confidence`).
+   - Does NOT override `HARD_BLOCK` dependencies and does NOT reassign resources.
+
+3. **`PlanningRiskSignal`**:
+   - Bounded risk categories (`CAPACITY_RISK`, `DEPENDENCY_RISK`, `DEADLINE_RISK`, `ESTIMATION_UNCERTAINTY`, `DATA_QUALITY_RISK`, `ARTIFACT_HANDOFF_RISK`, `SCHEDULE_DRIFT_RISK`, `OTHER`).
+   - Strictly operational facts; contains ZERO employee personality or competence judgments.
+
+4. **`EvidenceReference`**:
+   - Bounded evidence categories (`RESOURCE_HISTORY`, `CURRENT_QUEUE`, `CAPACITY`, `TASK_ESTIMATE`, `TASK_COMPLEXITY`, `DEPENDENCY`, `ARTIFACT`, `TEAM_SCHEDULE`, `BOTTLENECK`, `DATA_QUALITY`, `OTHER`).
+   - Direct link between AI recommendations and deterministic evidence without embedding raw Jira payloads or tokens.
+
+5. **`PlanningAssumption`**:
+   - Explicitly records underlying assumptions (`statement`, `confidence`, `requires_human_review=True`), strictly distinguishing assumptions from verified facts.
+
+### 29.5 Safety & Grounding Contracts
+- **Schema Strictness**: All proposal models use `extra = "forbid"`, preventing injection of arbitrary unvalidated Jira mutation payloads.
+- **Fail-Closed Validation**: Invalid confidence values ($<0.0$ or $>1.0$), invalid date formats, ambiguous estimate units, or blank issue keys fail immediately via Pydantic validators.
+- **Human Review Mandatory**: `requires_human_review` defaults unconditionally to `True`.
+
+

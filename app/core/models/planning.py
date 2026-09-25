@@ -6,7 +6,8 @@ Deterministic, offline, and provider-agnostic.
 
 from enum import Enum
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
 
 
 class DependencyClassification(str, Enum):
@@ -623,6 +624,331 @@ class PlanningContext(BaseModel):
     class Config:
         populate_by_name = True
         extra = "allow"
+
+
+# -------------------------------------------------------------------------
+# Phase 4A: Typed AI Planning Proposal Contracts
+# -------------------------------------------------------------------------
+
+import re
+
+
+def _validate_planning_date(v: Optional[str]) -> Optional[str]:
+    """Validate that a date string is formatted strictly as YYYY-MM-DD."""
+    if v is None:
+        return None
+    if not isinstance(v, str):
+        raise ValueError("Date must be a string formatted as YYYY-MM-DD")
+    v_clean = v.strip()
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", v_clean):
+        raise ValueError(f"Date '{v}' must match format YYYY-MM-DD")
+    return v_clean
+
+
+def _validate_planning_confidence(v: float) -> float:
+    """Validate that numeric confidence is bounded in [0.0, 1.0]."""
+    if v is None:
+        raise ValueError("Confidence cannot be None")
+    try:
+        val = float(v)
+    except (ValueError, TypeError):
+        raise ValueError("Confidence must be a numeric float between 0.0 and 1.0")
+    if not (0.0 <= val <= 1.0):
+        raise ValueError(f"Confidence {val} out of bounds: must be between 0.0 and 1.0 inclusive")
+    return round(val, 4)
+
+
+def _validate_non_empty_issue_key(v: str) -> str:
+    """Validate that an issue key is a non-empty string."""
+    if not v or not isinstance(v, str) or not v.strip():
+        raise ValueError("issue_key must be a non-empty string")
+    return v.strip().upper()
+
+
+class EvidenceType(str, Enum):
+    """Bounded categorization of planning evidence sources."""
+    RESOURCE_HISTORY = "RESOURCE_HISTORY"
+    CURRENT_QUEUE = "CURRENT_QUEUE"
+    CAPACITY = "CAPACITY"
+    TASK_ESTIMATE = "TASK_ESTIMATE"
+    TASK_COMPLEXITY = "TASK_COMPLEXITY"
+    DEPENDENCY = "DEPENDENCY"
+    ARTIFACT = "ARTIFACT"
+    TEAM_SCHEDULE = "TEAM_SCHEDULE"
+    BOTTLENECK = "BOTTLENECK"
+    DATA_QUALITY = "DATA_QUALITY"
+    OTHER = "OTHER"
+
+
+class EvidenceReference(BaseModel):
+    """Structured, bounded evidence reference supporting an AI proposal.
+    
+    Contains ZERO raw Jira payloads, raw tokens, or credentials.
+    """
+    evidence_type: EvidenceType = EvidenceType.OTHER
+    source_identifier: str = Field(..., description="Canonical reference key (e.g. 'acc-123', 'WSSS-1', 'capacity.available')")
+    description: str = Field(default="", description="Explanation of how this evidence supports the proposal")
+    relevance: str = Field(default="DIRECT", description="Relevance level: DIRECT, CONTEXTUAL, CORROBORATING")
+
+    @field_validator("source_identifier")
+    @classmethod
+    def validate_source_identifier(cls, v: str) -> str:
+        if not v or not isinstance(v, str) or not v.strip():
+            raise ValueError("source_identifier must be a non-empty string")
+        return v.strip()
+
+    class Config:
+        populate_by_name = True
+        extra = "forbid"
+
+
+class EstimateUnit(str, Enum):
+    """Explicit units for task duration estimates.
+    
+    Ambiguous units like 'days' or 'story_points' without explicit calibration are prohibited.
+    """
+    HOURS = "hours"
+
+
+class PlanningEstimate(BaseModel):
+    """Typed estimate representation proposed by AI.
+    
+    All estimates are advisory proposals and must be explicitly quantified in hours.
+    """
+    value: float = Field(..., ge=0.0, description="Estimated duration effort in specified units")
+    unit: EstimateUnit = Field(default=EstimateUnit.HOURS, description="Explicit measurement unit (e.g. 'hours')")
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0, description="Confidence in [0.0, 1.0]")
+    rationale: str = Field(default="", description="Justification grounded in historical pace / complexity")
+    evidence_references: List[EvidenceReference] = Field(default_factory=list)
+
+    @field_validator("confidence")
+    @classmethod
+    def check_confidence(cls, v: float) -> float:
+        return _validate_planning_confidence(v)
+
+    class Config:
+        populate_by_name = True
+        extra = "forbid"
+
+
+class PlanningAssumption(BaseModel):
+    """Explicitly stated assumption made by the AI planning engine.
+    
+    Assumptions are NOT confirmed facts and require human awareness.
+    """
+    statement: str = Field(..., description="Clear description of the underlying assumption")
+    evidence_references: List[EvidenceReference] = Field(default_factory=list)
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    requires_human_review: bool = True
+
+    @field_validator("statement")
+    @classmethod
+    def validate_statement(cls, v: str) -> str:
+        if not v or not isinstance(v, str) or not v.strip():
+            raise ValueError("statement must be a non-empty string")
+        return v.strip()
+
+    @field_validator("confidence")
+    @classmethod
+    def check_confidence(cls, v: float) -> float:
+        return _validate_planning_confidence(v)
+
+    class Config:
+        populate_by_name = True
+        extra = "forbid"
+
+
+class SequencingProposal(BaseModel):
+    """Advisory sequencing recommendation for a task in a resource's queue.
+    
+    Does NOT override HARD_BLOCK dependencies and does NOT imply reassignment.
+    """
+    issue_key: str = Field(..., description="Target Jira issue key")
+    position: int = Field(..., ge=1, description="1-indexed suggested queue position")
+    rationale: str = Field(default="", description="Reasoning for suggested sequence position")
+    evidence_references: List[EvidenceReference] = Field(default_factory=list)
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+
+    @field_validator("issue_key")
+    @classmethod
+    def check_issue_key(cls, v: str) -> str:
+        return _validate_non_empty_issue_key(v)
+
+    @field_validator("confidence")
+    @classmethod
+    def check_confidence(cls, v: float) -> float:
+        return _validate_planning_confidence(v)
+
+    class Config:
+        populate_by_name = True
+        extra = "forbid"
+
+
+class PlanningRiskType(str, Enum):
+    """Bounded, deterministic risk signal categories.
+    
+    Strictly operational: contains ZERO employee personality or competence judgments.
+    """
+    CAPACITY_RISK = "CAPACITY_RISK"
+    DEPENDENCY_RISK = "DEPENDENCY_RISK"
+    DEADLINE_RISK = "DEADLINE_RISK"
+    ESTIMATION_UNCERTAINTY = "ESTIMATION_UNCERTAINTY"
+    DATA_QUALITY_RISK = "DATA_QUALITY_RISK"
+    ARTIFACT_HANDOFF_RISK = "ARTIFACT_HANDOFF_RISK"
+    SCHEDULE_DRIFT_RISK = "SCHEDULE_DRIFT_RISK"
+    OTHER = "OTHER"
+
+
+class PlanningRiskSignal(BaseModel):
+    """Deterministic, bounded risk signal identified by the planning engine."""
+    risk_type: PlanningRiskType
+    issue_key: Optional[str] = None
+    severity: str = Field(default="MEDIUM", description="Severity level: HIGH, MEDIUM, LOW")
+    explanation: str = Field(..., description="Operational explanation of the identified risk")
+    evidence_references: List[EvidenceReference] = Field(default_factory=list)
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    requires_human_review: bool = True
+
+    @field_validator("issue_key")
+    @classmethod
+    def check_issue_key(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        return _validate_non_empty_issue_key(v)
+
+    @field_validator("explanation")
+    @classmethod
+    def check_explanation(cls, v: str) -> str:
+        if not v or not isinstance(v, str) or not v.strip():
+            raise ValueError("explanation must be a non-empty string")
+        return v.strip()
+
+    @field_validator("confidence")
+    @classmethod
+    def check_confidence(cls, v: float) -> float:
+        return _validate_planning_confidence(v)
+
+    class Config:
+        populate_by_name = True
+        extra = "forbid"
+
+
+class TaskPlanningProposal(BaseModel):
+    """Advisory planning proposal for a SINGLE existing Jira issue.
+    
+    References an existing task in PlanningContext.
+    Does NOT support arbitrary issue creation or direct Jira field mutations.
+    """
+    issue_key: str = Field(..., description="Authoritative Jira issue key")
+    
+    # Duration & Estimate Proposal
+    proposed_estimate: Optional[PlanningEstimate] = None
+    
+    # Scheduling & Date Proposals (Proposals only, NOT committed Jira dates)
+    proposed_start_date: Optional[str] = None
+    proposed_due_date: Optional[str] = None
+    date_confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    
+    # Sequencing & Dependency Proposals
+    sequencing_position: Optional[int] = Field(None, ge=1)
+    proposed_predecessors: List[str] = Field(default_factory=list)
+    proposed_successors: List[str] = Field(default_factory=list)
+    
+    # Risk, Assumptions, Evidence
+    risk_level: str = Field(default="LOW", description="Risk level: HIGH, MEDIUM, LOW")
+    risk_reason: Optional[str] = None
+    evidence_references: List[EvidenceReference] = Field(default_factory=list)
+    assumptions: List[PlanningAssumption] = Field(default_factory=list)
+    
+    # Safety Gate
+    requires_human_review: bool = True
+
+    @field_validator("issue_key")
+    @classmethod
+    def check_issue_key(cls, v: str) -> str:
+        return _validate_non_empty_issue_key(v)
+
+    @field_validator("proposed_start_date", "proposed_due_date")
+    @classmethod
+    def check_dates(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_planning_date(v)
+
+    @field_validator("date_confidence")
+    @classmethod
+    def check_confidence(cls, v: float) -> float:
+        return _validate_planning_confidence(v)
+
+    @field_validator("proposed_predecessors", "proposed_successors")
+    @classmethod
+    def check_linked_keys(cls, v: List[str]) -> List[str]:
+        if not v:
+            return []
+        cleaned: List[str] = []
+        for item in v:
+            if not item or not isinstance(item, str) or not item.strip():
+                raise ValueError("Linked task keys must be non-empty strings")
+            cleaned.append(item.strip().upper())
+        return cleaned
+
+    class Config:
+        populate_by_name = True
+        extra = "forbid"
+
+
+class PlanningProposal(BaseModel):
+    """Root typed contract for an AI-generated Planning Proposal.
+    
+    Represents the structured planning recommendations proposed by an AI planning engine
+    after evaluating a PlanningContext.
+    
+    CRITICAL ARCHITECTURAL BOUNDARIES:
+    - Pure advisory data contract: AI output != Jira mutation.
+    - NEVER directly executes Jira mutations, Action Engine actions, or notifications.
+    - Requires validation by the deterministic Proposal Validator (Phase 4C) and explicit Human Approval.
+    - Default requires_human_review = True.
+    """
+    proposal_version: str = "proposal-v1"
+    generated_at: str
+    context_version: str = "planning-v1"
+    anchor_date: str
+    planning_horizon_working_days: int = 10
+    
+    # Core Summary & Safety
+    requires_human_review: bool = True
+    overall_confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    summary: str = Field(..., description="High-level executive summary of proposed planning decisions")
+    
+    # Detailed Proposals
+    task_proposals: List[TaskPlanningProposal] = Field(default_factory=list)
+    sequencing_proposals: List[SequencingProposal] = Field(default_factory=list)
+    risk_signals: List[PlanningRiskSignal] = Field(default_factory=list)
+    assumptions: List[PlanningAssumption] = Field(default_factory=list)
+    evidence_references: List[EvidenceReference] = Field(default_factory=list)
+
+    @field_validator("anchor_date")
+    @classmethod
+    def check_anchor_date(cls, v: str) -> str:
+        val = _validate_planning_date(v)
+        if val is None:
+            raise ValueError("anchor_date must be provided")
+        return val
+
+    @field_validator("overall_confidence")
+    @classmethod
+    def check_confidence(cls, v: float) -> float:
+        return _validate_planning_confidence(v)
+
+    @field_validator("summary")
+    @classmethod
+    def check_summary(cls, v: str) -> str:
+        if not v or not isinstance(v, str) or not v.strip():
+            raise ValueError("summary must be a non-empty string")
+        return v.strip()
+
+    class Config:
+        populate_by_name = True
+        extra = "forbid"
+
 
 
 
