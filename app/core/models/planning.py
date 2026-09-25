@@ -950,5 +950,83 @@ class PlanningProposal(BaseModel):
         extra = "forbid"
 
 
+# -------------------------------------------------------------------------
+# Phase 4C: Deterministic AI Planning Proposal Validation Models
+# -------------------------------------------------------------------------
+
+class ProposalValidationStatus(str, Enum):
+    """Deterministic validation outcome status for an AI planning proposal."""
+    VALID = "VALID"
+    INVALID = "INVALID"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
+
+
+class ValidationIssueSeverity(str, Enum):
+    """Severity classification of validation findings."""
+    ERROR = "ERROR"      # Hard constraint violation -> INVALID
+    WARNING = "WARNING"  # Advisory discrepancy or data quality limitation -> NEEDS_REVIEW
+    INFO = "INFO"        # Informational alignment note
+
+
+class ProposalValidationCategory(str, Enum):
+    """Categorization of validation checks."""
+    STRUCTURE = "STRUCTURE"
+    GROUNDING = "GROUNDING"
+    RESOURCE = "RESOURCE"
+    ESTIMATE = "ESTIMATE"
+    DATE = "DATE"
+    DEPENDENCY = "DEPENDENCY"
+    CAPACITY = "CAPACITY"
+    SCHEDULE = "SCHEDULE"
+    HORIZON = "HORIZON"
+    DATA_QUALITY = "DATA_QUALITY"
+    ARTIFACT = "ARTIFACT"
+    SEQUENCING = "SEQUENCING"
+    SAFETY = "SAFETY"
+
+
+class ProposalValidationIssue(BaseModel):
+    """Deterministic finding or violation recorded during proposal validation."""
+    code: str = Field(..., description="Machine-readable issue code e.g. HARD_BLOCK_VIOLATION")
+    severity: ValidationIssueSeverity = Field(default=ValidationIssueSeverity.ERROR)
+    category: ProposalValidationCategory = Field(default=ProposalValidationCategory.STRUCTURE)
+    issue_key: Optional[str] = Field(None, description="Affected Jira issue key if task-specific")
+    resource_id: Optional[str] = Field(None, description="Affected resource ID if resource-specific")
+    field: Optional[str] = Field(None, description="Affected proposal field name")
+    message: str = Field(..., description="Human-readable explanation of the validation issue")
+    evidence: str = Field(default="", description="Deterministic factual evidence supporting this finding")
+
+    class Config:
+        populate_by_name = True
+        extra = "forbid"
+
+
+class ProposalValidationResult(BaseModel):
+    """Deterministic validation outcome for an AI PlanningProposal against PlanningContext."""
+    status: ProposalValidationStatus
+    proposal_version: str
+    context_version: str
+    validated_at: str
+    proposal_accepted: bool = False
+    
+    # Issue findings
+    issues: List[ProposalValidationIssue] = Field(default_factory=list)
+    
+    # Task Counts
+    validated_task_count: int = 0
+    valid_task_count: int = 0
+    invalid_task_count: int = 0
+    needs_review_task_count: int = 0
+    
+    # Executive Summary & Checks
+    summary: str = Field(..., description="Summary of deterministic validation outcome")
+    deterministic_checks: Dict[str, Any] = Field(default_factory=dict)
+
+    class Config:
+        populate_by_name = True
+        extra = "forbid"
+
+
+
 
 

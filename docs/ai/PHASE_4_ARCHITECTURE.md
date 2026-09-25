@@ -149,9 +149,69 @@ Phase 4A defined the typed Pydantic contracts in `app/core/models/planning.py`:
 
 ---
 
-## 5. Next Steps: Phase 4C Preview
+## 5. Phase 4C: Deterministic Proposal Validator (`app/core/planning/validator.py`)
 
-Phase 4C will implement the **Deterministic Feasibility Validator** to mathematically verify:
-- Resource capacity feasibility (total proposed hours vs. working horizon).
-- Dependency topological feasibility (predecessor completion vs. successor start dates).
-- Working calendar compliance (start and due dates fall on valid business days).
+### 5.1 Architecture & Validator Mission
+The `PlanningProposalValidator` deterministically evaluates whether an AI-generated `PlanningProposal` is feasible, grounded, and structurally sound when cross-referenced against ground-truth facts in `PlanningContext`.
+
+**Strict Invariants**:
+- **ZERO AI Calls**: Pure Python local verification.
+- **ZERO Mutations**: Neither `PlanningProposal` nor `PlanningContext` is altered (both are strictly immutable).
+- **Evaluates, Never Rewrites**: Identifies issues; does not rewrite dates or estimates.
+- **Radical Honesty**: Clearly separates hard constraint violations (`INVALID`) from uncertainty/advisory warnings (`NEEDS_REVIEW`).
+
+### 5.2 Layered Validation Pipeline
+The validator executes 11 deterministic checks in a fixed, reproducible sequence:
+
+```
+PlanningProposal + PlanningContext
+              │
+              ▼
+1. Structure & Metadata Check ──► requires_human_review=True, non-empty summary
+              │
+              ▼
+2. Grounding Validation ────────► issue keys, predecessor/successor keys exist in context
+              │
+              ▼
+3. Resource Consistency ────────► Prohibits unauthorized silent reassignment
+              │
+              ▼
+4. Estimate Feasibility ────────► Validates units (hours), positive values, variance thresholds
+              │
+              ▼
+5. Calendar & Dates ────────────► Format YYYY-MM-DD, start <= due, strictly no weekends
+              │
+              ▼
+6. HARD_BLOCK Dependencies ─────► proposed_start >= predecessor projected_completion
+              │
+              ▼
+7. Capacity Feasibility ────────► proposed_workload vs. available_capacity (pressure vs exceeded)
+              │
+              ▼
+8. Schedule Consistency ────────► Compares with deterministic schedule baseline (variance checks)
+              │
+              ▼
+9. Planning Horizon ────────────► Flags tasks extending past planning_horizon_working_days
+              │
+              ▼
+10. Data Quality & Context ─────► Evaluates history completeness, capacity quality, truncation
+              │
+              ▼
+11. Artifacts & Sequencing ─────► Verifies deliverable handoff order and queue sequence positions
+              │
+              ▼
+ProposalValidationResult { status: VALID | INVALID | NEEDS_REVIEW, issues: [...] }
+```
+
+### 5.3 Outcome Status Semantics
+- **`VALID`**: Proposal is fully compatible with deterministic constraints, capacity, dependencies, and business calendars.
+- **`NEEDS_REVIEW`**: Proposal contains advisory discrepancies, data quality limitations (e.g. `NO_HISTORY`, `CAPACITY_UNAVAILABLE`, `TRUNCATED_CONTEXT`), estimate variances, or non-blocking artifact handoff delays. Requires human PM review.
+- **`INVALID`**: Proposal violates a hard operational constraint (e.g. `HARD_BLOCK_VIOLATION`, `CAPACITY_EXCEEDED` (>1.4x), `WEEKEND_DATE_VIOLATION`, `START_DATE_AFTER_DUE_DATE`, unauthorized reassignment, or invented entity keys).
+
+### 5.4 Deterministic Issue Ordering
+All `ProposalValidationIssue` items are sorted deterministically:
+1. **Severity**: `ERROR` > `WARNING` > `INFO`
+2. **Category**: `SAFETY` > `STRUCTURE` > `GROUNDING` > `RESOURCE` > `DEPENDENCY` > `DATE` > `ESTIMATE` > `CAPACITY` > `SEQUENCING` > `SCHEDULE` > `HORIZON` > `ARTIFACT` > `DATA_QUALITY`
+3. **Issue Key**: Lexicographical order
+4. **Code**: Unique issue code
+

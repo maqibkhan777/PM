@@ -11,8 +11,23 @@ from app.services.ai.planning_prompt import PLANNING_PROMPT_VERSION
 from app.services.ai.provider import AIProvider, NullAIProvider
 from app.services.ai.safety import AISafetyGate, AISafetyViolation
 from app.services.audit_service import AuditService
+from app.core.planning.validator import PlanningProposalValidator
+from app.core.models.planning import (
+    PlanningContext,
+    PlanningProposal,
+    ProposalValidationResult,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def validate_planning_proposal(
+    planning_context: PlanningContext,
+    planning_proposal: PlanningProposal,
+) -> ProposalValidationResult:
+    """Deterministic convenience function to validate an AI planning proposal against PlanningContext."""
+    return PlanningProposalValidator.validate_proposal(planning_context, planning_proposal)
+
 
 
 class AIPlanningService:
