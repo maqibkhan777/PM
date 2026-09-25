@@ -1,6 +1,19 @@
 """Provider protocol and deterministic mock/null implementation for PM AI decision support."""
 
 from typing import List, Optional, Protocol, runtime_checkable
+from app.core.models.planning import (
+    EstimateUnit,
+    EvidenceReference,
+    EvidenceType,
+    PlanningAssumption,
+    PlanningContext,
+    PlanningEstimate,
+    PlanningProposal,
+    PlanningRiskSignal,
+    PlanningRiskType,
+    SequencingProposal,
+    TaskPlanningProposal,
+)
 from app.services.ai.models import (
     AIContext,
     AIDecision,
@@ -23,6 +36,10 @@ class AIProvider(Protocol):
 
     async def analyze_attention(self, context: AIContext) -> PMAttentionAnalysis:
         """Analyze attention candidates in context and return a structured PMAttentionAnalysis."""
+        ...
+
+    async def analyze_planning(self, context: PlanningContext) -> PlanningProposal:
+        """Analyze deterministic planning context and return a structured PlanningProposal."""
         ...
 
 
@@ -55,6 +72,23 @@ class NullAIProvider:
             requires_human_review=True,
         )
 
+    async def analyze_planning(self, context: PlanningContext) -> PlanningProposal:
+        return PlanningProposal(
+            proposal_version="proposal-v1",
+            generated_at=context.generated_at,
+            context_version=context.context_version,
+            anchor_date=context.anchor_date,
+            planning_horizon_working_days=context.planning_horizon_working_days,
+            requires_human_review=True,
+            overall_confidence=1.0,
+            summary="AI provider is inactive or disabled; no planning proposal generated.",
+            task_proposals=[],
+            sequencing_proposals=[],
+            risk_signals=[],
+            assumptions=[],
+            evidence_references=[],
+        )
+
 
 class MockAIProvider:
     """Deterministic mock provider for testing and offline development."""
@@ -69,6 +103,7 @@ class MockAIProvider:
         proposed_action: Optional[ProposedAction] = None,
         requires_approval: bool = True,
         custom_attention_analysis: Optional[PMAttentionAnalysis] = None,
+        custom_planning_proposal: Optional[PlanningProposal] = None,
     ):
         self.decision_type = decision_type
         self.recommendation = recommendation
@@ -78,6 +113,8 @@ class MockAIProvider:
         self.proposed_action = proposed_action
         self.requires_approval = requires_approval
         self.custom_attention_analysis = custom_attention_analysis
+        self.custom_planning_proposal = custom_planning_proposal
+
 
     async def analyze(self, context: AIContext) -> AIDecision:
         return AIDecision(
@@ -222,4 +259,124 @@ class MockAIProvider:
             proposed_action=self.proposed_action,
             requires_human_review=True,
         )
+
+    async def analyze_planning(self, context: PlanningContext) -> PlanningProposal:
+        if self.custom_planning_proposal:
+            return self.custom_planning_proposal
+
+        # Deterministically build task proposals from context tasks
+        task_proposals: List[TaskPlanningProposal] = []
+        for idx, task in enumerate(context.tasks, 1):
+            evidence_refs = [
+                EvidenceReference(
+                    evidence_type=EvidenceType.TASK_ESTIMATE,
+                    source_identifier=task.issue_key,
+                    description=f"Initial estimated remaining hours: {task.estimated_remaining_hours}",
+                    relevance="DIRECT",
+                )
+            ]
+            if task.assigned_resource_id:
+                evidence_refs.append(
+                    EvidenceReference(
+                        evidence_type=EvidenceType.CURRENT_QUEUE,
+                        source_identifier=task.assigned_resource_id,
+                        description=f"Assigned resource: {task.assigned_resource_name or task.assigned_resource_id}",
+                        relevance="DIRECT",
+                    )
+                )
+
+            estimate = None
+            if task.estimated_remaining_hours > 0:
+                estimate = PlanningEstimate(
+                    value=task.estimated_remaining_hours,
+                    unit=EstimateUnit.HOURS,
+                    confidence=0.85,
+                    rationale=f"Grounded in task estimated remaining workload ({task.estimated_remaining_hours}h).",
+                    evidence_references=evidence_refs,
+                )
+
+            risk_level = "HIGH" if task.is_blocked or task.is_overdue else "LOW"
+            risk_reason = "Task is blocked or overdue in context." if (task.is_blocked or task.is_overdue) else None
+
+            task_proposals.append(
+                TaskPlanningProposal(
+                    issue_key=task.issue_key,
+                    proposed_estimate=estimate,
+                    proposed_start_date=task.projected_start_date or context.anchor_date,
+                    proposed_due_date=task.projected_completion_date or task.due_date,
+                    date_confidence=0.85,
+                    sequencing_position=idx,
+                    proposed_predecessors=list(task.predecessor_keys),
+                    proposed_successors=list(task.successor_keys),
+                    risk_level=risk_level,
+                    risk_reason=risk_reason,
+                    evidence_references=evidence_refs,
+                    assumptions=[],
+                    requires_human_review=True,
+                )
+            )
+
+        sequencing_proposals: List[SequencingProposal] = [
+            SequencingProposal(
+                issue_key=tp.issue_key,
+                position=idx,
+                rationale=f"Deterministic sequence priority #{idx}",
+                confidence=0.85,
+                evidence_references=[],
+            )
+            for idx, tp in enumerate(task_proposals, 1)
+        ]
+
+        risk_signals: List[PlanningRiskSignal] = []
+        for task in context.tasks:
+            if task.is_blocked:
+                risk_signals.append(
+                    PlanningRiskSignal(
+                        risk_type=PlanningRiskType.DEPENDENCY_RISK,
+                        issue_key=task.issue_key,
+                        severity="HIGH",
+                        explanation=f"Task {task.issue_key} is blocked by predecessors.",
+                        confidence=0.90,
+                        requires_human_review=True,
+                        evidence_references=[
+                            EvidenceReference(
+                                evidence_type=EvidenceType.DEPENDENCY,
+                                source_identifier=task.issue_key,
+                                description="Task has active blocking dependencies.",
+                                relevance="DIRECT",
+                            )
+                        ],
+                    )
+                )
+
+        assumptions: List[PlanningAssumption] = [
+            PlanningAssumption(
+                statement=f"Resource capacity and schedules remain stable across {context.planning_horizon_working_days} working day horizon.",
+                confidence=0.85,
+                requires_human_review=True,
+                evidence_references=[],
+            )
+        ]
+
+        summary = (
+            f"Generated deterministic mock planning proposal for {len(task_proposals)} tasks "
+            f"across {len(context.resources)} resources."
+        )
+
+        return PlanningProposal(
+            proposal_version="proposal-v1",
+            generated_at=context.generated_at,
+            context_version=context.context_version,
+            anchor_date=context.anchor_date,
+            planning_horizon_working_days=context.planning_horizon_working_days,
+            requires_human_review=True,
+            overall_confidence=0.85,
+            summary=summary,
+            task_proposals=task_proposals,
+            sequencing_proposals=sequencing_proposals,
+            risk_signals=risk_signals,
+            assumptions=assumptions,
+            evidence_references=[],
+        )
+
 

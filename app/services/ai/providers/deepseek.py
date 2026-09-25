@@ -350,3 +350,33 @@ class DeepSeekAIProvider:
             raise DeepSeekProviderError(
                 f"DeepSeek response failed PMAttentionAnalysis schema validation: {sanitized_err}"
             )
+
+    async def analyze_planning(self, context: Any) -> Any:
+        """Analyze planning context using DeepSeek and return a typed PlanningProposal."""
+        from app.core.models.planning import PlanningProposal
+        from app.services.ai.planning_prompt import PlanningPromptBuilder
+
+        messages = PlanningPromptBuilder.build_messages(context)
+
+        t0 = time.monotonic()
+        raw_response = await self._post_chat_completion(messages)
+        latency = round(time.monotonic() - t0, 3)
+
+        usage = raw_response.get("usage", {})
+        self.last_usage = usage
+        logger.info(
+            f"DeepSeek analyze_planning completed in {latency}s "
+            f"(prompt_tokens={usage.get('prompt_tokens')}, completion_tokens={usage.get('completion_tokens')})"
+        )
+
+        content_dict = self._extract_content_json(raw_response)
+
+        try:
+            proposal = PlanningProposal.model_validate(content_dict)
+            return proposal
+        except ValidationError as ve:
+            sanitized_err = self._sanitize_error_message(str(ve))
+            raise DeepSeekProviderError(
+                f"DeepSeek response failed PlanningProposal schema validation: {sanitized_err}"
+            )
+

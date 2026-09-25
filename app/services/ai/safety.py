@@ -151,3 +151,88 @@ class AISafetyGate:
         action.ensure_idempotency_key()
         return action
 
+    @classmethod
+    def validate_planning_proposal(
+        cls,
+        proposal: "PlanningProposal",
+        planning_context: Optional["PlanningContext"] = None,
+    ) -> Tuple[bool, Optional[str]]:
+        """Validate an AI-generated PlanningProposal against safety and grounding constraints.
+        
+        Rules:
+        1. Proposal must be a valid PlanningProposal instance.
+        2. requires_human_review MUST be True (AI planning is strictly advisory).
+        3. Overall confidence must be in [0.0, 1.0].
+        4. Summary must be non-empty.
+        5. If planning_context is provided:
+           - All task proposals must reference existing issue_keys in planning_context.
+           - All linked predecessors/successors must be valid issue keys.
+           - All sequencing proposals must reference existing issue_keys in planning_context.
+           - All risk signals referencing an issue_key must reference existing issue_keys in planning_context.
+        6. All task proposals must have confidence in [0.0, 1.0] and valid estimate units if provided.
+        7. All risk signals and assumptions must have confidence in [0.0, 1.0].
+        """
+        from app.core.models.planning import PlanningProposal, PlanningContext
+        if not isinstance(proposal, PlanningProposal):
+            return False, f"Expected PlanningProposal instance, got {type(proposal)}"
+
+        if not proposal.requires_human_review:
+            return False, "PlanningProposal must have requires_human_review=True (advisory only)"
+
+        if proposal.overall_confidence < 0.0 or proposal.overall_confidence > 1.0:
+            return False, f"Overall confidence out of bounds [0.0, 1.0]: {proposal.overall_confidence}"
+
+        if not proposal.summary or not proposal.summary.strip():
+            return False, "PlanningProposal summary must not be empty"
+
+        known_issue_keys = set()
+        known_resource_ids = set()
+        if planning_context is not None and isinstance(planning_context, PlanningContext):
+            known_issue_keys = {t.issue_key.strip().upper() for t in planning_context.tasks}
+            known_resource_ids = {r.resource_id.strip().lower() for r in planning_context.resources}
+
+        # Validate task proposals
+        for idx, tp in enumerate(proposal.task_proposals):
+            if not tp.requires_human_review:
+                return False, f"Task proposal {idx} ({tp.issue_key}) must have requires_human_review=True"
+            if tp.date_confidence < 0.0 or tp.date_confidence > 1.0:
+                return False, f"Task proposal {idx} ({tp.issue_key}) date_confidence out of bounds: {tp.date_confidence}"
+            if planning_context is not None and known_issue_keys:
+                if tp.issue_key.strip().upper() not in known_issue_keys:
+                    return False, f"Proposed task '{tp.issue_key}' does not exist in PlanningContext"
+            if tp.proposed_estimate:
+                if tp.proposed_estimate.confidence < 0.0 or tp.proposed_estimate.confidence > 1.0:
+                    return False, f"Estimate confidence for task '{tp.issue_key}' out of bounds"
+                if tp.proposed_estimate.value < 0.0:
+                    return False, f"Estimate value for task '{tp.issue_key}' cannot be negative"
+
+        # Validate sequencing proposals
+        for idx, sp in enumerate(proposal.sequencing_proposals):
+            if sp.confidence < 0.0 or sp.confidence > 1.0:
+                return False, f"Sequencing proposal {idx} ({sp.issue_key}) confidence out of bounds"
+            if sp.position < 1:
+                return False, f"Sequencing position for task '{sp.issue_key}' must be >= 1"
+            if planning_context is not None and known_issue_keys:
+                if sp.issue_key.strip().upper() not in known_issue_keys:
+                    return False, f"Sequenced task '{sp.issue_key}' does not exist in PlanningContext"
+
+        # Validate risk signals
+        for idx, rs in enumerate(proposal.risk_signals):
+            if not rs.requires_human_review:
+                return False, f"Risk signal {idx} must have requires_human_review=True"
+            if rs.confidence < 0.0 or rs.confidence > 1.0:
+                return False, f"Risk signal {idx} confidence out of bounds: {rs.confidence}"
+            if rs.issue_key and planning_context is not None and known_issue_keys:
+                if rs.issue_key.strip().upper() not in known_issue_keys:
+                    return False, f"Risk signal task '{rs.issue_key}' does not exist in PlanningContext"
+
+        # Validate assumptions
+        for idx, asm in enumerate(proposal.assumptions):
+            if not asm.requires_human_review:
+                return False, f"Assumption {idx} must have requires_human_review=True"
+            if asm.confidence < 0.0 or asm.confidence > 1.0:
+                return False, f"Assumption {idx} confidence out of bounds: {asm.confidence}"
+
+        return True, None
+
+
