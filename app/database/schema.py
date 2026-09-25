@@ -746,6 +746,34 @@ CREATE TABLE IF NOT EXISTS planning_approval_decisions (
 CREATE INDEX IF NOT EXISTS idx_plan_apr_dec_req ON planning_approval_decisions(approval_request_id);
 CREATE INDEX IF NOT EXISTS idx_plan_apr_dec_prop ON planning_approval_decisions(proposal_id, proposal_version);
 CREATE INDEX IF NOT EXISTS idx_plan_apr_dec_reviewer ON planning_approval_decisions(reviewer_user_id);
+
+-- Planning Executions table (Phase 4F)
+CREATE TABLE IF NOT EXISTS planning_executions (
+    id TEXT PRIMARY KEY,
+    execution_id TEXT NOT NULL UNIQUE,
+    approval_request_id TEXT NOT NULL,
+    proposal_id TEXT NOT NULL,
+    proposal_version TEXT NOT NULL,
+    context_version TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'PENDING',
+    dry_run INTEGER NOT NULL DEFAULT 0,
+    executor_user_id TEXT NOT NULL,
+    executor_display_name TEXT NOT NULL,
+    total_actions INTEGER NOT NULL DEFAULT 0,
+    successful_actions INTEGER NOT NULL DEFAULT 0,
+    failed_actions INTEGER NOT NULL DEFAULT 0,
+    blocked_actions INTEGER NOT NULL DEFAULT 0,
+    skipped_actions INTEGER NOT NULL DEFAULT 0,
+    result_payload_json TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_plan_exec_req ON planning_executions(approval_request_id);
+CREATE INDEX IF NOT EXISTS idx_plan_exec_state ON planning_executions(state);
+CREATE INDEX IF NOT EXISTS idx_plan_exec_prop ON planning_executions(proposal_id, proposal_version);
+CREATE INDEX IF NOT EXISTS idx_plan_exec_created ON planning_executions(created_at);
 """
 
 
@@ -787,6 +815,31 @@ def _migrate_planning_approval_tables(conn) -> None:
             acknowledged_issue_codes_json TEXT NOT NULL,
             comments TEXT,
             decided_at TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS planning_executions (
+            id TEXT PRIMARY KEY,
+            execution_id TEXT NOT NULL UNIQUE,
+            approval_request_id TEXT NOT NULL,
+            proposal_id TEXT NOT NULL,
+            proposal_version TEXT NOT NULL,
+            context_version TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'PENDING',
+            dry_run INTEGER NOT NULL DEFAULT 0,
+            executor_user_id TEXT NOT NULL,
+            executor_display_name TEXT NOT NULL,
+            total_actions INTEGER NOT NULL DEFAULT 0,
+            successful_actions INTEGER NOT NULL DEFAULT 0,
+            failed_actions INTEGER NOT NULL DEFAULT 0,
+            blocked_actions INTEGER NOT NULL DEFAULT 0,
+            skipped_actions INTEGER NOT NULL DEFAULT 0,
+            result_payload_json TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT NOT NULL,
             created_at TEXT NOT NULL
         )
         """

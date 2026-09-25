@@ -3335,3 +3335,139 @@ class PlanningApprovalRepository:
             return d
 
 
+class PlanningExecutionRepository:
+    """Repository for persisting Phase 4F planning execution runs and results."""
+
+    def __init__(self, manager: Optional[DatabaseManager] = None):
+        self.mgr = manager or db_manager
+
+    def save_execution(self, execution_payload: Dict[str, Any]) -> str:
+        """Insert or update a PlanningExecution record."""
+        exec_id = execution_payload["execution_id"]
+        req_id = execution_payload["approval_request_id"]
+        prop_id = execution_payload["proposal_id"]
+        prop_ver = execution_payload["proposal_version"]
+        ctx_ver = execution_payload["context_version"]
+        state = execution_payload["state"]
+        dry_run = 1 if execution_payload.get("dry_run") else 0
+        user_id = execution_payload.get("executor_user_id", "")
+        disp_name = execution_payload.get("executor_display_name", "")
+        total_actions = execution_payload.get("total_actions", 0)
+        successful_actions = execution_payload.get("successful_actions", 0)
+        failed_actions = execution_payload.get("failed_actions", 0)
+        blocked_actions = execution_payload.get("blocked_actions", 0)
+        skipped_actions = execution_payload.get("skipped_actions", 0)
+        payload_json = json.dumps(execution_payload)
+        started_at = execution_payload.get("started_at", utc_now_iso())
+        completed_at = execution_payload.get("completed_at", utc_now_iso())
+        now_iso = utc_now_iso()
+
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO planning_executions (
+                    id, execution_id, approval_request_id, proposal_id,
+                    proposal_version, context_version, state, dry_run,
+                    executor_user_id, executor_display_name, total_actions,
+                    successful_actions, failed_actions, blocked_actions,
+                    skipped_actions, result_payload_json, started_at,
+                    completed_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(execution_id) DO UPDATE SET
+                    state = excluded.state,
+                    successful_actions = excluded.successful_actions,
+                    failed_actions = excluded.failed_actions,
+                    blocked_actions = excluded.blocked_actions,
+                    skipped_actions = excluded.skipped_actions,
+                    result_payload_json = excluded.result_payload_json,
+                    completed_at = excluded.completed_at
+                """,
+                (
+                    exec_id,
+                    exec_id,
+                    req_id,
+                    prop_id,
+                    prop_ver,
+                    ctx_ver,
+                    state,
+                    dry_run,
+                    user_id,
+                    disp_name,
+                    total_actions,
+                    successful_actions,
+                    failed_actions,
+                    blocked_actions,
+                    skipped_actions,
+                    payload_json,
+                    started_at,
+                    completed_at,
+                    now_iso,
+                ),
+            )
+        return exec_id
+
+    def get_execution(self, execution_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a planning execution result by execution_id."""
+        if not execution_id:
+            return None
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                "SELECT result_payload_json FROM planning_executions WHERE execution_id = ? LIMIT 1",
+                (execution_id.strip(),),
+            )
+            row = cursor.fetchone()
+            if row and row["result_payload_json"]:
+                return json.loads(row["result_payload_json"])
+            return None
+
+    def get_execution_by_approval_request_id(self, approval_request_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve the latest planning execution result for an approval request."""
+        if not approval_request_id:
+            return None
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                """
+                SELECT result_payload_json FROM planning_executions
+                WHERE approval_request_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (approval_request_id.strip(),),
+            )
+            row = cursor.fetchone()
+            if row and row["result_payload_json"]:
+                return json.loads(row["result_payload_json"])
+            return None
+
+    def list_executions(
+        self,
+        state: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List planning executions optionally filtered by state."""
+        with self.mgr.session() as conn:
+            if state:
+                cursor = conn.execute(
+                    """
+                    SELECT result_payload_json FROM planning_executions
+                    WHERE state = ?
+                    ORDER BY created_at DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (state.strip().upper(), limit, offset),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT result_payload_json FROM planning_executions
+                    ORDER BY created_at DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (limit, offset),
+                )
+            rows = cursor.fetchall()
+            return [json.loads(r["result_payload_json"]) for r in rows if r["result_payload_json"]]
+
+
+

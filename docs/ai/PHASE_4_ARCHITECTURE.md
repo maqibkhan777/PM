@@ -393,5 +393,75 @@ Phase 4E creates a deterministic, auditable **Human Approval Gate** positioned s
 - **Zero Jira calls**, **zero Action Engine calls**, and **zero Discord/Mattermost mutation dispatches**.
 - Explicit unit tests verify mock connectors (`JiraConnector`, `DiscordWebhookConnector`, `MattermostConnector`, `ActionEngine`) receive zero invocations during approval operations.
 
+---
+
+## 8. Phase 4F: Approved Planning Execution (`app/services/ai/planning_execution.py`)
+
+### 8.1 Execution Boundary & Core Invariants
+Phase 4F is the **only** planning phase permitted to perform Jira mutations. It strictly executes the exact proposal that an authorized human explicitly approved in Phase 4E.
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│             PHASE 4E: HUMAN PLANNING APPROVAL GATE                     │
+│  - PlanningApprovalRequest (State == APPROVED)                         │
+│  - Bound to (proposal_id, proposal_version, context_version)           │
+│  - Mandatory acknowledgement of warning issue codes                    │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │ (APPROVED Decision Record)
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│             PHASE 4F: APPROVED PLANNING EXECUTION                      │
+│                                                                        │
+│  Safety Gate & Authorization:                                          │
+│  - Capability: Capability.EXECUTE_PLANNING (Separate from approval)    │
+│  - Verification: approval.state == APPROVED                            │
+│  - Exact Version Binding: proposal_id/ver + context_ver match exact    │
+│  - Validation Integrity: ProposalValidationStatus != INVALID          │
+│                                                                        │
+│  Action Allowlist & Live State Verification:                           │
+│  - Allowed Mutations: ALLOWED_PLANNING_MUTATIONS = {UPDATE_DUE_DATE}   │
+│  - Unsupported fields (e.g. estimates) produce PARTIALLY_COMPLETED /   │
+│    BLOCKED and are recorded honestly (No silent dropping)              │
+│  - Live State Inspection: Fetches current Jira issue state prior to    │
+│    dispatch. Unchanged due date is SKIPPED without redundant mutation │
+│                                                                        │
+│  Action Engine Integration & DRY_RUN:                                  │
+│  - Centralized settings.DRY_RUN simulation support                     │
+│  - Mutates Jira exclusively via ActionEngine.execute(BaseAction)       │
+│  - Exactly-Once Idempotency: Duplicate runs return ALREADY_EXECUTED   │
+│                                                                        │
+│  Audit & Immutability:                                                 │
+│  - Full lifecycle audit trail (STARTED, ATTEMPTED, SUCCEEDED,          │
+│    FAILED, COMPLETED, PARTIALLY_COMPLETED, ALREADY_EXECUTED)           │
+│  - ZERO AI calls, prompts, or re-planning during execution             │
+│  - Zero automatic re-approval on conflict                              │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                        JIRA CLOUD REST API V3                          │
+│  - Atomically updates target Jira issue fields (e.g. duedate)          │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### 8.2 Execution Domain Models (`app/core/models/planning.py`)
+- **`PlanningExecutionState`**: Deterministic lifecycle states: `PENDING`, `EXECUTING`, `COMPLETED`, `PARTIALLY_COMPLETED`, `FAILED`, `BLOCKED`, `ALREADY_EXECUTED`.
+- **`PlanningExecutionActionType`**: Explicitly supported Jira mutation types (`UPDATE_DUE_DATE`).
+- **`PlanningExecutionAction`**: Deterministic unit of mutation intent (`action_id`, `issue_key`, `action_type`, `field_name`, `approved_value`, `current_value`, `state`, `action_engine_action_id`).
+- **`PlanningExecutionFailure`**: Structured record of execution error or blockage (`failure_category`, `message`, `issue_key`, `action_type`, `details`).
+- **`PlanningExecutionRequest`**: Human-initiated execution request (`execution_id`, `approval_request_id`, `proposal_id`, `proposal_version`, `context_version`, `executor`, `dry_run`, `requested_at`).
+- **`PlanningExecutionResult`**: Immutable execution run summary (`execution_id`, `approval_request_id`, `state`, `dry_run`, `total_actions`, `successful_actions`, `failed_actions`, `blocked_actions`, `skipped_actions`, `actions`, `failures`, `summary`).
+
+### 8.3 Absolute Safety & Operational Guarantees
+1. **NO AI In Execution Path**: The execution path contains zero LLM calls, zero DeepSeek invocations, and zero re-planning attempts.
+2. **Approved Consumption Only**: Execution strictly requires `approval.state == APPROVED`. Pending, rejected, or expired proposals are blocked fail-closed.
+3. **Exact Version Binding**: Execution requests must match the exact `proposal_id`, `proposal_version`, and `context_version` stored on the approval record.
+4. **Action Allowlist**: Only explicitly supported mutations in `ALLOWED_PLANNING_MUTATIONS` are dispatched to Jira. Unsupported fields are reported as `UNSUPPORTED_ACTION` without silent skipping.
+5. **Live State Inspection**: Prior to mutating Jira, current issue state is inspected. If live values conflict or already match, actions are resolved safely without overwriting.
+6. **DRY_RUN Simulation**: When `settings.DRY_RUN=true` or `request.dry_run=true`, action plans and previews are generated and audited with zero external mutations.
+7. **Idempotency**: Completed executions are persisted in `planning_executions`. Subsequent executions for the same approved proposal immediately return `ALREADY_EXECUTED`.
+8. **Separate RBAC Capability**: Requires `Capability.EXECUTE_PLANNING`, distinct from approval authorization.
+
+
 
 

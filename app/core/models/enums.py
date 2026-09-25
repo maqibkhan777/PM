@@ -118,6 +118,7 @@ class Capability(str, Enum):
     SEND_EMBED = "SEND_EMBED"
     APPROVE_PLANNING = "APPROVE_PLANNING"
     REJECT_PLANNING = "REJECT_PLANNING"
+    EXECUTE_PLANNING = "EXECUTE_PLANNING"
 
     # Destructive capabilities
     DELETE_TASK = "DELETE_TASK"
@@ -143,6 +144,7 @@ CAPABILITY_SECURITY_MAP = {
     Capability.SEND_EMBED: SecurityLevel.WRITE,
     Capability.APPROVE_PLANNING: SecurityLevel.WRITE,
     Capability.REJECT_PLANNING: SecurityLevel.WRITE,
+    Capability.EXECUTE_PLANNING: SecurityLevel.WRITE,
     Capability.DELETE_TASK: SecurityLevel.DESTRUCTIVE,
     Capability.BULK_DELETE: SecurityLevel.DESTRUCTIVE,
 }

@@ -1122,6 +1122,117 @@ class PlanningApprovalRequest(BaseModel):
         extra = "forbid"
 
 
+# -------------------------------------------------------------------------
+# Phase 4F: Approved Planning Execution Domain Models
+# -------------------------------------------------------------------------
+
+class PlanningExecutionState(str, Enum):
+    """Deterministic lifecycle state for approved planning execution."""
+    PENDING = "PENDING"
+    EXECUTING = "EXECUTING"
+    COMPLETED = "COMPLETED"
+    PARTIALLY_COMPLETED = "PARTIALLY_COMPLETED"
+    FAILED = "FAILED"
+    BLOCKED = "BLOCKED"
+    ALREADY_EXECUTED = "ALREADY_EXECUTED"
+
+
+class PlanningExecutionFailureCategory(str, Enum):
+    """Deterministic failure classification for planning execution."""
+    APPROVAL_INVALID = "APPROVAL_INVALID"
+    APPROVAL_EXPIRED = "APPROVAL_EXPIRED"
+    VERSION_MISMATCH = "VERSION_MISMATCH"
+    VALIDATION_INVALID = "VALIDATION_INVALID"
+    LIVE_STATE_CONFLICT = "LIVE_STATE_CONFLICT"
+    UNSUPPORTED_ACTION = "UNSUPPORTED_ACTION"
+    AUTHORIZATION_FAILURE = "AUTHORIZATION_FAILURE"
+    JIRA_NOT_FOUND = "JIRA_NOT_FOUND"
+    JIRA_PERMISSION_FAILURE = "JIRA_PERMISSION_FAILURE"
+    JIRA_API_FAILURE = "JIRA_API_FAILURE"
+    CONCURRENCY_FAILURE = "CONCURRENCY_FAILURE"
+    DRY_RUN = "DRY_RUN"
+    ALREADY_EXECUTED = "ALREADY_EXECUTED"
+    UNKNOWN_FAILURE = "UNKNOWN_FAILURE"
+
+
+class PlanningExecutionActionType(str, Enum):
+    """Explicitly supported Jira planning mutation action types."""
+    UPDATE_DUE_DATE = "UPDATE_DUE_DATE"
+
+
+class PlanningExecutionAction(BaseModel):
+    """Deterministic, immutable unit of planning mutation intent extracted from an approved proposal."""
+    action_id: str = Field(..., description="Unique deterministic action ID")
+    issue_key: str = Field(..., description="Target Jira issue key")
+    action_type: PlanningExecutionActionType = Field(..., description="Allowed mutation action type")
+    field_name: str = Field(..., description="Target Jira field name (e.g. duedate)")
+    approved_value: Any = Field(..., description="Approved value from human-approved proposal")
+    current_value: Optional[Any] = Field(None, description="Live value in Jira prior to execution")
+    state: str = Field(default="PENDING", description="Action state: PENDING, SUCCEEDED, FAILED, BLOCKED, SKIPPED")
+    error_message: Optional[str] = None
+    failure_category: Optional[PlanningExecutionFailureCategory] = None
+    action_engine_action_id: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
+        extra = "forbid"
+
+
+class PlanningExecutionFailure(BaseModel):
+    """Deterministic structured record of an execution error or blockage."""
+    failure_category: PlanningExecutionFailureCategory
+    message: str
+    issue_key: Optional[str] = None
+    action_type: Optional[str] = None
+    details: Dict[str, Any] = Field(default_factory=dict)
+
+    class Config:
+        populate_by_name = True
+        extra = "forbid"
+
+
+class PlanningExecutionRequest(BaseModel):
+    """Typed execution request initiated by an authorized human for an APPROVED proposal."""
+    execution_id: str = Field(..., description="Unique execution instance identifier")
+    approval_request_id: str = Field(..., description="Approved approval request ID")
+    proposal_id: str = Field(..., description="Approved proposal ID")
+    proposal_version: str = Field(..., description="Approved proposal version")
+    context_version: str = Field(..., description="Approved context version")
+    executor: ReviewerIdentity = Field(..., description="Authenticated human executor identity")
+    dry_run: bool = Field(default=False, description="Whether to simulate execution without mutating Jira")
+    requested_at: str = Field(..., description="ISO-8601 UTC timestamp of execution request")
+
+    class Config:
+        populate_by_name = True
+        extra = "forbid"
+
+
+class PlanningExecutionResult(BaseModel):
+    """Deterministic, immutable outcome of executing an approved planning proposal."""
+    execution_id: str
+    approval_request_id: str
+    proposal_id: str
+    proposal_version: str
+    context_version: str
+    state: PlanningExecutionState
+    dry_run: bool
+    started_at: str
+    completed_at: str
+    total_actions: int = 0
+    successful_actions: int = 0
+    failed_actions: int = 0
+    blocked_actions: int = 0
+    skipped_actions: int = 0
+    actions: List[PlanningExecutionAction] = Field(default_factory=list)
+    failures: List[PlanningExecutionFailure] = Field(default_factory=list)
+    summary: str = Field(default="", description="Summary of execution outcome")
+
+    class Config:
+        populate_by_name = True
+        extra = "forbid"
+
+
+
 
 
 
