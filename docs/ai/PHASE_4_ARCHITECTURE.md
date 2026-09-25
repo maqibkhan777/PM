@@ -215,3 +215,97 @@ All `ProposalValidationIssue` items are sorted deterministically:
 3. **Issue Key**: Lexicographical order
 4. **Code**: Unique issue code
 
+---
+
+## 6. Phase 4D: Deterministic AI Planning Evaluation
+
+### 6.1 Evaluation Purpose & Architecture Pipeline
+Phase 4D establishes the comprehensive evaluation framework for the end-to-end read-only AI planning pipeline:
+
+```
+PlanningContext
+      │
+      ▼
+PlanningPromptBuilder (planning-v1)
+      │
+      ▼
+DeepSeek AIPlanningService / MockAIProvider
+      │
+      ▼
+PlanningProposal (Pydantic contract validation)
+      │
+      ▼
+PlanningProposalValidator (11-layer deterministic check)
+      │
+      ▼
+Evaluation Report (Scenario metrics & failure categorization)
+```
+
+The objective is to strictly measure whether AI-generated planning proposals are:
+1. Grounded in deterministic PM facts.
+2. Structurally valid against Pydantic schemas.
+3. Compatible with task dependencies and `HARD_BLOCK` constraints.
+4. Feasible against resource queue allocations and working-day calendars.
+5. Consistent with team capacity bounds.
+6. Aligned with deterministic schedule baselines.
+7. Honest regarding data uncertainty and missing evidence.
+8. Suitable for human review without authorizing automated mutations.
+
+### 6.2 Deterministic Evaluation Dataset (`app/services/ai/evaluation/planning_dataset.py`)
+The evaluation dataset contains 20 bounded, synthetic scenarios (A through T) covering the full spectrum of PM planning edge cases:
+
+| ID | Scenario Name | Category | Key Planning Characteristic |
+| :--- | :--- | :--- | :--- |
+| `EVAL-SCEN-A` | Healthy Planning Context | `HEALTHY` | Balanced team, known history, valid schedule |
+| `EVAL-SCEN-B` | Limited Historical Data | `UNCERTAINTY` | Few completed tasks, medium pace confidence |
+| `EVAL-SCEN-C` | No Historical Data | `DATA_QUALITY` | 0 completed tasks, default role benchmark |
+| `EVAL-SCEN-D` | Partial Capacity Information | `CAPACITY` | Resource marked `CAPACITY_UNAVAILABLE` |
+| `EVAL-SCEN-E` | Multiple Resources Parallel | `PARALLELISM` | Concurrent independent tasks across resources |
+| `EVAL-SCEN-F` | Overloaded Resource Queue | `CAPACITY` | Workload exceeds capacity ratio > 1.4x |
+| `EVAL-SCEN-G` | HARD_BLOCK Dependency Chain | `DEPENDENCY` | Strict chronological blocking dependency |
+| `EVAL-SCEN-H` | Long Dependency Chain | `DEPENDENCY` | Multi-step sequential dependency chain |
+| `EVAL-SCEN-I` | Dependency Cycle | `DEPENDENCY` | Circular blocking edge in context |
+| `EVAL-SCEN-J` | Explicit Artifact Handoff | `ARTIFACT` | Cross-resource producer/consumer deliverable |
+| `EVAL-SCEN-K` | Missing Duration Evidence | `ESTIMATE` | Tasks with unknown duration confidence |
+| `EVAL-SCEN-L` | Explicit Jira Estimates | `ESTIMATE` | High-confidence explicit task estimates |
+| `EVAL-SCEN-M` | Fallback Benchmark Duration | `ESTIMATE` | Tasks estimated via role complexity benchmark |
+| `EVAL-SCEN-N` | Tasks Near Planning Horizon | `HORIZON` | Tasks completing on final horizon working day |
+| `EVAL-SCEN-O` | Tasks Beyond Horizon | `HORIZON` | Tasks projected past 10-day working horizon |
+| `EVAL-SCEN-P` | Tight Deadlines | `SCHEDULE` | Tasks due within 1-2 working days of anchor |
+| `EVAL-SCEN-Q` | Competing Priorities | `SEQUENCING` | Multiple Highest/High tasks in single queue |
+| `EVAL-SCEN-R` | Reopened / Stale / Overdue | `ATTENTION` | Tasks flagged overdue or stale in queue |
+| `EVAL-SCEN-S` | Mixed Task Complexity | `COMPLEXITY` | Trivial through Very Large complexity mix |
+| `EVAL-SCEN-T` | Truncated PlanningContext | `TRUNCATION` | Bounded context with truncation metadata |
+
+### 6.3 Structured Failure Taxonomy
+Rather than reducing evaluations to an arbitrary single "AI score" or "pass/fail" rating, failed scenarios are classified according to a 12-category failure taxonomy (`PlanningFailureCategory`):
+- `STRUCTURAL_FAILURE`: JSON parse error or Pydantic validation failure.
+- `GROUNDING_FAILURE`: Proposal invents ungrounded issue keys, resources, or dependencies.
+- `HARD_CONSTRAINT_FAILURE`: Weekend dates, invalid date ordering, or unauthorized reassignment.
+- `ESTIMATION_FAILURE`: Unsupported estimate values or non-hour units.
+- `SCHEDULE_FAILURE`: Schedule deviations exceeding horizon boundaries.
+- `CAPACITY_FAILURE`: Proposed workload exceeds resource capacity ratio (>1.4x).
+- `DEPENDENCY_FAILURE`: Start date scheduled before `HARD_BLOCK` predecessor completion.
+- `ARTIFACT_FAILURE`: Artifact handoff timing conflicts.
+- `UNCERTAINTY_FAILURE`: Invented facts when data quality is missing or truncated.
+- `COMPLETENESS_FAILURE`: Missing required proposal sections despite available evidence.
+- `PROVIDER_FAILURE`: HTTP, network, or provider-level execution exceptions.
+- `OTHER`: Uncategorized operational warnings.
+
+### 6.4 Evaluation Metrics & Reporting (`app/services/ai/evaluation/planning_harness.py`)
+The `PlanningEvaluationHarness` executes scenarios deterministically and compiles `PlanningEvaluationReport` containing:
+- **Structural Validity**: Parse success rate, schema validity rate, forbidden field rejection.
+- **Grounding**: Grounded count, grounding failure rate, total invented entities.
+- **Hard Safety Violations**: Total hard constraint errors, `HARD_BLOCK` violations, resource reassignment violations, invalid date count, capacity exceeded count.
+- **Estimation Quality**: Supported estimate count, reasonable variance count, large variance count, missing evidence count, mean/median absolute variance.
+- **Schedule Quality**: Schedule aligned count, significant variance count, beyond horizon count.
+- **Operational Metrics**: Latency (min, max, median, mean), token usage (prompt, completion, total), model, prompt version.
+
+### 6.5 Production Safety & Determinism Invariants
+1. **NO Production Mutations**: Phase 4D is strictly EVALUATION ONLY.
+2. **ZERO External Provider Calls in Default Suite**: Offline mock harness executes with zero network overhead.
+3. **Opt-In Live Evaluation**: Live tests against DeepSeek require explicit `RUN_LIVE_AI_PLANNING_EVAL=true` and `AI_API_KEY`.
+4. **Authoritative Validator**: Phase 4C validator thresholds remain strictly untouched.
+5. **No Model Rankings**: Evaluation yields factual scenario measurements rather than subjective scores.
+
+

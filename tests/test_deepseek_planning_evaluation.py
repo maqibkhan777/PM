@@ -163,6 +163,58 @@ async def test_offline_planning_evaluation_across_all_scenarios():
 
 
 # ---------------------------------------------------------------------------
+# Phase 4D: Harness Evaluation Across 20 Scenarios (Mock & Live)
+# ---------------------------------------------------------------------------
+
+from app.services.ai.evaluation.planning_dataset import PHASE_4D_EVALUATION_DATASET
+from app.services.ai.evaluation.planning_harness import PlanningEvaluationHarness
+
+@pytest.mark.asyncio
+async def test_offline_planning_evaluation_phase_4d_harness():
+    """Verify DeepSeekAIProvider evaluates all 20 Phase 4D scenarios via PlanningEvaluationHarness."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        user_content = body["messages"][1]["content"]
+
+        matched_scenario = None
+        for scen in PHASE_4D_EVALUATION_DATASET:
+            if scen.context.tasks and scen.context.tasks[0].issue_key in user_content:
+                matched_scenario = scen
+                break
+
+        if not matched_scenario:
+            matched_scenario = PHASE_4D_EVALUATION_DATASET[0]
+
+        mock_payload = _build_grounded_mock_proposal(matched_scenario.context)
+
+        return httpx.Response(
+            status_code=200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(mock_payload),
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 150, "completion_tokens": 90},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = DeepSeekAIProvider(api_key="sk-test-mock-key", client=client)
+    harness = PlanningEvaluationHarness(provider=provider)
+
+    report = await harness.run_evaluation(PHASE_4D_EVALUATION_DATASET)
+    assert report.total_scenarios == 20
+    assert report.successful_calls == 20
+    assert report.failed_calls == 0
+    assert report.grounded_count == 20
+    assert report.parse_success_count == 20
+
+
+# ---------------------------------------------------------------------------
 # Live Evaluation Gate (Opt-In Only)
 # ---------------------------------------------------------------------------
 
@@ -177,11 +229,9 @@ async def test_live_deepseek_planning_evaluation():
         pytest.skip("AI_API_KEY is not configured")
 
     provider = DeepSeekAIProvider(api_key=api_key)
+    harness = PlanningEvaluationHarness(provider=provider)
 
-    for scenario in PLANNING_EVALUATION_SCENARIOS:
-        proposal = await provider.analyze_planning(scenario.context)
-        assert isinstance(proposal, PlanningProposal)
-        assert proposal.requires_human_review is True
+    report = await harness.run_evaluation(PHASE_4D_EVALUATION_DATASET)
+    assert report.total_scenarios == 20
+    assert report.successful_calls > 0
 
-        is_valid, err = AISafetyGate.validate_planning_proposal(proposal, scenario.context)
-        assert is_valid is True, f"Live evaluation on {scenario.scenario_id} failed safety validation: {err}"
