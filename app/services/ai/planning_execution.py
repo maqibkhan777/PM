@@ -394,6 +394,10 @@ class PlanningExecutionService:
             # Check for due date mutation
             if task.proposed_due_date:
                 action_id = f"act-{approval.proposal_id}-{task.issue_key}-duedate"
+                expected_pre = None
+                if approval.baseline_task_states and task.issue_key in approval.baseline_task_states:
+                    expected_pre = approval.baseline_task_states[task.issue_key].get("due_date")
+
                 actions.append(
                     PlanningExecutionAction(
                         action_id=action_id,
@@ -401,6 +405,7 @@ class PlanningExecutionService:
                         action_type=PlanningExecutionActionType.UPDATE_DUE_DATE,
                         field_name="duedate",
                         approved_value=task.proposed_due_date,
+                        expected_pre_execution_value=expected_pre,
                         state="PENDING",
                     )
                 )
@@ -433,6 +438,7 @@ class PlanningExecutionService:
         """Execute a single planning mutation action after verifying live Jira state."""
         issue_key = action.issue_key
         approved_val = action.approved_value
+        expected_pre = action.expected_pre_execution_value
 
         # 1. Inspect Current Live Jira State
         try:
@@ -459,11 +465,33 @@ class PlanningExecutionService:
         live_due_date = fields.get("duedate")
         action.current_value = live_due_date
 
-        # Check for Live State Conflict: if Jira already has the exact approved value, it's a no-op
+        # Check for Live State Up-to-Date: if Jira already has the exact approved value, it's a no-op
         if live_due_date == approved_val:
             action.state = "SKIPPED"
             action.error_message = f"Live Jira due date is already {approved_val} (already up-to-date)."
             return action, None
+
+        # Check for Live State Conflict: if Jira state diverged from the approved baseline state
+        if expected_pre is not None and live_due_date != expected_pre:
+            msg = (
+                f"Live Jira due date '{live_due_date}' on issue '{issue_key}' conflicts with the "
+                f"expected approved baseline state '{expected_pre}'. Overwriting newer changes is prohibited."
+            )
+            action.state = "BLOCKED"
+            action.failure_category = PlanningExecutionFailureCategory.LIVE_STATE_CONFLICT
+            action.error_message = msg
+            failure = PlanningExecutionFailure(
+                failure_category=PlanningExecutionFailureCategory.LIVE_STATE_CONFLICT,
+                message=msg,
+                issue_key=issue_key,
+                action_type=action.action_type.value,
+                details={
+                    "approved_value": approved_val,
+                    "expected_pre_execution_value": expected_pre,
+                    "live_value": live_due_date,
+                },
+            )
+            return action, failure
 
         # 2. Construct Action Engine BaseAction
         engine_action = BaseAction(

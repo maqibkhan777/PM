@@ -95,9 +95,9 @@ def audit_svc(test_db):
 @pytest.fixture
 def mock_jira_client():
     client = MagicMock(spec=JiraClient)
-    # Default behavior: get_issue returns an issue with due date 2026-10-01
-    client.get_issue = AsyncMock(return_value={"key": "PROJ-101", "fields": {"duedate": "2026-10-01"}})
-    client.update_fields = AsyncMock(return_value={"id": "PROJ-101", "key": "PROJ-101"})
+    # Default behavior: get_issue returns an issue with due date 2026-10-01 matching HLT-101
+    client.get_issue = AsyncMock(return_value={"key": "HLT-101", "fields": {"duedate": "2026-10-01"}})
+    client.update_fields = AsyncMock(return_value={"id": "HLT-101", "key": "HLT-101"})
     return client
 
 
@@ -111,8 +111,8 @@ def mock_action_engine(test_db):
             action_id="act-123",
             status=ActionStatus.COMPLETED,
             target_system="jira",
-            target_id="PROJ-101",
-            result_data={"key": "PROJ-101", "duedate": "2026-10-05"},
+            target_id="HLT-101",
+            result_data={"key": "HLT-101", "duedate": "2026-10-05"},
         )
     )
     return engine
@@ -132,10 +132,13 @@ from app.services.ai.evaluation.planning_dataset import PHASE_4D_EVALUATION_DATA
 
 
 def _make_dummy_context() -> PlanningContext:
-    return PHASE_4D_EVALUATION_DATASET[0].context
+    ctx = PHASE_4D_EVALUATION_DATASET[0].context
+    # Ensure HLT-101 has an established baseline due_date of 2026-10-01
+    ctx.tasks[0].due_date = "2026-10-01"
+    return ctx
 
 
-def _make_dummy_proposal(issue_key="PROJ-101", proposed_due_date="2026-10-05", proposed_estimate_val=None) -> PlanningProposal:
+def _make_dummy_proposal(issue_key="HLT-101", proposed_due_date="2026-10-05", proposed_estimate_val=None) -> PlanningProposal:
     est = None
     if proposed_estimate_val is not None:
         est = PlanningEstimate(value=proposed_estimate_val, unit=EstimateUnit.HOURS)
@@ -452,7 +455,7 @@ async def test_requirement_l_jira_issue_missing(execution_service, mock_jira_cli
 
 @pytest.mark.asyncio
 async def test_requirement_m_live_jira_state_up_to_date(execution_service, mock_jira_client, test_db):
-    """Test M: If Jira already has the exact approved due date, action is SKIPPED without redundant mutation."""
+    """Test M / B: If Jira already has the exact approved due date, action is SKIPPED without redundant mutation."""
     mock_jira_client.get_issue = AsyncMock(return_value={"key": "PROJ-101", "fields": {"duedate": "2026-10-05"}})
     req_id = _create_approved_request(test_db)
     executor = ReviewerIdentity(user_id="exec-1", display_name="Lead PM", roles=["pm"])
@@ -470,6 +473,41 @@ async def test_requirement_m_live_jira_state_up_to_date(execution_service, mock_
     res = await execution_service.execute_approved_planning(exec_req)
     assert res.state == PlanningExecutionState.COMPLETED
     assert res.actions[0].state == "SKIPPED"
+
+
+@pytest.mark.asyncio
+async def test_requirement_c_and_n_live_state_conflict_blocked(execution_service, mock_jira_client, test_db):
+    """Test C & N: If live Jira due date has diverged from approved baseline state, action is BLOCKED with LIVE_STATE_CONFLICT."""
+    # Approved baseline had due date 2026-10-01 (from context task HLT-101)
+    # Live Jira now has 2026-10-10 (a conflicting/newer change)
+    mock_jira_client.get_issue = AsyncMock(return_value={"key": "HLT-101", "fields": {"duedate": "2026-10-10"}})
+    
+    # Create approved proposal with baseline state for HLT-101 having due_date = 2026-10-01
+    prop = _make_dummy_proposal(issue_key="HLT-101", proposed_due_date="2026-10-05")
+    req_id = _create_approved_request(test_db, proposal=prop)
+    
+    executor = ReviewerIdentity(user_id="exec-1", display_name="Lead PM", roles=["pm"])
+
+    exec_req = PlanningExecutionRequest(
+        execution_id="exec-conflict",
+        approval_request_id=req_id,
+        proposal_id="prop-001",
+        proposal_version="proposal-v1",
+        context_version="planning-v1",
+        executor=executor,
+        requested_at="2026-09-26T01:00:00Z",
+    )
+
+    res = await execution_service.execute_approved_planning(exec_req)
+    # Divergence must block execution to prevent overwriting newer human changes
+    assert res.state == PlanningExecutionState.BLOCKED
+    assert res.blocked_actions == 1
+    assert res.successful_actions == 0
+    assert len(res.failures) >= 1
+    assert res.failures[0].failure_category == PlanningExecutionFailureCategory.LIVE_STATE_CONFLICT
+    assert res.actions[0].state == "BLOCKED"
+    assert res.actions[0].failure_category == PlanningExecutionFailureCategory.LIVE_STATE_CONFLICT
+    assert "conflicts with the expected approved baseline state" in res.failures[0].message
 
 
 @pytest.mark.asyncio

@@ -103,6 +103,16 @@ class PlanningApprovalService:
         # Extract snapshot facts for transparent PM review
         affected_keys = sorted(list({t.issue_key for t in proposal.task_proposals}))
         affected_res = sorted(list({r.resource_id for r in context.resources}))
+        baseline_tasks = {
+            t.issue_key: {
+                "due_date": t.due_date,
+                "status": t.status,
+                "priority": t.priority,
+                "assigned_resource_id": t.assigned_resource_id,
+                "estimated_remaining_hours": t.estimated_remaining_hours,
+            }
+            for t in context.tasks
+        }
 
         request = PlanningApprovalRequest(
             approval_request_id=req_id,
@@ -118,6 +128,7 @@ class PlanningApprovalService:
             affected_resource_ids=affected_res,
             validation_status=validation_result.status,
             validation_result=validation_result,
+            baseline_task_states=baseline_tasks,
             task_proposals=proposal.task_proposals,
             sequencing_proposals=proposal.sequencing_proposals,
             risk_signals=proposal.risk_signals,

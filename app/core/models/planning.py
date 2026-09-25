@@ -1107,6 +1107,12 @@ class PlanningApprovalRequest(BaseModel):
     validation_status: ProposalValidationStatus
     validation_result: ProposalValidationResult
     
+    # Baseline task snapshot from PlanningContext at time of approval request creation
+    baseline_task_states: Dict[str, Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Snapshot of baseline task fields (e.g. due_date, status, estimate) from PlanningContext",
+    )
+
     # Proposal content snapshots
     task_proposals: List[TaskPlanningProposal] = Field(default_factory=list)
     sequencing_proposals: List[SequencingProposal] = Field(default_factory=list)
@@ -1167,6 +1173,7 @@ class PlanningExecutionAction(BaseModel):
     action_type: PlanningExecutionActionType = Field(..., description="Allowed mutation action type")
     field_name: str = Field(..., description="Target Jira field name (e.g. duedate)")
     approved_value: Any = Field(..., description="Approved value from human-approved proposal")
+    expected_pre_execution_value: Optional[Any] = Field(None, description="Expected pre-execution value from approval snapshot")
     current_value: Optional[Any] = Field(None, description="Live value in Jira prior to execution")
     state: str = Field(default="PENDING", description="Action state: PENDING, SUCCEEDED, FAILED, BLOCKED, SKIPPED")
     error_message: Optional[str] = None
