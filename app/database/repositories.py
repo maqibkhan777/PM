@@ -3165,3 +3165,173 @@ class PluginBoardRepository:
             )
             return [row[0] for row in cursor.fetchall() if row[0]]
 
+
+class PlanningApprovalRepository:
+    """Repository for storing and querying Phase 4E Planning Approval requests and decisions."""
+
+    def __init__(self, manager: Optional[DatabaseManager] = None):
+        self.mgr = manager or db_manager
+
+    def save_request(self, request_payload: Dict[str, Any]) -> str:
+        """Insert or update a PlanningApprovalRequest record."""
+        req_id = request_payload["approval_request_id"]
+        prop_id = request_payload["proposal_id"]
+        prop_ver = request_payload["proposal_version"]
+        ctx_ver = request_payload["context_version"]
+        anchor_d = request_payload["anchor_date"]
+        state = request_payload.get("state", "PENDING")
+        summary = request_payload.get("proposal_summary", "")
+        val_status = request_payload.get("validation_status", "VALID")
+        val_res_json = json.dumps(request_payload.get("validation_result", {}))
+        payload_json = json.dumps(request_payload)
+        now_iso = utc_now_iso()
+        created_at = request_payload.get("created_at", now_iso)
+        expires_at = request_payload.get("expires_at", now_iso)
+
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO planning_approval_requests (
+                    id, approval_request_id, proposal_id, proposal_version,
+                    context_version, anchor_date, state, proposal_summary,
+                    validation_status, validation_result_json, request_payload_json,
+                    created_at, expires_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(approval_request_id) DO UPDATE SET
+                    state = excluded.state,
+                    request_payload_json = excluded.request_payload_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    req_id,
+                    req_id,
+                    prop_id,
+                    prop_ver,
+                    ctx_ver,
+                    anchor_d,
+                    state,
+                    summary,
+                    val_status,
+                    val_res_json,
+                    payload_json,
+                    created_at,
+                    expires_at,
+                    now_iso,
+                ),
+            )
+        return req_id
+
+    def get_request(self, approval_request_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a PlanningApprovalRequest by approval_request_id."""
+        if not approval_request_id:
+            return None
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                "SELECT request_payload_json FROM planning_approval_requests WHERE approval_request_id = ? LIMIT 1",
+                (approval_request_id.strip(),),
+            )
+            row = cursor.fetchone()
+            if row and row["request_payload_json"]:
+                return json.loads(row["request_payload_json"])
+            return None
+
+    def list_requests(
+        self,
+        state: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List approval requests optionally filtered by lifecycle state."""
+        with self.mgr.session() as conn:
+            if state:
+                cursor = conn.execute(
+                    """
+                    SELECT request_payload_json FROM planning_approval_requests
+                    WHERE state = ?
+                    ORDER BY created_at DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (state.strip().upper(), limit, offset),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT request_payload_json FROM planning_approval_requests
+                    ORDER BY created_at DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (limit, offset),
+                )
+            rows = cursor.fetchall()
+            return [json.loads(r["request_payload_json"]) for r in rows if r["request_payload_json"]]
+
+    def save_decision(self, decision_payload: Dict[str, Any]) -> str:
+        """Insert a PlanningApprovalDecision record and atomically transition request state."""
+        dec_id = decision_payload["decision_id"]
+        req_id = decision_payload["approval_request_id"]
+        prop_id = decision_payload["proposal_id"]
+        prop_ver = decision_payload["proposal_version"]
+        ctx_ver = decision_payload["context_version"]
+        dec_state = decision_payload["decision"]
+        rev = decision_payload["reviewer"]
+        user_id = rev["user_id"]
+        disp_name = rev.get("display_name", user_id)
+        roles_json = json.dumps(rev.get("roles", []))
+        ack_json = json.dumps(decision_payload.get("acknowledged_validation_issue_codes", []))
+        comments = decision_payload.get("comments")
+        decided_at = decision_payload.get("decided_at", utc_now_iso())
+        now_iso = utc_now_iso()
+
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO planning_approval_decisions (
+                    id, decision_id, approval_request_id, proposal_id,
+                    proposal_version, context_version, decision,
+                    reviewer_user_id, reviewer_display_name, reviewer_roles_json,
+                    acknowledged_issue_codes_json, comments, decided_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    dec_id,
+                    dec_id,
+                    req_id,
+                    prop_id,
+                    prop_ver,
+                    ctx_ver,
+                    dec_state,
+                    user_id,
+                    disp_name,
+                    roles_json,
+                    ack_json,
+                    comments,
+                    decided_at,
+                    now_iso,
+                ),
+            )
+        return dec_id
+
+    def get_decision_by_request_id(self, approval_request_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve decision record for a specific approval request."""
+        if not approval_request_id:
+            return None
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM planning_approval_decisions WHERE approval_request_id = ? LIMIT 1",
+                (approval_request_id.strip(),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            d["reviewer"] = {
+                "user_id": d["reviewer_user_id"],
+                "display_name": d["reviewer_display_name"],
+                "roles": json.loads(d["reviewer_roles_json"]) if d["reviewer_roles_json"] else [],
+            }
+            d["acknowledged_validation_issue_codes"] = (
+                json.loads(d["acknowledged_issue_codes_json"]) if d["acknowledged_issue_codes_json"] else []
+            )
+            return d
+
+

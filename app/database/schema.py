@@ -703,9 +703,94 @@ CREATE TABLE IF NOT EXISTS plugin_board_registry (
 
 CREATE INDEX IF NOT EXISTS idx_plugin_board_name ON plugin_board_registry(plugin_name);
 CREATE INDEX IF NOT EXISTS idx_plugin_board_sm_key ON plugin_board_registry(service_management_project_key);
-CREATE INDEX IF NOT EXISTS idx_plugin_board_supp_key ON plugin_board_registry(support_project_key);
-CREATE INDEX IF NOT EXISTS idx_plugin_board_int_key ON plugin_board_registry(internal_project_key);
+-- Planning Approval Requests table (Phase 4E)
+CREATE TABLE IF NOT EXISTS planning_approval_requests (
+    id TEXT PRIMARY KEY,
+    approval_request_id TEXT NOT NULL UNIQUE,
+    proposal_id TEXT NOT NULL,
+    proposal_version TEXT NOT NULL,
+    context_version TEXT NOT NULL,
+    anchor_date TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'PENDING',
+    proposal_summary TEXT NOT NULL,
+    validation_status TEXT NOT NULL,
+    validation_result_json TEXT NOT NULL,
+    request_payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_plan_apr_req_state ON planning_approval_requests(state);
+CREATE INDEX IF NOT EXISTS idx_plan_apr_req_prop ON planning_approval_requests(proposal_id, proposal_version);
+CREATE INDEX IF NOT EXISTS idx_plan_apr_req_created ON planning_approval_requests(created_at);
+
+-- Planning Approval Decisions table (Phase 4E)
+CREATE TABLE IF NOT EXISTS planning_approval_decisions (
+    id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL UNIQUE,
+    approval_request_id TEXT NOT NULL UNIQUE,
+    proposal_id TEXT NOT NULL,
+    proposal_version TEXT NOT NULL,
+    context_version TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    reviewer_user_id TEXT NOT NULL,
+    reviewer_display_name TEXT NOT NULL,
+    reviewer_roles_json TEXT NOT NULL,
+    acknowledged_issue_codes_json TEXT NOT NULL,
+    comments TEXT,
+    decided_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_plan_apr_dec_req ON planning_approval_decisions(approval_request_id);
+CREATE INDEX IF NOT EXISTS idx_plan_apr_dec_prop ON planning_approval_decisions(proposal_id, proposal_version);
+CREATE INDEX IF NOT EXISTS idx_plan_apr_dec_reviewer ON planning_approval_decisions(reviewer_user_id);
 """
+
+
+def _migrate_planning_approval_tables(conn) -> None:
+    """Idempotently ensure Phase 4E planning approval tables exist."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS planning_approval_requests (
+            id TEXT PRIMARY KEY,
+            approval_request_id TEXT NOT NULL UNIQUE,
+            proposal_id TEXT NOT NULL,
+            proposal_version TEXT NOT NULL,
+            context_version TEXT NOT NULL,
+            anchor_date TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'PENDING',
+            proposal_summary TEXT NOT NULL,
+            validation_status TEXT NOT NULL,
+            validation_result_json TEXT NOT NULL,
+            request_payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS planning_approval_decisions (
+            id TEXT PRIMARY KEY,
+            decision_id TEXT NOT NULL UNIQUE,
+            approval_request_id TEXT NOT NULL UNIQUE,
+            proposal_id TEXT NOT NULL,
+            proposal_version TEXT NOT NULL,
+            context_version TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            reviewer_user_id TEXT NOT NULL,
+            reviewer_display_name TEXT NOT NULL,
+            reviewer_roles_json TEXT NOT NULL,
+            acknowledged_issue_codes_json TEXT NOT NULL,
+            comments TEXT,
+            decided_at TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
 
 
 def _migrate_jira_issue_state(conn) -> None:
@@ -1802,6 +1887,7 @@ def _seed_authoritative_roles(conn) -> None:
 
 def _apply_migrations(conn) -> None:
     """Execute all registered schema migrations safely and idempotently."""
+    _migrate_planning_approval_tables(conn)
     _migrate_jira_issue_state(conn)
     _migrate_jira_worklogs(conn)
     _migrate_jira_issue_links(conn)

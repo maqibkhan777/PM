@@ -1027,6 +1027,102 @@ class ProposalValidationResult(BaseModel):
         extra = "forbid"
 
 
+# -------------------------------------------------------------------------
+# Phase 4E: Human Planning Approval Domain Models
+# -------------------------------------------------------------------------
+
+class PlanningApprovalState(str, Enum):
+    """Deterministic lifecycle states for human planning approval requests."""
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
+
+
+class ReviewerIdentity(BaseModel):
+    """Authenticated human reviewer identity."""
+    user_id: str = Field(..., description="System-authenticated unique user identifier")
+    display_name: str = Field(..., description="Human reviewer display name")
+    roles: List[str] = Field(default_factory=list, description="Authenticated RBAC roles")
+
+    @field_validator("user_id")
+    @classmethod
+    def check_user_id(cls, v: str) -> str:
+        if not v or not isinstance(v, str) or not v.strip():
+            raise ValueError("user_id must be a non-empty string")
+        return v.strip()
+
+    class Config:
+        populate_by_name = True
+        extra = "forbid"
+
+
+class PlanningApprovalDecision(BaseModel):
+    """Immutable, typed record of an authorized human approval or rejection decision."""
+    decision_id: str = Field(..., description="Deterministic unique decision record identifier")
+    approval_request_id: str = Field(..., description="Target PlanningApprovalRequest ID")
+    proposal_id: str = Field(..., description="Target PlanningProposal ID")
+    proposal_version: str = Field(..., description="Target proposal version")
+    context_version: str = Field(..., description="Target PlanningContext version")
+    decision: PlanningApprovalState = Field(..., description="APPROVED or REJECTED")
+    reviewer: ReviewerIdentity = Field(..., description="Authenticated reviewer identity")
+    decided_at: str = Field(..., description="ISO-8601 UTC timestamp of human decision")
+    acknowledged_validation_issue_codes: List[str] = Field(
+        default_factory=list,
+        description="Explicitly acknowledged warning/review issue codes (mandatory for NEEDS_REVIEW)",
+    )
+    comments: Optional[str] = Field(None, description="Optional human reviewer notes or explanation")
+
+    @field_validator("decision")
+    @classmethod
+    def check_decision_value(cls, v: PlanningApprovalState) -> PlanningApprovalState:
+        if v not in (PlanningApprovalState.APPROVED, PlanningApprovalState.REJECTED):
+            raise ValueError("Decision must be either APPROVED or REJECTED")
+        return v
+
+    class Config:
+        populate_by_name = True
+        extra = "forbid"
+
+
+class PlanningApprovalRequest(BaseModel):
+    """Deterministic, immutable container for human planning review and approval gate."""
+    approval_request_id: str = Field(..., description="Unique approval request ID (e.g. apr-uuid)")
+    proposal_id: str = Field(..., description="Unique proposal identifier")
+    proposal_version: str = Field(..., description="Proposal version (e.g. proposal-v1)")
+    context_version: str = Field(..., description="Context version (e.g. planning-v1)")
+    anchor_date: str = Field(..., description="Anchor date for planning timeline")
+    
+    # State & Timeline
+    state: PlanningApprovalState = Field(default=PlanningApprovalState.PENDING)
+    created_at: str = Field(..., description="ISO-8601 UTC timestamp of creation")
+    expires_at: str = Field(..., description="ISO-8601 UTC timestamp when pending approval expires")
+    
+    # Snapshot facts for transparent review
+    proposal_summary: str = Field(..., description="Executive summary of the proposal")
+    affected_issue_keys: List[str] = Field(default_factory=list)
+    affected_resource_ids: List[str] = Field(default_factory=list)
+    
+    # Phase 4C Deterministic Validation Finding Snapshot
+    validation_status: ProposalValidationStatus
+    validation_result: ProposalValidationResult
+    
+    # Proposal content snapshots
+    task_proposals: List[TaskPlanningProposal] = Field(default_factory=list)
+    sequencing_proposals: List[SequencingProposal] = Field(default_factory=list)
+    risk_signals: List[PlanningRiskSignal] = Field(default_factory=list)
+    assumptions: List[PlanningAssumption] = Field(default_factory=list)
+    evidence_references: List[EvidenceReference] = Field(default_factory=list)
+    
+    # Terminal decision record if finalized
+    decision: Optional[PlanningApprovalDecision] = None
+
+    class Config:
+        populate_by_name = True
+        extra = "forbid"
+
+
+
 
 
 

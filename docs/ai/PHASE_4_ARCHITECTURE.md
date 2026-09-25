@@ -308,4 +308,90 @@ The `PlanningEvaluationHarness` executes scenarios deterministically and compile
 4. **Authoritative Validator**: Phase 4C validator thresholds remain strictly untouched.
 5. **No Model Rankings**: Evaluation yields factual scenario measurements rather than subjective scores.
 
+---
+
+## 7. Phase 4E: Deterministic Human Approval Gate (`app/services/ai/planning_approval.py`)
+
+### 7.1 Human Approval Boundary & Mission
+Phase 4E creates a deterministic, auditable **Human Approval Gate** positioned strictly between AI planning proposal generation/validation (Phases 4A-4D) and any future mutation execution (Phase 4F).
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        AI PLANNING & VALIDATION                        │
+│                                                                        │
+│  PlanningContext (Phase 3E) ──► AIPlanningService (Phase 4B)           │
+│                                           │                            │
+│                                           ▼                            │
+│                                  PlanningProposal                      │
+│                                           │                            │
+│                                           ▼                            │
+│                            PlanningProposalValidator (Phase 4C)        │
+│                                           │                            │
+│                                           ▼                            │
+│                                ProposalValidationResult                │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│             PHASE 4E: DETERMINISTIC HUMAN APPROVAL GATE                │
+│                                                                        │
+│  PlanningApprovalRequest                                               │
+│  - Immutable snapshot of proposal & validation result                  │
+│  - Bound strictly to (proposal_id, proposal_version, context_version)  │
+│  - Approval States: PENDING | APPROVED | REJECTED | EXPIRED            │
+│                                                                        │
+│  Safety Enforcement (PlanningApprovalService):                         │
+│  - RBAC: Capability.APPROVE_PLANNING / REJECT_PLANNING                 │
+│  - Fail-Closed: INVALID proposals cannot be approved                   │
+│  - Mandatory Acknowledgement: NEEDS_REVIEW requires explicit           │
+│    acknowledgement of all WARNING issue codes                          │
+│  - Reviewer Authenticity: Derived from authenticated system identity   │
+│  - Zero Auto-Approval: No AI or validation score can bypass human PM   │
+│  - Atomic Concurrency: Reentrant mutex locks state transitions         │
+│  - Comprehensive Audit Events: Request created, approved, rejected,    │
+│    expired logged via AuditService                                     │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │ (APPROVED Decision Record Only)
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                     FUTURE PHASE 4F: MUTATION BOUNDARY                 │
+│  - Consumes verified, immutable APPROVED planning decisions            │
+│  - Phase 4E DOES NOT execute or trigger Phase 4F mutations             │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### 7.2 Approval Domain Models (`app/core/models/planning.py`)
+- **`PlanningApprovalState`**: Enum with deterministic terminal states: `PENDING`, `APPROVED`, `REJECTED`, `EXPIRED`.
+- **`ReviewerIdentity`**: Authenticated reviewer identity (`user_id`, `display_name`, `roles`), never accepted from arbitrary spoofable request fields.
+- **`PlanningApprovalDecision`**: Immutable record capturing `decision_id`, `request_id`, `decision` state, `reviewer`, `decision_timestamp`, `proposal_id`, `proposal_version`, `context_version`, `acknowledged_validation_issue_codes`, and optional `comment`.
+- **`PlanningApprovalRequest`**: Immutable snapshot capturing proposal metadata, summary, affected entities, estimates, dates, risks, evidence, validation results, creation time, and validity expiration time (`expires_at`).
+
+### 7.3 RBAC & Authorization
+- Reuses existing PM RBAC permissions:
+  - `Capability.APPROVE_PLANNING` (maps to `SecurityLevel.WRITE`)
+  - `Capability.REJECT_PLANNING` (maps to `SecurityLevel.WRITE`)
+- Unauthorized reviewers receive explicit `PlanningApprovalAuthorizationError` (fail-closed).
+
+### 7.4 Fail-Closed Approval Policy & Acknowledgement
+1. **`VALID` Proposals**: Eligible for direct human review and approval.
+2. **`NEEDS_REVIEW` Proposals**: Eligible for human approval **only if** the reviewer explicitly acknowledges all warning issue codes in `acknowledged_validation_issue_codes`. Unacknowledged or spoofed codes fail immediately.
+3. **`INVALID` Proposals**: Cannot be approved under any circumstances. Attempting approval raises `PlanningApprovalSafetyError`.
+4. **No Auto-Approval**: The system never automatically transitions an approval request to `APPROVED`, regardless of confidence, validation status, or model assertions.
+
+### 7.5 Version Binding, Immutability & Expiration
+- Approval requests and decisions are cryptographically/version-bound to the exact tuple `(proposal_id, proposal_version, context_version)`.
+- If a proposal or context is regenerated or mutated, previous approval requests become invalid for the new version.
+- Requests have a deterministic validity window (default 24 hours). Expired requests transition to `EXPIRED` and cannot be approved.
+
+### 7.6 Concurrency & Idempotency
+- Atomic state transitions guarded by reentrant thread locks and SQLite transactional isolation.
+- Only one terminal decision (`APPROVED` or `REJECTED`) can succeed.
+- Finalized or expired requests reject repeated conflicting decisions.
+
+### 7.7 Zero-Mutation Guarantee
+- Phase 4E strictly mutates its own approval records and audit log.
+- **Zero Jira calls**, **zero Action Engine calls**, and **zero Discord/Mattermost mutation dispatches**.
+- Explicit unit tests verify mock connectors (`JiraConnector`, `DiscordWebhookConnector`, `MattermostConnector`, `ActionEngine`) receive zero invocations during approval operations.
+
+
 
