@@ -70,6 +70,13 @@ class Settings(BaseSettings):
     PM_DISCORD_CHANNEL: str = "pm-alerts"
     JIRA_NOTIFICATION_DISCORD_CHANNEL: str = "notifications"
 
+    # Discord AI Bot Interface (Separate Dedicated AI Assistant — Disabled by default)
+    DISCORD_AI_BOT_ENABLED: bool = False
+    DISCORD_AI_BOT_TOKEN: Optional[str] = None
+    DISCORD_AI_APPLICATION_ID: Optional[str] = None
+    DISCORD_AI_ALLOWED_CHANNEL_IDS: str = ""  # Comma-separated Discord channel Snowflake IDs
+    DISCORD_AI_ALLOWED_USER_IDS: str = ""     # Comma-separated Discord user Snowflake IDs
+
     # Mattermost Connector (Optional)
     MATTERMOST_URL: Optional[str] = None
     MATTERMOST_TOKEN: Optional[str] = None
@@ -277,6 +284,55 @@ class Settings(BaseSettings):
             if self.is_production():
                 return False
             return True
+        return str(discord_user_id).strip() in allowed
+
+    def is_discord_ai_bot_configured(self) -> bool:
+        """Check if separate Discord AI Bot credentials are configured."""
+        return bool(
+            self.DISCORD_AI_BOT_TOKEN
+            and self.DISCORD_AI_BOT_TOKEN.strip()
+            and self.DISCORD_AI_BOT_TOKEN != "placeholder_ai_bot_token"
+        )
+
+    def get_discord_ai_allowed_channels(self) -> Set[str]:
+        """Return the set of Discord channel IDs allowed for AI interactions."""
+        if not self.DISCORD_AI_ALLOWED_CHANNEL_IDS:
+            return set()
+        return {
+            x.strip()
+            for x in self.DISCORD_AI_ALLOWED_CHANNEL_IDS.split(",")
+            if x.strip()
+        }
+
+    def is_discord_ai_channel_allowed(self, channel_id: Optional[str]) -> bool:
+        """Check if a Discord channel ID is authorized for AI interactions (fails closed if unconfigured)."""
+        if not channel_id or not str(channel_id).strip():
+            return False
+        allowed = self.get_discord_ai_allowed_channels()
+        if not allowed:
+            return False
+        return str(channel_id).strip() in allowed
+
+    def get_discord_ai_allowed_users(self) -> Set[str]:
+        """Return the set of Discord user IDs authorized for AI interactions."""
+        if not self.DISCORD_AI_ALLOWED_USER_IDS:
+            return set()
+        return {
+            x.strip()
+            for x in self.DISCORD_AI_ALLOWED_USER_IDS.split(",")
+            if x.strip()
+        }
+
+    def is_discord_ai_user_allowed(self, discord_user_id: Optional[str]) -> bool:
+        """Check if a Discord user ID is authorized for AI interactions (fails closed if unconfigured)."""
+        if not discord_user_id or not str(discord_user_id).strip():
+            return False
+        raw_allowed = (self.DISCORD_AI_ALLOWED_USER_IDS or "").strip()
+        if raw_allowed == "*":
+            return True
+        allowed = self.get_discord_ai_allowed_users()
+        if not allowed:
+            return False
         return str(discord_user_id).strip() in allowed
 
     def is_mattermost_configured(self) -> bool:

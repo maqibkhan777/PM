@@ -3,7 +3,11 @@
 import asyncio
 from typing import Any, Dict, Optional
 from app.connectors.jira import JiraConnector, JiraPoller
-from app.connectors.discord import DiscordWebhookConnector, DiscordBotConnector
+from app.connectors.discord import (
+    DiscordWebhookConnector,
+    DiscordBotConnector,
+    ai_discord_gateway_client,
+)
 from app.connectors.mattermost import MattermostConnector
 from app.core.events.bus import event_bus
 from app.core.events.base import BaseEvent
@@ -58,6 +62,10 @@ class SystemOrchestrator:
         await self.discord_bot_connector.connect()
         await self.mattermost_connector.connect()
 
+        # 2b. Start separate AI Discord Bot Gateway if enabled and configured
+        if getattr(settings, "DISCORD_AI_BOT_ENABLED", False) and settings.is_discord_ai_bot_configured():
+            await ai_discord_gateway_client.start()
+
         # 3. Wire Event Bus Wildcard to Rules Engine
         event_bus.subscribe("*", self._on_event_received)
 
@@ -72,6 +80,7 @@ class SystemOrchestrator:
         """Gracefully shut down connectors and background workers."""
         logger.info("Shutting down PM Operations Agent Orchestrator...")
         periodic_scheduler.stop()
+        await ai_discord_gateway_client.stop()
         await self.jira_connector.disconnect()
         await self.discord_webhook_connector.disconnect()
         await self.discord_bot_connector.disconnect()
