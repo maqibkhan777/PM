@@ -33,9 +33,6 @@ from app.core.planning.artifacts import ArtifactEngine
 from app.core.planning.queue_composer import ResourceQueueComposer
 from app.core.planning.forecaster import TeamScheduleForecaster
 from app.core.planning.context import PlanningContextBuilder
-from app.services.ai.config import resolve_ai_provider
-from app.services.ai.decision import AIDecisionService
-from app.services.ai.planning import AIPlanningService
 from app.services.ai.models import (
     AIContext,
     AIDecisionType,
@@ -47,7 +44,6 @@ from app.core.models.planning import (
     PlanningProposal,
 )
 from app.services.ai.report_formatter import AIAttentionReportFormatter
-from app.services.ai.safety import AISafetyViolation
 from app.services.audit_service import AuditService
 from app.utils.time import utc_now_iso
 
@@ -82,8 +78,8 @@ class AIDiscordRouterService:
     def __init__(
         self,
         manager: Optional[DatabaseManager] = None,
-        ai_decision_service: Optional[AIDecisionService] = None,
-        ai_planning_service: Optional[AIPlanningService] = None,
+        ai_decision_service: Optional[Any] = None,
+        ai_planning_service: Optional[Any] = None,
         audit_service: Optional[AuditService] = None,
     ):
         self.mgr = manager or db_manager
@@ -93,9 +89,23 @@ class AIDiscordRouterService:
         self.link_repo = JiraIssueLinkRepository(self.mgr)
         self.artifact_repo = ArtifactRepository(self.mgr)
 
-        self.ai_decision_service = ai_decision_service or AIDecisionService(manager=self.mgr)
-        self.ai_planning_service = ai_planning_service or AIPlanningService(manager=self.mgr)
+        self._ai_decision_service = ai_decision_service
+        self._ai_planning_service = ai_planning_service
         self.audit_service = audit_service or AuditService(self.mgr)
+
+    @property
+    def ai_decision_service(self):
+        if self._ai_decision_service is None:
+            from app.services.ai.decision import AIDecisionService
+            self._ai_decision_service = AIDecisionService(manager=self.mgr)
+        return self._ai_decision_service
+
+    @property
+    def ai_planning_service(self):
+        if self._ai_planning_service is None:
+            from app.services.ai.planning import AIPlanningService
+            self._ai_planning_service = AIPlanningService(manager=self.mgr)
+        return self._ai_planning_service
 
     def classify_intent(self, prompt: str) -> AIRequestIntent:
         """Classify user's natural language prompt into supported PM AI capabilities."""
@@ -196,27 +206,29 @@ class AIDiscordRouterService:
             )
             return res
 
-        except AISafetyViolation as sv:
-            logger.warning(f"AISafetyViolation during Discord mention processing: {sv}")
-            duration_ms = round((time.monotonic() - t0) * 1000, 2)
-            self.audit_service.log_action(
-                actor=actor,
-                action="AI_DISCORD_REQUEST",
-                target=channel_id,
-                result="SAFETY_REJECTED",
-                details={
-                    "message_id": message_id,
-                    "channel_id": channel_id,
-                    "intent": intent.value,
-                    "provider": provider_id,
-                    "error_category": "SAFETY_VIOLATION",
-                    "violation": str(sv),
-                    "duration_ms": duration_ms,
-                },
-            )
-            return f"❌ AI response failed safety verification: {sv}"
-
         except Exception as e:
+            from app.services.ai.safety import AISafetyViolation
+            if isinstance(e, AISafetyViolation):
+                sv = e
+                logger.warning(f"AISafetyViolation during Discord mention processing: {sv}")
+                duration_ms = round((time.monotonic() - t0) * 1000, 2)
+                self.audit_service.log_action(
+                    actor=actor,
+                    action="AI_DISCORD_REQUEST",
+                    target=channel_id,
+                    result="SAFETY_REJECTED",
+                    details={
+                        "message_id": message_id,
+                        "channel_id": channel_id,
+                        "intent": intent.value,
+                        "provider": provider_id,
+                        "error_category": "SAFETY_VIOLATION",
+                        "violation": str(sv),
+                        "duration_ms": duration_ms,
+                    },
+                )
+                return f"❌ AI response failed safety verification: {sv}"
+
             logger.error(f"Error handling Discord AI mention request: {e}", exc_info=True)
             duration_ms = round((time.monotonic() - t0) * 1000, 2)
             self.audit_service.log_action(
@@ -245,16 +257,87 @@ class AIDiscordRouterService:
         )
         return AIAttentionReportFormatter.format_discord_embeds(analysis)
 
+    def _resolve_project_scope(self, prompt: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """Resolve requested project/board scope from prompt.
+        
+        Returns:
+            Tuple of (project_key, scope_label, error_message)
+            - If a specific scope is requested and resolved: (key, label, None)
+            - If a specific scope is requested but unknown/unresolvable: (None, None, error_msg)
+            - If no specific scope is requested: (None, None, None) -> defaults to cluster
+        """
+        p_lower = prompt.lower()
+        
+        # 1. Known alias mappings for plugins/boards
+        KNOWN_ALIASES = [
+            # Post SMTP variations
+            ("post smtp support", "SMTPSUPORT", "Post SMTP Support Board (SMTPSUPORT)"),
+            ("post smtp free", "POSTSMTP", "Post SMTP Free (POSTSMTP)"),
+            ("post smtp addons", "POSTSMTP", "Post SMTP Addons (POSTSMTP)"),
+            ("post smtp mobile", "PSA", "Post SMTP Mobile App (PSA)"),
+            ("post smtp internal", "POSTSMTP", "Post SMTP Internal (POSTSMTP)"),
+            ("post smtp service", "POST", "Post SMTP Service Management (POST)"),
+            ("post smtp", "SMTPSUPORT", "Post SMTP Board (SMTPSUPORT)"),
+            ("postsmtp", "POSTSMTP", "Post SMTP (POSTSMTP)"),
+            ("smtpsuport", "SMTPSUPORT", "Post SMTP Support (SMTPSUPORT)"),
+            # Other common plugin boards
+            ("afm support", "AFMIS", "AFM Support (AFMIS)"),
+            ("afm internal", "AFM", "AFM Internal (AFM)"),
+            ("afm", "AFM", "AFM (AFM)"),
+            ("gutena forms support", "GFIS", "Gutena Forms Support (GFIS)"),
+            ("gutena forms", "GF", "Gutena Forms (GF)"),
+            ("wsss", "WSSS", "WSSS (WSSS)"),
+            ("tren", "TREN", "TREN (TREN)"),
+            ("wsf", "WSF", "WSF (WSF)"),
+            ("wp", "WP", "WP (WP)"),
+            ("cdp", "CDP", "CDP (CDP)"),
+            ("tam", "TAM", "TAM (TAM)"),
+        ]
+
+        for phrase, key, label in KNOWN_ALIASES:
+            if phrase in p_lower:
+                return key, label, None
+
+        # 2. Check for explicit project key pattern like 'project:XYZ' or 'project XYZ' or 'board XYZ'
+        explicit_proj_match = re.search(r"\b(?:project|board)\s*[:=]?\s*([A-Z0-9]{2,10})\b", prompt, re.IGNORECASE)
+        if explicit_proj_match:
+            candidate_key = explicit_proj_match.group(1).upper()
+            # Verify if project exists in database
+            known_keys = self.issue_repo.get_distinct_project_keys()
+            if candidate_key in known_keys or candidate_key in [k for _, k, _ in KNOWN_ALIASES]:
+                return candidate_key, f"Project {candidate_key}", None
+            else:
+                return None, None, f"Specified project/board `{candidate_key}` was not found in known Jira projects ({', '.join(sorted(known_keys)[:10])})."
+
+        # 3. Check for mentions of 'board' or 'project' with an unknown term (e.g. "for the XYZ board")
+        unknown_board_match = re.search(r"\b(?:in|for|on)\s+(?:the\s+)?([a-z0-9\s\-]+?)\s+(?:board|project)\b", p_lower)
+        if unknown_board_match:
+            extracted_term = unknown_board_match.group(1).strip()
+            if extracted_term and extracted_term not in ("remaining", "active", "current", "team"):
+                return None, None, (
+                    f"Could not resolve Jira project/board scope for `{extracted_term}`. "
+                    "Please specify a valid Jira project key (e.g., `SMTPSUPORT`, `POSTSMTP`, `WSSS`)."
+                )
+
+        return None, None, None
+
     async def _handle_planning_request(self, prompt: str, actor: str) -> str:
         """Handle planning proposal request using deterministic context composition + AIPlanningService."""
-        # 1. Deterministic upstream composition
-        team_group = settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else "Mursaleen Cluster"
-        
+        # 1. Resolve project/board scope from prompt
+        project_key, scope_label, scope_err = self._resolve_project_scope(prompt)
+        if scope_err:
+            # Fail closed when explicit project scope requested cannot be resolved
+            return f"❌ {scope_err}"
+
+        cluster_team_group = settings.JIRA_TEAM_GROUP.strip() if settings.is_jira_team_group_configured() else "Mursaleen Cluster"
+        audit_target = scope_label or cluster_team_group
+        effective_team_group = scope_label or cluster_team_group
+
         # Load resources for team
         all_assignments = self.role_repo.list_assignments()
         target_assignments = [
             a for a in all_assignments
-            if not team_group or a.get("team_group") == team_group
+            if not cluster_team_group or a.get("team_group") == cluster_team_group
         ] or all_assignments
 
         composer = ResourceQueueComposer(manager=self.mgr)
@@ -263,8 +346,22 @@ class AIDiscordRouterService:
             acc_id = a.get("account_id")
             disp_name = a.get("display_name")
             if acc_id:
-                snap = composer.compose_snapshot(account_id=acc_id, display_name=disp_name, team_group=team_group)
-                snapshots.append(snap)
+                snap = composer.compose_snapshot(
+                    account_id=acc_id,
+                    display_name=disp_name,
+                    team_group=cluster_team_group,
+                    project_key=project_key,
+                )
+                # Only include snapshot if resource has active tasks or capacity
+                if snap.active_tasks or not project_key:
+                    snapshots.append(snap)
+
+        # If project_key was specified and no tasks found across resources
+        if project_key and not any(s.active_tasks for s in snapshots):
+            return (
+                f"ℹ️ No active backlog tasks found for {scope_label or project_key} "
+                f"under {cluster_team_group}. Nothing to plan."
+            )
 
         # Build Dependency Graph
         dep_links = self.link_repo.list_all_links(active_only=True)
@@ -285,11 +382,12 @@ class AIDiscordRouterService:
         # Build Artifacts
         art_records = []
         art_rels = []
-        # If any artifact records exist in DB
         try:
             raw_arts = self.artifact_repo.list_all_artifacts(active_only=True)
             for ra in raw_arts:
-                from app.core.models.planning import ArtifactRecord, ArtifactRelationshipRecord, ArtifactType, ArtifactStatus, ArtifactProvenance
+                if project_key and ra.get("project_key") and ra.get("project_key") != project_key:
+                    continue
+                from app.core.models.planning import ArtifactRecord, ArtifactType, ArtifactStatus, ArtifactProvenance
                 try:
                     atype = ArtifactType(ra.get("artifact_type", "GENERIC"))
                 except Exception:
@@ -330,14 +428,17 @@ class AIDiscordRouterService:
         )
 
         # Build PlanningContext
-        builder = PlanningContextBuilder()
+        builder = PlanningContextBuilder(
+            max_resources=getattr(settings, "PLANNING_MAX_CONTEXT_RESOURCES", 10),
+            max_total_tasks=getattr(settings, "PLANNING_MAX_CONTEXT_TASKS", 25),
+        )
         ctx = builder.build_context(
             team_snapshots=snapshots,
             schedule_projection=schedule,
             dependency_graph=dep_graph,
             artifact_records=art_records,
             artifact_relationships=art_rels,
-            team_group=team_group,
+            team_group=effective_team_group,
             horizon_working_days=settings.PLANNING_HORIZON_WORKING_DAYS,
         )
 
@@ -345,8 +446,11 @@ class AIDiscordRouterService:
         proposal: PlanningProposal = await self.ai_planning_service.generate_plan(ctx, actor=actor)
 
         # Format proposal strictly as read-only advisory proposal
+        max_proposal_tasks = getattr(settings, "PLANNING_MAX_PROPOSAL_TASKS", 15)
+        max_proposal_risks = getattr(settings, "PLANNING_MAX_PROPOSAL_RISKS", 5)
+
         lines = [
-            "📋 **AI Planning Proposal (Advisory Only)**",
+            f"📋 **AI Planning Proposal (Advisory Only — Scope: {audit_target})**",
             f"**Anchor Date:** {proposal.anchor_date} | **Horizon:** {proposal.planning_horizon_working_days} working days",
             f"**Confidence:** {proposal.overall_confidence:.0%}",
             "",
@@ -355,19 +459,19 @@ class AIDiscordRouterService:
             f"**Proposed Tasks ({len(proposal.task_proposals)}):**",
         ]
 
-        for tp in proposal.task_proposals[:10]:
+        for tp in proposal.task_proposals[:max_proposal_tasks]:
             est_str = f" (~{tp.proposed_estimate.value}{tp.proposed_estimate.unit.value})" if tp.proposed_estimate else ""
             date_str = f" [Due: {tp.proposed_due_date}]" if tp.proposed_due_date else ""
             risk_badge = f" ⚠️ {tp.risk_level}" if tp.risk_level in ("HIGH", "MEDIUM") else ""
             lines.append(f"• **{tp.issue_key}**{est_str}{date_str}{risk_badge}")
 
-        if len(proposal.task_proposals) > 10:
-            lines.append(f"• ... and {len(proposal.task_proposals) - 10} more tasks.")
+        if len(proposal.task_proposals) > max_proposal_tasks:
+            lines.append(f"• ... and {len(proposal.task_proposals) - max_proposal_tasks} more tasks.")
 
         if proposal.risk_signals:
             lines.append("")
             lines.append(f"**Key Risk Signals ({len(proposal.risk_signals)}):**")
-            for rs in proposal.risk_signals[:3]:
+            for rs in proposal.risk_signals[:max_proposal_risks]:
                 lines.append(f"• [{rs.severity}] {rs.explanation}")
 
         lines.append("")

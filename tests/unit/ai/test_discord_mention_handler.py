@@ -363,7 +363,7 @@ async def test_planning_request_produces_proposals_only(mention_handler, monkeyp
     res = await mention_handler.handle_message_create(message_payload, http_client=mock_client)
     assert res["status"] == "processed"
     resp_text = str(res["response"])
-    assert "AI Planning Proposal (Advisory Only)" in resp_text
+    assert "AI Planning Proposal (Advisory Only" in resp_text
     assert "This proposal is for review only. It has not been approved or executed." in resp_text
 
 
@@ -406,3 +406,179 @@ async def test_reply_thread_context_bounded(mention_handler, monkeypatch):
 
     res = await mention_handler.handle_message_create(message_payload, http_client=mock_client)
     assert res["status"] == "processed"
+
+
+@pytest.mark.asyncio
+async def test_subsequent_discord_requests_after_provider_failure(mention_handler, monkeypatch):
+    """16. Ensure that after a provider failure, subsequent messages continue to be processed without crashing."""
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_ENABLED", True)
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_TOKEN", "mock_ai_token")
+    monkeypatch.setattr(settings, "DISCORD_AI_APPLICATION_ID", AI_BOT_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_CHANNEL_IDS", TEST_CHANNEL_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_USER_IDS", AUTHORIZED_USER_ID)
+    monkeypatch.setattr(settings, "AI_ENABLED", True)
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=MagicMock(status_code=200))
+
+    # 1. First request fails with a simulated provider error
+    with patch("app.services.ai.decision.AIDecisionService.evaluate_attention", new_callable=AsyncMock, side_effect=RuntimeError("Transient timeout")):
+        msg1 = {
+            "id": "msg_fail_1",
+            "channel_id": TEST_CHANNEL_ID,
+            "content": f"<@{AI_BOT_ID}> attention",
+            "author": {"id": AUTHORIZED_USER_ID, "bot": False},
+            "mentions": [{"id": AI_BOT_ID}],
+        }
+        res1 = await mention_handler.handle_message_create(msg1, http_client=mock_client)
+        assert res1["status"] == "processed"
+        assert "❌ An error occurred while processing your AI request." in str(res1["response"])
+
+    # 2. Subsequent request (e.g. help or next attention request) processes cleanly
+    msg2 = {
+        "id": "msg_success_2",
+        "channel_id": TEST_CHANNEL_ID,
+        "content": f"<@{AI_BOT_ID}> help",
+        "author": {"id": AUTHORIZED_USER_ID, "bot": False},
+        "mentions": [{"id": AI_BOT_ID}],
+    }
+    res2 = await mention_handler.handle_message_create(msg2, http_client=mock_client)
+    assert res2["status"] == "processed"
+    assert "PM AI Operations Assistant" in str(res2["response"])
+
+
+@pytest.mark.asyncio
+async def test_discord_planning_request_post_smtp_scoping(mention_handler, temp_db, monkeypatch):
+    """17. Discord request for Post SMTP support board scopes context to SMTPSUPORT and excludes other project issues."""
+    from app.database.repositories import JiraIssueStateRepository, EmployeeRoleRepository
+    from app.core.models.planning import PlanningProposal, TaskPlanningProposal, PlanningEstimate, EvidenceReference, EvidenceType
+
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_ENABLED", True)
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_TOKEN", "mock_ai_token")
+    monkeypatch.setattr(settings, "DISCORD_AI_APPLICATION_ID", AI_BOT_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_CHANNEL_IDS", TEST_CHANNEL_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_USER_IDS", AUTHORIZED_USER_ID)
+    monkeypatch.setattr(settings, "AI_ENABLED", True)
+
+    role_repo = EmployeeRoleRepository(temp_db)
+    issue_repo = JiraIssueStateRepository(temp_db)
+
+    role_repo.upsert_assignment(
+        account_id="acc_ahsan",
+        display_name="Ahsan Amin",
+        designation="Senior Engineer",
+        role_category="Engineering",
+    )
+
+    # Insert one SMTPSUPORT issue and one unrelated WSSS issue
+    issue_repo.upsert(
+        jira_issue_key="SMTPSUPORT-10",
+        summary="Fix OAuth timeout in Post SMTP",
+        status="In Progress",
+        assignee="acc_ahsan",
+        project_key="SMTPSUPORT",
+        priority="High",
+        team_group="Mursaleen Cluster",
+    )
+    issue_repo.upsert(
+        jira_issue_key="WSSS-999",
+        summary="Unrelated WSSS ticket",
+        status="In Progress",
+        assignee="acc_ahsan",
+        project_key="WSSS",
+        priority="Medium",
+        team_group="Mursaleen Cluster",
+    )
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=MagicMock(status_code=200))
+
+    captured_ctx = []
+
+    async def mock_generate_plan(ctx, actor="PMPlanningEngine"):
+        captured_ctx.append(ctx)
+        return PlanningProposal(
+            proposal_version="proposal-v1",
+            generated_at="2026-09-27T04:00:00Z",
+            context_version="planning-v1",
+            anchor_date="2026-09-27",
+            planning_horizon_working_days=10,
+            requires_human_review=True,
+            overall_confidence=0.95,
+            summary="Prioritize Post SMTP support OAuth issue.",
+            task_proposals=[
+                TaskPlanningProposal(
+                    issue_key="SMTPSUPORT-10",
+                    proposed_estimate=PlanningEstimate(
+                        value=3.0,
+                        unit="hours",
+                        confidence=0.9,
+                        rationale="OAuth token refresh handler",
+                        evidence_references=[],
+                    ),
+                    proposed_start_date="2026-09-27",
+                    proposed_due_date="2026-09-28",
+                    date_confidence=0.9,
+                    sequencing_position=1,
+                    proposed_predecessors=[],
+                    proposed_successors=[],
+                    risk_level="LOW",
+                    evidence_references=[],
+                    assumptions=[],
+                    requires_human_review=True,
+                )
+            ],
+            sequencing_proposals=[],
+            risk_signals=[],
+            assumptions=[],
+            evidence_references=[],
+        )
+
+    with patch("app.services.ai.planning.AIPlanningService.generate_plan", side_effect=mock_generate_plan):
+        msg = {
+            "id": "msg_plan_postsmtp",
+            "channel_id": TEST_CHANNEL_ID,
+            "content": f"<@{AI_BOT_ID}> prepare a planning proposal for the remaining work in the Post SMTP support board",
+            "author": {"id": AUTHORIZED_USER_ID, "bot": False},
+            "mentions": [{"id": AI_BOT_ID}],
+        }
+        res = await mention_handler.handle_message_create(msg, http_client=mock_client)
+        assert res["status"] == "processed"
+        resp_text = str(res["response"])
+        assert "Post SMTP Support Board (SMTPSUPORT)" in resp_text
+        assert "SMTPSUPORT-10" in resp_text
+
+        # Verify context only contained SMTPSUPORT issues, not WSSS
+        assert len(captured_ctx) == 1
+        tasks_in_ctx = [t.issue_key for t in captured_ctx[0].tasks]
+        assert "SMTPSUPORT-10" in tasks_in_ctx
+        assert "WSSS-999" not in tasks_in_ctx
+
+
+@pytest.mark.asyncio
+async def test_discord_planning_request_unknown_board_fails_closed(mention_handler, monkeypatch):
+    """18. Planning request with unknown or unresolvable board fails closed with helpful error message."""
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_ENABLED", True)
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_TOKEN", "mock_ai_token")
+    monkeypatch.setattr(settings, "DISCORD_AI_APPLICATION_ID", AI_BOT_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_CHANNEL_IDS", TEST_CHANNEL_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_USER_IDS", AUTHORIZED_USER_ID)
+    monkeypatch.setattr(settings, "AI_ENABLED", True)
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=MagicMock(status_code=200))
+
+    msg = {
+        "id": "msg_plan_unknown",
+        "channel_id": TEST_CHANNEL_ID,
+        "content": f"<@{AI_BOT_ID}> prepare a planning proposal for the NonExistentPlugin board",
+        "author": {"id": AUTHORIZED_USER_ID, "bot": False},
+        "mentions": [{"id": AI_BOT_ID}],
+    }
+    res = await mention_handler.handle_message_create(msg, http_client=mock_client)
+    assert res["status"] == "processed"
+    resp_text = str(res["response"])
+    assert "❌" in resp_text
+    assert "Could not resolve Jira project/board scope" in resp_text
+
+

@@ -329,3 +329,114 @@ async def test_duplicate_event_skipping_in_overlapping_window(temp_db, mock_jira
         assert result["issues_scanned"] == 1
         assert result["events_generated"] == 0
         assert result["duplicates_skipped"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reporter_value,expected_reporter_id,expected_reporter_name", [
+    (None, None, None),                                                       # Reporter is None
+    ({}, None, None),                                                         # Reporter is empty dict
+    ({"accountId": "acc-rep-1", "displayName": "Alice Rep"}, "acc-rep-1", "Alice Rep"), # Valid accountId
+])
+async def test_jira_poller_reporter_variations(
+    temp_db, mock_jira_client, reporter_value, expected_reporter_id, expected_reporter_name
+):
+    """Test reporter extraction handles None, empty dict, and valid account ID cleanly."""
+    now_iso = utc_now_iso()
+    configured_settings = Settings(
+        JIRA_BASE_URL="https://mycompany.atlassian.net",
+        JIRA_EMAIL="pm@mycompany.com",
+        JIRA_API_TOKEN="valid-token-123",
+        JIRA_TEAM_GROUP="Engineering Team"
+    )
+
+    fields_dict = {
+        "summary": "Reporter Variation Test",
+        "status": {"name": "To Do"},
+        "created": now_iso,
+        "updated": now_iso,
+        "project": {"key": "REP", "id": "101"},
+        "issuetype": {"name": "Task", "id": "1"},
+        "assignee": {"accountId": "acc-assignee", "displayName": "Assignee Bob"},
+    }
+    if reporter_value is not None:
+        fields_dict["reporter"] = reporter_value
+    else:
+        fields_dict["reporter"] = None
+
+    issue_payload = {
+        "id": "2001",
+        "key": "REP-1",
+        "fields": fields_dict,
+    }
+    mock_jira_client.search_issues.return_value = {"issues": [issue_payload], "total": 1}
+
+    ingested_events = []
+    async def mock_ingest(ev):
+        ingested_events.append(ev)
+        return "event-id-rep"
+
+    with patch("app.connectors.jira.poller.settings", configured_settings), \
+         patch("app.services.orchestrator.orchestrator.ingest_polled_event", side_effect=mock_ingest):
+        poller = JiraPoller(client=mock_jira_client, manager=temp_db)
+        # Seed checkpoint so TaskCreated is emitted
+        poller.polling_state_repo.update_checkpoint("jira", "2026-01-01T00:00:00+00:00")
+        result = await poller.poll()
+
+        assert result["status"] == "completed"
+        assert result["issues_scanned"] == 1
+        assert result["events_generated"] == 1
+
+        ev = ingested_events[0]
+        assert ev.event_type == "TaskCreated"
+        assert ev.reporter_id == expected_reporter_id
+        assert ev.reporter_name == expected_reporter_name
+
+        # Verify state repository cached the issue without error
+        cached = poller.issue_state_repo.get("REP-1")
+        assert cached is not None
+        assert cached["jira_issue_key"] == "REP-1"
+
+
+@pytest.mark.asyncio
+async def test_jira_poller_missing_reporter_field(temp_db, mock_jira_client):
+    """Test poller when reporter field is completely missing from fields dictionary."""
+    now_iso = utc_now_iso()
+    configured_settings = Settings(
+        JIRA_BASE_URL="https://mycompany.atlassian.net",
+        JIRA_EMAIL="pm@mycompany.com",
+        JIRA_API_TOKEN="valid-token-123",
+        JIRA_TEAM_GROUP="Engineering Team"
+    )
+
+    issue_payload = {
+        "id": "2002",
+        "key": "REP-2",
+        "fields": {
+            "summary": "Missing Reporter Field Test",
+            "status": {"name": "To Do"},
+            "created": now_iso,
+            "updated": now_iso,
+            "project": {"key": "REP", "id": "101"},
+            "issuetype": {"name": "Task"},
+            # Note: "reporter" key is omitted entirely
+        },
+    }
+    mock_jira_client.search_issues.return_value = {"issues": [issue_payload], "total": 1}
+
+    ingested_events = []
+    async def mock_ingest(ev):
+        ingested_events.append(ev)
+        return "event-id-rep-2"
+
+    with patch("app.connectors.jira.poller.settings", configured_settings), \
+         patch("app.services.orchestrator.orchestrator.ingest_polled_event", side_effect=mock_ingest):
+        poller = JiraPoller(client=mock_jira_client, manager=temp_db)
+        poller.polling_state_repo.update_checkpoint("jira", "2026-01-01T00:00:00+00:00")
+        result = await poller.poll()
+
+        assert result["status"] == "completed"
+        assert result["events_generated"] == 1
+        ev = ingested_events[0]
+        assert ev.reporter_id is None
+        assert ev.reporter_name is None
+

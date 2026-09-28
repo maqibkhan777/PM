@@ -77,9 +77,9 @@ You MUST output a valid JSON object matching this schema:
       "due_date": "<Due date or null>",
       "updated_at": "<Last updated timestamp or null>",
       "inactivity_duration": "<Duration string or null>",
-      "attention_reason": "<Why this item requires attention>",
-      "supporting_evidence": ["<evidence bullet 1>", ...],
-      "recommendation": "<Actionable recommendation for PM or assignee>",
+      "attention_reason": "<Concise why this item requires attention>",
+      "supporting_evidence": ["<concise bullet>"],
+      "recommendation": "<Concise actionable recommendation>",
       "confidence": <float between 0.0 and 1.0>,
       "uncertainty_or_missing_info": "<string or null>",
       "proposed_action": null or {
@@ -109,6 +109,14 @@ IMPORTANT:
 - requires_human_review MUST be true. AI is advisory only.
 - Never invent issue keys or assignments not present in the context.
 - Keep confidence strictly between 0.0 and 1.0.
+- Keep per-item descriptions, reasons, and recommendations concise to ensure responses remain well within output token limits.
+"""
+
+SYSTEM_PROMPT_ATTENTION_COMPACT = SYSTEM_PROMPT_ATTENTION + """
+CRITICAL COMPACTNESS INSTRUCTION:
+- Provide concise attention items focusing only on the highest-priority operational risks.
+- Keep supporting_evidence and evidence arrays to at most 1-2 short bullets each.
+- Keep summary and recommendations to at most 2 brief sentences.
 """
 
 
@@ -255,16 +263,38 @@ class DeepSeekAIProvider:
         raise DeepSeekProviderError("DeepSeek API request failed: exhausted retry attempts.")
 
     def _extract_content_json(self, response_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract and parse JSON object from chat completion choices content."""
+        """Extract and parse JSON object from chat completion choices content.
+        
+        Inspects finish_reason and usage metadata to detect and report truncation.
+        """
         choices = response_data.get("choices")
         if not choices or not isinstance(choices, list):
             raise DeepSeekProviderError("DeepSeek response contains no choices.")
 
         first_choice = choices[0]
+        finish_reason = first_choice.get("finish_reason")
         message = first_choice.get("message") or {}
         content = message.get("content")
+        usage = response_data.get("usage", {})
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
+
+        # Explicitly detect output token truncation
+        if finish_reason in ("length", "max_tokens"):
+            logger.warning(
+                f"DeepSeek response was truncated due to token limit (finish_reason={finish_reason}, "
+                f"prompt_tokens={prompt_tokens}, completion_tokens={completion_tokens}, max_output_tokens={self.max_output_tokens})"
+            )
+            raise DeepSeekProviderError(
+                f"DeepSeek response was truncated due to output token limit (finish_reason={finish_reason}, "
+                f"completion_tokens={completion_tokens}/{self.max_output_tokens})."
+            )
+
         if not content or not str(content).strip():
-            raise DeepSeekProviderError("DeepSeek response content is empty.")
+            raise DeepSeekProviderError(
+                f"DeepSeek response content is empty (finish_reason={finish_reason}, "
+                f"prompt_tokens={prompt_tokens}, completion_tokens={completion_tokens})."
+            )
 
         clean_content = str(content).strip()
         # Strip potential markdown code fences if model enclosed JSON in ```json ... ```
@@ -279,9 +309,16 @@ class DeepSeekAIProvider:
         try:
             return json.loads(clean_content)
         except Exception as e:
+            # Check if JSONDecodeError could be an unflagged truncation
+            logger.warning(
+                f"DeepSeek response JSON decoding failed (finish_reason={finish_reason}, "
+                f"prompt_tokens={prompt_tokens}, completion_tokens={completion_tokens}, "
+                f"content_length={len(clean_content)}): {e}"
+            )
             snippet = self._sanitize_error_message(clean_content[:200])
             raise DeepSeekProviderError(
-                f"Failed to parse DeepSeek response content as JSON: {snippet}"
+                f"Failed to parse DeepSeek response content as JSON (finish_reason={finish_reason}, "
+                f"completion_tokens={completion_tokens}): {snippet}"
             )
 
     async def analyze(self, context: AIContext) -> AIDecision:
@@ -302,6 +339,7 @@ class DeepSeekAIProvider:
         latency = round(time.monotonic() - t0, 3)
 
         usage = raw_response.get("usage", {})
+        self.last_usage = usage
         logger.info(
             f"DeepSeek analyze completed in {latency}s (prompt_tokens={usage.get('prompt_tokens')}, completion_tokens={usage.get('completion_tokens')})"
         )
@@ -318,7 +356,11 @@ class DeepSeekAIProvider:
             )
 
     async def analyze_attention(self, context: AIContext) -> PMAttentionAnalysis:
-        """Analyze attention context using DeepSeek and return a typed PMAttentionAnalysis."""
+        """Analyze attention context using DeepSeek and return a typed PMAttentionAnalysis.
+        
+        If response is truncated or fails JSON decoding, performs a single bounded retry
+        requesting compact output representation within the token budget.
+        """
         context_payload = context.model_dump(mode="json")
         sanitized_context = sanitize_dict(context_payload)
 
@@ -340,7 +382,33 @@ class DeepSeekAIProvider:
             f"DeepSeek analyze_attention completed in {latency}s (prompt_tokens={usage.get('prompt_tokens')}, completion_tokens={usage.get('completion_tokens')})"
         )
 
-        content_dict = self._extract_content_json(raw_response)
+        try:
+            content_dict = self._extract_content_json(raw_response)
+        except DeepSeekProviderError as first_err:
+            # Check if error indicates truncation or JSON decode failure eligible for single compact retry
+            err_msg = str(first_err)
+            if "truncated" in err_msg or "Failed to parse DeepSeek response content as JSON" in err_msg:
+                logger.warning(
+                    f"DeepSeek analyze_attention first attempt failed ({err_msg}). "
+                    "Executing single bounded compact retry with streamlined attention instructions..."
+                )
+                compact_messages = [
+                    {"role": "system", "content": SYSTEM_PROMPT_ATTENTION_COMPACT},
+                    {
+                        "role": "user",
+                        "content": f"Attention Evaluation Context:\n{json.dumps(sanitized_context, indent=2)}",
+                    },
+                ]
+                raw_response_retry = await self._post_chat_completion(compact_messages)
+                retry_usage = raw_response_retry.get("usage", {})
+                self.last_usage = retry_usage
+                logger.info(
+                    f"DeepSeek analyze_attention compact retry completed "
+                    f"(prompt_tokens={retry_usage.get('prompt_tokens')}, completion_tokens={retry_usage.get('completion_tokens')})"
+                )
+                content_dict = self._extract_content_json(raw_response_retry)
+            else:
+                raise
 
         try:
             analysis = PMAttentionAnalysis.model_validate(content_dict)
@@ -369,7 +437,26 @@ class DeepSeekAIProvider:
             f"(prompt_tokens={usage.get('prompt_tokens')}, completion_tokens={usage.get('completion_tokens')})"
         )
 
-        content_dict = self._extract_content_json(raw_response)
+        try:
+            content_dict = self._extract_content_json(raw_response)
+        except DeepSeekProviderError as first_err:
+            err_msg = str(first_err)
+            if "truncated" in err_msg or "Failed to parse DeepSeek response content as JSON" in err_msg:
+                logger.warning(
+                    f"DeepSeek analyze_planning first attempt failed ({err_msg}). "
+                    "Executing single bounded compact retry with compact planning prompt..."
+                )
+                compact_messages = PlanningPromptBuilder.build_messages(context, compact_mode=True)
+                raw_response_retry = await self._post_chat_completion(compact_messages)
+                retry_usage = raw_response_retry.get("usage", {})
+                self.last_usage = retry_usage
+                logger.info(
+                    f"DeepSeek analyze_planning compact retry completed "
+                    f"(prompt_tokens={retry_usage.get('prompt_tokens')}, completion_tokens={retry_usage.get('completion_tokens')})"
+                )
+                content_dict = self._extract_content_json(raw_response_retry)
+            else:
+                raise
 
         try:
             proposal = PlanningProposal.model_validate(content_dict)
@@ -379,4 +466,5 @@ class DeepSeekAIProvider:
             raise DeepSeekProviderError(
                 f"DeepSeek response failed PlanningProposal schema validation: {sanitized_err}"
             )
+
 

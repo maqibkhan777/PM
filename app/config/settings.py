@@ -186,8 +186,13 @@ class Settings(BaseSettings):
     PERFORMANCE_FALLBACK_HOURS_COMPLEXITY_4: float = 8.0
     PERFORMANCE_FALLBACK_HOURS_COMPLEXITY_5: float = 14.0
 
-    # Deterministic Planning Horizon (Phase 3)
+    # Deterministic Planning Horizon & Context Bounding (Phase 3/4)
     PLANNING_HORIZON_WORKING_DAYS: int = 10  # Standard 2-week planning horizon (Mon-Fri)
+    PLANNING_MAX_CONTEXT_TASKS: int = 25     # Hard limit on tasks included in AI planning context
+    PLANNING_MAX_CONTEXT_RESOURCES: int = 10 # Hard limit on resources in AI planning context
+    PLANNING_MAX_TASK_SUMMARY_CHARS: int = 120 # Hard limit on task summary length in AI prompt
+    PLANNING_MAX_PROPOSAL_TASKS: int = 15    # Maximum proposed tasks in output proposal
+    PLANNING_MAX_PROPOSAL_RISKS: int = 5     # Maximum risk signals in output proposal
 
     # Live QA Framework Settings
     LIVE_QA_ENABLED: bool = False

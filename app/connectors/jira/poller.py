@@ -212,7 +212,8 @@ class JiraPoller:
         project_obj = fields.get("project", {})
         project_key = project_obj.get("key")
         issuetype_obj = fields.get("issuetype") or {}
-        creator_obj = fields.get("creator") or fields.get("reporter") or {}
+        reporter_obj = fields.get("reporter") or {}
+        creator_obj = fields.get("creator") or reporter_obj or {}
         creator_acc_id = creator_obj.get("accountId") or creator_obj.get("name")
         creator_disp_name = creator_obj.get("displayName") or creator_obj.get("name")
         creator_mail = creator_obj.get("emailAddress")
@@ -255,8 +256,8 @@ class JiraPoller:
                     priority=priority_name or "Medium",
                     assignee_id=assignee_obj.get("accountId"),
                     assignee_name=assignee_name,
-                    reporter_id=fields.get("reporter", {}).get("accountId"),
-                    reporter_name=fields.get("reporter", {}).get("displayName"),
+                    reporter_id=reporter_obj.get("accountId"),
+                    reporter_name=reporter_obj.get("displayName"),
                     creator_id=creator_acc_id,
                     creator_name=creator_disp_name,
                     creator_email=creator_mail,

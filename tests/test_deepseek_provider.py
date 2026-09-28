@@ -469,3 +469,340 @@ async def test_end_to_end_decision_service_with_deepseek(temp_db, sample_context
     # Ensure API key is nowhere in audit details
     details_str = json.dumps(attention_logs[0].get("details", {}))
     assert "sk-test-real-key" not in details_str
+
+
+@pytest.mark.asyncio
+async def test_deepseek_finish_reason_length_truncation_detection(sample_context):
+    """15. Provider detects finish_reason='length' and raises explicit truncation error."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {
+                            "role": "assistant",
+                            "content": '{"analysis_id": "truncated-id", "sum',
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 500, "completion_tokens": 2000},
+            },
+        )
+
+    client = make_mock_transport(handler)
+    provider = DeepSeekAIProvider(api_key="sk-test-key", client=client)
+
+    with pytest.raises(DeepSeekProviderError) as excinfo:
+        provider._extract_content_json({
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {"content": '{"analysis_id": "trunc'},
+                }
+            ],
+            "usage": {"prompt_tokens": 500, "completion_tokens": 2000},
+        })
+    assert "truncated due to output token limit" in str(excinfo.value)
+    assert "finish_reason=length" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_deepseek_analyze_attention_compact_retry_succeeds(sample_context, valid_attention_json):
+    """16. Truncated first response triggers a single bounded compact retry that succeeds."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        body = json.loads(request.content.decode("utf-8"))
+
+        if call_count == 1:
+            # First attempt returns truncated response with finish_reason='length'
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "length",
+                            "message": {
+                                "role": "assistant",
+                                "content": '{"analysis_id": "analysis-1", "summary": "incomplete str',
+                            },
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 600, "completion_tokens": 2000},
+                },
+            )
+        else:
+            # Second attempt receives compact prompt and returns valid complete JSON
+            system_msg = next((m["content"] for m in body["messages"] if m["role"] == "system"), "")
+            assert "CRITICAL COMPACTNESS INSTRUCTION" in system_msg
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "role": "assistant",
+                                "content": json.dumps(valid_attention_json),
+                            },
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 650, "completion_tokens": 400},
+                },
+            )
+
+    client = make_mock_transport(handler)
+    provider = DeepSeekAIProvider(api_key="sk-test-key", client=client)
+
+    result = await provider.analyze_attention(sample_context)
+    assert call_count == 2
+    assert isinstance(result, PMAttentionAnalysis)
+    assert result.analysis_id == "analysis-deepseek-test-1"
+    assert len(result.attention_items) == 1
+
+
+@pytest.mark.asyncio
+async def test_deepseek_analyze_attention_compact_retry_fails_safely(sample_context):
+    """17. If compact retry also fails, raises clean DeepSeekProviderError without unbounded retries."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(
+            status_code=200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {
+                            "role": "assistant",
+                            "content": '{"analysis_id": "analysis-1", "summary": "truncated',
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 600, "completion_tokens": 2000},
+            },
+        )
+
+    client = make_mock_transport(handler)
+    provider = DeepSeekAIProvider(api_key="sk-test-key", client=client)
+
+    with pytest.raises(DeepSeekProviderError) as excinfo:
+        await provider.analyze_attention(sample_context)
+
+    # Exactly 2 calls: initial + 1 compact retry (no unbounded looping)
+    assert call_count == 2
+    assert "truncated" in str(excinfo.value)
+
+
+@pytest.fixture
+def valid_planning_context():
+    """Create a minimal valid PlanningContext for testing."""
+    from app.core.models.planning import PlanningContext, PlanningResourceContext, PlanningTaskContext, CapacityState
+    return PlanningContext(
+        context_version="planning-v1",
+        generated_at="2026-09-27T04:00:00Z",
+        anchor_date="2026-09-27",
+        planning_horizon_working_days=10,
+        horizon_end_date="2026-10-09",
+        team_group="Post SMTP Support (SMTPSUPORT)",
+        resources=[
+            PlanningResourceContext(
+                resource_id="acc_1",
+                display_name="Ahsan Amin",
+                role="Senior Engineer",
+                active_task_count=2,
+                current_workload_hours=10.0,
+                remaining_effort_hours=10.0,
+                available_capacity_hours=60.0,
+                capacity_state=CapacityState.BALANCED,
+                workload_pressure="NORMAL",
+            )
+        ],
+        tasks=[
+            PlanningTaskContext(
+                issue_key="SMTPSUPORT-101",
+                assigned_resource_id="acc_1",
+                assigned_resource_name="Ahsan Amin",
+                summary="Fix SMTP timeout on SSL port 465",
+                status="In Progress",
+                priority="High",
+                project_key="SMTPSUPORT",
+                estimated_remaining_hours=4.0,
+                due_date="2026-09-30",
+            )
+        ],
+    )
+
+
+@pytest.fixture
+def valid_planning_proposal_json():
+    return {
+        "proposal_version": "proposal-v1",
+        "generated_at": "2026-09-27T04:00:00Z",
+        "context_version": "planning-v1",
+        "anchor_date": "2026-09-27",
+        "planning_horizon_working_days": 10,
+        "requires_human_review": True,
+        "overall_confidence": 0.90,
+        "summary": "Focus on resolving SMTPSUPORT-101 SSL timeout bug first.",
+        "task_proposals": [
+            {
+                "issue_key": "SMTPSUPORT-101",
+                "proposed_estimate": {
+                    "value": 4.0,
+                    "unit": "hours",
+                    "confidence": 0.85,
+                    "rationale": "Direct fix for SSL socket timeout.",
+                    "evidence_references": [],
+                },
+                "proposed_start_date": "2026-09-27",
+                "proposed_due_date": "2026-09-28",
+                "date_confidence": 0.85,
+                "sequencing_position": 1,
+                "proposed_predecessors": [],
+                "proposed_successors": [],
+                "risk_level": "LOW",
+                "risk_reason": None,
+                "evidence_references": [],
+                "assumptions": [],
+                "requires_human_review": True,
+            }
+        ],
+        "sequencing_proposals": [],
+        "risk_signals": [],
+        "assumptions": [],
+        "evidence_references": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_deepseek_analyze_planning_success(valid_planning_context, valid_planning_proposal_json):
+    """18. Valid mocked DeepSeek JSON response parses into typed PlanningProposal."""
+    from app.core.models.planning import PlanningProposal
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(valid_planning_proposal_json),
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 450, "completion_tokens": 250},
+            },
+        )
+
+    client = make_mock_transport(handler)
+    provider = DeepSeekAIProvider(api_key="sk-test-key", client=client)
+
+    proposal = await provider.analyze_planning(valid_planning_context)
+    assert isinstance(proposal, PlanningProposal)
+    assert proposal.anchor_date == "2026-09-27"
+    assert len(proposal.task_proposals) == 1
+    assert proposal.task_proposals[0].issue_key == "SMTPSUPORT-101"
+    assert proposal.requires_human_review is True
+
+
+@pytest.mark.asyncio
+async def test_deepseek_analyze_planning_compact_retry_succeeds(valid_planning_context, valid_planning_proposal_json):
+    """19. Truncated first response in planning triggers single bounded compact retry that succeeds."""
+    from app.core.models.planning import PlanningProposal
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        body = json.loads(request.content.decode("utf-8"))
+
+        if call_count == 1:
+            # First attempt returns truncated response with finish_reason='length'
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "length",
+                            "message": {
+                                "role": "assistant",
+                                "content": '{"proposal_version": "proposal-v1", "summary": "incomplete...',
+                            },
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 500, "completion_tokens": 2000},
+                },
+            )
+        else:
+            # Second attempt receives compact prompt and returns valid complete JSON
+            system_msg = next((m["content"] for m in body["messages"] if m["role"] == "system"), "")
+            assert "ultra-compact PlanningProposal JSON" in system_msg
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "role": "assistant",
+                                "content": json.dumps(valid_planning_proposal_json),
+                            },
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 300, "completion_tokens": 250},
+                },
+            )
+
+    client = make_mock_transport(handler)
+    provider = DeepSeekAIProvider(api_key="sk-test-key", client=client)
+
+    proposal = await provider.analyze_planning(valid_planning_context)
+    assert call_count == 2
+    assert isinstance(proposal, PlanningProposal)
+    assert proposal.task_proposals[0].issue_key == "SMTPSUPORT-101"
+
+
+@pytest.mark.asyncio
+async def test_deepseek_analyze_planning_second_truncation_fails_safely(valid_planning_context):
+    """20. Second truncation in planning fails safely with provider error without infinite looping."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(
+            status_code=200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {
+                            "role": "assistant",
+                            "content": '{"proposal_version": "proposal-v1", "summary": "truncated',
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 500, "completion_tokens": 2000},
+            },
+        )
+
+    client = make_mock_transport(handler)
+    provider = DeepSeekAIProvider(api_key="sk-test-key", client=client)
+
+    with pytest.raises(DeepSeekProviderError) as excinfo:
+        await provider.analyze_planning(valid_planning_context)
+
+    # Exactly 2 calls: initial + 1 compact retry
+    assert call_count == 2
+    assert "truncated" in str(excinfo.value)
+
+

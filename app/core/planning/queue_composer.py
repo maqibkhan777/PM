@@ -87,6 +87,7 @@ class ResourceQueueComposer:
         account_id: str,
         display_name: Optional[str] = None,
         team_group: Optional[str] = None,
+        project_key: Optional[str] = None,
         horizon_working_days: int = 10,
         now: Optional[datetime] = None,
     ) -> ResourceQueueSnapshot:
@@ -96,6 +97,7 @@ class ResourceQueueComposer:
             account_id: Raw or canonical Atlassian account ID.
             display_name: Optional human display name.
             team_group: Optional team scoping.
+            project_key: Optional project key filter (e.g. 'POST', 'SMTPSUPORT').
             horizon_working_days: Operational planning horizon in business days (default: 10).
             now: Optional anchor datetime (defaults to UTC now).
         """
@@ -135,6 +137,7 @@ class ResourceQueueComposer:
             account_id=canonical_id,
             display_name=resolved_name,
             team_group=team,
+            project_key=project_key,
         )
 
         # 3. Retrieve Historical Worklogs & Completed Tasks
@@ -579,6 +582,7 @@ class ResourceQueueComposer:
         self,
         account_ids: Optional[List[str]] = None,
         team_group: Optional[str] = None,
+        project_key: Optional[str] = None,
         horizon_working_days: int = 10,
         now: Optional[datetime] = None,
     ) -> TeamWorkloadSnapshot:
@@ -587,6 +591,7 @@ class ResourceQueueComposer:
         Args:
             account_ids: Explicit list of canonical account IDs to analyze.
             team_group: Scoping filter by team group.
+            project_key: Optional project key filter.
             horizon_working_days: Operational planning horizon in business days (default: 10).
             now: Optional anchor datetime.
         """
@@ -623,6 +628,7 @@ class ResourceQueueComposer:
             snap = self.compose_snapshot(
                 account_id=acc,
                 team_group=team_group,
+                project_key=project_key,
                 horizon_working_days=horizon_working_days,
                 now=now_dt,
             )

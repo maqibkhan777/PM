@@ -1053,6 +1053,7 @@ class JiraIssueStateRepository:
         account_id: str,
         display_name: Optional[str] = None,
         team_group: Optional[str] = None,
+        project_key: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Retrieve active assigned issues for a specific resource, matching canonical Active Queue criteria."""
         from app.core.performance.roles import get_account_aliases
@@ -1078,25 +1079,25 @@ class JiraIssueStateRepository:
                 return []
 
             user_clause = f"({' OR '.join(match_clauses)})"
+            extra_clauses = []
             if team_group:
-                query = f"""
-                    SELECT * FROM jira_issue_state
-                    WHERE {done_clause}
-                      AND {user_clause}
-                      AND team_group = ?
-                    ORDER BY due_date ASC, updated_at DESC, jira_issue_key ASC
-                """
+                extra_clauses.append("team_group = ?")
                 params.append(team_group)
-            else:
-                query = f"""
-                    SELECT * FROM jira_issue_state
-                    WHERE {done_clause}
-                      AND {user_clause}
-                    ORDER BY due_date ASC, updated_at DESC, jira_issue_key ASC
-                """
+            if project_key:
+                extra_clauses.append("UPPER(project_key) = ?")
+                params.append(project_key.strip().upper())
+
+            where_extra = f" AND {' AND '.join(extra_clauses)}" if extra_clauses else ""
+            query = f"""
+                SELECT * FROM jira_issue_state
+                WHERE {done_clause}
+                  AND {user_clause}{where_extra}
+                ORDER BY due_date ASC, updated_at DESC, jira_issue_key ASC
+            """
 
             cursor = conn.execute(query, params)
             return [self._format_row(dict(row)) for row in cursor.fetchall()]
+
 
     def list_all(self, limit: int = 100) -> List[Dict[str, Any]]:
         with self.mgr.session() as conn:
