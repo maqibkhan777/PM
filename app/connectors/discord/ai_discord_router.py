@@ -181,10 +181,7 @@ class AIDiscordRouterService:
                 res = AI_HELP_MESSAGE
                 outcome = "COMPLETED"
             elif not getattr(settings, "AI_ENABLED", False):
-                fallback_used = True
-                logger.info("Using legacy compatibility fallback because AI is disabled.")
-                intent = self.classify_intent(prompt)
-                res = await self._legacy_compatibility_fallback(prompt, actor=actor, thread_context=thread_context, intent=intent)
+                res = "ℹ️ PM AI assistant is disabled in system configuration (`AI_ENABLED=false`)."
                 outcome = "COMPLETED"
             else:
                 from app.services.ai.config import resolve_ai_provider

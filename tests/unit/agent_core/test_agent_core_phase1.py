@@ -204,6 +204,15 @@ async def test_zero_matches_returns_truthful_failure():
 
 @pytest.mark.asyncio
 async def test_inferable_carries_derivation_in_state():
+    captured = []
+
+    class InferableProvider:
+        async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
+            if state.last_tool_results.get("tools_called"):
+                captured.append(state.inferable_facts.copy())
+                return AgentStep.final("done")
+            return AgentStep.tool_calls([ToolCall(tool_name="capacity_workload_summary", arguments={})])
+
     async def infer_hours(_args):
         return {
             "status": ToolResultStatus.INSUFFICIENT_DATA.value,
@@ -215,12 +224,13 @@ async def test_inferable_carries_derivation_in_state():
 
     registry = ToolRegistry()
     registry.register("capacity_workload_summary", ToolSpec(name="capacity_workload_summary", description="capacity"), infer_hours)
-    provider = ScriptedProvider([AgentStep.tool_calls([ToolCall(tool_name="capacity_workload_summary", arguments={})]), AgentStep.final("done")])
+    provider = InferableProvider()
     core = AgentCore(provider=provider, tool_registry=registry, agent_provider=AgentProvider(provider))  # type: ignore[arg-type]
     res = await core.run("How much time is left?", actor="u1", session_id="cap1")
     assert res["status"] == "COMPLETED"
-    session = core._sessions["cap1"]["state"]
-    assert "capacity_workload_summary" in session.inferable_facts
+    assert captured
+    assert captured[0]["capacity_workload_summary"]["value"]["remaining_hours"] == 10
+    assert captured[0]["capacity_workload_summary"]["derivation"] == ["capacity 40h - committed 30h = 10h remaining"]
 
 
 @pytest.mark.asyncio
@@ -253,15 +263,15 @@ async def test_clarification_continuity_resumes_original_goal():
 
 
 @pytest.mark.asyncio
-async def test_provider_clarification_accepted_with_no_prior_tool_evidence():
+async def test_provider_clarification_rejected_without_prior_tool_evidence():
     class ClarificationProvider:
         async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
             return AgentStep.clarification(AmbiguityQuestion(question="Which sprint?", candidates=[Candidate(value="Sprint B", label="Sprint B")]), uncertainty=UncertaintyClass.UNKNOWN)
 
     core = AgentCore(provider=ClarificationProvider(), tool_registry=ToolRegistry(), agent_provider=AgentProvider(ClarificationProvider()))  # type: ignore[arg-type]
     res = await core.run("Create a plan for the WPEPSUP work.", actor="u1", session_id="clarify-accept")
-    assert res["status"] == "NEEDS_CLARIFICATION"
-    assert "Which sprint?" in res["question"]
+    assert res["status"] == "FAILED"
+    assert "tool loop exceeded budget" in res["error"].lower()
 
 
 @pytest.mark.asyncio
@@ -288,6 +298,44 @@ async def test_provider_clarification_rejected_after_grounded_tool_result():
     res = await core.run("What is blocking WSSS-326?", actor="u1", session_id="clarify-reject")
     assert res["status"] == "COMPLETED"
     assert "Grounded answer" in res["answer"]
+
+
+@pytest.mark.asyncio
+async def test_provider_clarification_accepted_after_ambiguous_tool_result():
+    class AmbiguousClarificationProvider:
+        async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
+            if state.pending_clarification:
+                return AgentStep.final("Clarified and resumed.")
+            if not state.last_tool_results.get("tools_called"):
+                return AgentStep.tool_calls([ToolCall(tool_name="find_user", arguments={"query": "Ali"})], uncertainty=UncertaintyClass.AMBIGUOUS)
+            return AgentStep.clarification(
+                AmbiguityQuestion(
+                    question="Which Ali do you mean?",
+                    candidates=[
+                        Candidate(value="acc-1", label="Ali Raza (Developer)", evidence=["developer"]),
+                        Candidate(value="acc-2", label="Ali Khan (QA)", evidence=["qa"]),
+                    ],
+                ),
+                uncertainty=UncertaintyClass.AMBIGUOUS,
+            )
+
+    async def find_user(_args):
+        return {
+            "status": ToolResultStatus.AMBIGUOUS.value,
+            "tool": "find_user",
+            "candidates": [
+                {"value": "acc-1", "label": "Ali Raza (Developer)", "evidence": ["developer"]},
+                {"value": "acc-2", "label": "Ali Khan (QA)", "evidence": ["qa"]},
+            ],
+        }
+
+    registry = ToolRegistry()
+    registry.register("find_user", ToolSpec(name="find_user", description="users"), find_user)
+    provider = AmbiguousClarificationProvider()
+    core = AgentCore(provider=provider, tool_registry=registry, agent_provider=AgentProvider(provider))  # type: ignore[arg-type]
+    res = await core.run("Who is Ali?", actor="u1", session_id="clarify-ambiguous")
+    assert res["status"] == "NEEDS_CLARIFICATION"
+    assert "multiple matches" in res["question"].lower()
 
 
 @pytest.mark.asyncio
@@ -318,7 +366,10 @@ async def test_unregistered_tool_rejected_and_loop_limit_safe():
 
 
 @pytest.mark.asyncio
-async def test_not_available_comments_path_returns_not_available():
+async def test_not_available_comments_path_returns_not_available(monkeypatch):
+    import app.services.ai.pm_tools as pm_tools
+
+    monkeypatch.setattr(type(pm_tools.settings), "is_jira_configured", lambda self: False, raising=False)
     registry = build_tool_registry()
     tool = registry.get("get_comments")
     assert tool is not None
@@ -328,6 +379,15 @@ async def test_not_available_comments_path_returns_not_available():
 
 @pytest.mark.asyncio
 async def test_inferable_requires_evidence_and_retains_derivation():
+    captured = []
+
+    class InferableProvider:
+        async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
+            if state.last_tool_results.get("tools_called"):
+                captured.append(state.inferable_facts.copy())
+                return AgentStep.final("done")
+            return AgentStep.tool_calls([ToolCall(tool_name="capacity_workload_summary", arguments={})])
+
     async def infer_hours(_args):
         return {
             "status": ToolResultStatus.INFERABLE.value,
@@ -339,13 +399,13 @@ async def test_inferable_requires_evidence_and_retains_derivation():
 
     registry = ToolRegistry()
     registry.register("capacity_workload_summary", ToolSpec(name="capacity_workload_summary", description="capacity"), infer_hours)
-    provider = ScriptedProvider([AgentStep.tool_calls([ToolCall(tool_name="capacity_workload_summary", arguments={})]), AgentStep.final("done")])
+    provider = InferableProvider()
     core = AgentCore(provider=provider, tool_registry=registry, agent_provider=AgentProvider(provider))  # type: ignore[arg-type]
 
     res = await core.run("How much time is left?", actor="u1", session_id="infer1")
     assert res["status"] == "COMPLETED"
-    session = core._sessions["infer1"]["state"]
-    inferable = session.inferable_facts["capacity_workload_summary"]
+    assert captured
+    inferable = captured[0]["capacity_workload_summary"]
     assert inferable["value"]["remaining_hours"] == 10
     assert inferable["derivation"] == ["capacity 40h - committed 30h = 10h remaining"]
 

@@ -49,9 +49,14 @@ class AgentCore:
         state = sess.get("state")
         if not isinstance(state, AgentState):
             return AgentState(user_goal=current_input, current_input=current_input)
-        # keep original goal, only update current input
+        if not state.pending_clarification:
+            return AgentState(user_goal=current_input, current_input=current_input)
+        # keep original goal, only update current input while clarification is pending
         state.current_input = current_input
         return state
+
+    def _discard_session(self, session_id: str) -> None:
+        self._sessions.pop(session_id, None)
 
     def _save_session(self, session_id: str, state: AgentState) -> None:
         # simple eviction: if over limit, drop oldest
@@ -81,10 +86,10 @@ class AgentCore:
             try:
                 step: AgentStep = await self._provider_next_step(state=state, actor=actor)
             except Exception as e:
-                self._save_session(session_id=session_id, state=state)
+                self._discard_session(session_id=session_id)
                 return {"status": "FAILURE", "error": f"Provider failure: {e}"}
             if not isinstance(step, AgentStep):
-                self._save_session(session_id=session_id, state=state)
+                self._discard_session(session_id=session_id)
                 return {"status": "FAILURE", "error": "Provider returned malformed agent step."}
 
             # Audit (token-efficient): only log tool names and outcomes; never dump raw payload.
@@ -107,6 +112,13 @@ class AgentCore:
                     "question": step.ambiguity_question.question,
                     "reason": "clarification_not_supported_by_tool_history",
                 }
+                state.context.setdefault("clarification_rejections", []).append(
+                    {
+                        "question": step.ambiguity_question.question,
+                        "reason": "clarification_not_supported_by_tool_history",
+                        "tools_called": state.last_tool_results.get("tools_called", []),
+                    }
+                )
                 continue
 
             if step.kind == "TOOL_CALL":
@@ -118,16 +130,16 @@ class AgentCore:
                 tool_name = call.tool_name
                 registered = self.tool_registry.get(tool_name)
                 if not registered:
-                    self._save_session(session_id=session_id, state=state)
+                    self._discard_session(session_id=session_id)
                     return {"status": "FAILURE", "error": f"Unknown tool requested by provider: {tool_name}"}
                 if not registered.spec.read_only or registered.spec.mutates_external_system or registered.spec.requires_approval:
-                    self._save_session(session_id=session_id, state=state)
+                    self._discard_session(session_id=session_id)
                     return {"status": "FAILURE", "error": f"Tool '{tool_name}' is not permitted in read-only phase."}
 
                 try:
                     result = await registered.fn(call.arguments)
                 except Exception as e:
-                    self._save_session(session_id=session_id, state=state)
+                    self._discard_session(session_id=session_id)
                     return {"status": "FAILURE", "error": f"Tool '{tool_name}' failed: {e}"}
                 state.last_tool_results.setdefault("tools_called", []).append(
                     {"tool": tool_name, "args": call.arguments, "result_type": type(result).__name__}
@@ -149,10 +161,10 @@ class AgentCore:
                         "tools_called": state.last_tool_results.get("tools_called", []),
                     }
                 if verdict["status"] == ToolResultStatus.EMPTY:
-                    self._save_session(session_id=session_id, state=state)
+                    self._discard_session(session_id=session_id)
                     return {"status": "FAILURE", "error": verdict["message"]}
                 if verdict["status"] == ToolResultStatus.ERROR:
-                    self._save_session(session_id=session_id, state=state)
+                    self._discard_session(session_id=session_id)
                     return {"status": "FAILURE", "error": verdict["message"]}
                 if verdict["status"] == ToolResultStatus.NOT_AVAILABLE:
                     state.context.setdefault("unavailable_tools", {})[tool_name] = verdict["message"]
@@ -165,7 +177,7 @@ class AgentCore:
                     }
 
             if step.final_answer:
-                self._save_session(session_id=session_id, state=state)
+                self._discard_session(session_id=session_id)
                 return {
                     "status": "COMPLETED",
                     "answer": step.final_answer,
@@ -175,9 +187,10 @@ class AgentCore:
                 }
 
             if step.kind == "FAILURE":
-                self._save_session(session_id=session_id, state=state)
+                self._discard_session(session_id=session_id)
                 return {"status": "FAILURE", "error": step.final_answer or "Provider failure."}
 
+        self._discard_session(session_id=session_id)
         return {
             "status": "FAILED",
             "error": "Agent core tool loop exceeded budget",
@@ -279,14 +292,14 @@ class AgentCore:
 
     def _clarification_is_supported(self, state: AgentState) -> bool:
         tools_called = state.last_tool_results.get("tools_called", [])
-        if not tools_called:
-            return True
         unresolved_statuses = {
             ToolResultStatus.AMBIGUOUS.value,
             ToolResultStatus.EMPTY.value,
             ToolResultStatus.NOT_AVAILABLE.value,
             ToolResultStatus.INSUFFICIENT_DATA.value,
         }
+        if not tools_called:
+            return False
         for call in tools_called:
             tool_name = call.get("tool")
             raw_result = state.last_tool_results.get(tool_name)

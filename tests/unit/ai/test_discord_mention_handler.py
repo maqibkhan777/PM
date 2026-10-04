@@ -28,6 +28,7 @@ from app.connectors.discord.ai_mention_handler import (
 )
 from app.connectors.discord.ai_discord_router import (
     AIDiscordRouterService,
+    AI_AGENT_SESSION_STORE,
     AIRequestIntent,
 )
 from app.connectors.discord.slash_commands import DiscordSlashCommandHandler
@@ -51,6 +52,13 @@ AI_BOT_ID = "998877665544332211"
 TEST_CHANNEL_ID = "123456789012345678"
 AUTHORIZED_USER_ID = "112233445566778899"
 UNAUTHORIZED_USER_ID = "999999999999999999"
+
+
+@pytest.fixture(autouse=True)
+def clear_ai_agent_session_store():
+    AI_AGENT_SESSION_STORE.clear()
+    yield
+    AI_AGENT_SESSION_STORE.clear()
 
 
 @pytest.fixture
@@ -269,7 +277,7 @@ async def test_ai_disabled_default_behavior(mention_handler, monkeypatch):
 
     res = await mention_handler.handle_message_create(message_payload, http_client=mock_client)
     assert res["status"] == "processed"
-    assert "AI decision support is currently disabled" in str(res["response"])
+    assert "assistant is disabled" in str(res["response"]).lower()
 
 
 @pytest.mark.asyncio
@@ -640,5 +648,52 @@ async def test_follow_up_discord_reply_resumes_pending_clarification(mention_han
     res2 = await mention_handler.handle_message_create(second, http_client=mock_client)
     assert res2["status"] == "processed"
     assert "Resumed with Sprint B." in str(res2["response"])
+
+
+@pytest.mark.asyncio
+async def test_sequential_questions_same_channel_user_start_new_goal_after_completion(mention_handler, monkeypatch):
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_ENABLED", True)
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_TOKEN", "mock_ai_token")
+    monkeypatch.setattr(settings, "DISCORD_AI_APPLICATION_ID", AI_BOT_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_CHANNEL_IDS", TEST_CHANNEL_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_USER_IDS", AUTHORIZED_USER_ID)
+    monkeypatch.setattr(settings, "AI_ENABLED", True)
+
+    from app.agent_core.agent_models import AgentStep
+    from app.agent_core.tooling import ToolRegistry
+
+    recorded_goals = []
+
+    class GoalRecordingProvider:
+        async def next_agent_step(self, user_goal, actor, state, tools):
+            recorded_goals.append(user_goal)
+            return AgentStep.final(f"Handled: {user_goal}")
+
+    monkeypatch.setattr("app.services.ai.config.resolve_ai_provider", lambda *args, **kwargs: GoalRecordingProvider())
+    monkeypatch.setattr("app.services.ai.pm_tools.build_tool_registry", lambda manager=None: ToolRegistry())
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=MagicMock(status_code=200))
+
+    first = {
+        "id": "msg_seq_1",
+        "channel_id": TEST_CHANNEL_ID,
+        "content": f"<@{AI_BOT_ID}> What is the status of WSSS-326?",
+        "author": {"id": AUTHORIZED_USER_ID, "bot": False},
+        "mentions": [{"id": AI_BOT_ID}],
+    }
+    second = {
+        "id": "msg_seq_2",
+        "channel_id": TEST_CHANNEL_ID,
+        "content": f"<@{AI_BOT_ID}> Is the sprint on track?",
+        "author": {"id": AUTHORIZED_USER_ID, "bot": False},
+        "mentions": [{"id": AI_BOT_ID}],
+    }
+
+    res1 = await mention_handler.handle_message_create(first, http_client=mock_client)
+    res2 = await mention_handler.handle_message_create(second, http_client=mock_client)
+    assert res1["status"] == "processed"
+    assert res2["status"] == "processed"
+    assert recorded_goals == ["What is the status of WSSS-326?", "Is the sprint on track?"]
 
 
