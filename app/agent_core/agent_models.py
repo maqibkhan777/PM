@@ -56,6 +56,7 @@ class AgentState:
     selected_project: Optional[str] = None
     selected_issue: Optional[str] = None
     selected_sprint: Optional[str] = None
+    selected_sprint_name: Optional[str] = None
     selected_user: Optional[str] = None
     proposed_actions: List[Dict[str, Any]] = field(default_factory=list)
 

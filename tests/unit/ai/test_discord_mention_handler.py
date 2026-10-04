@@ -617,8 +617,8 @@ async def test_follow_up_discord_reply_resumes_pending_clarification(mention_han
 
     class ResumeProvider:
         async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
-            if state.selected_sprint:
-                return AgentStep.final(f"Resumed with {state.selected_sprint}.")
+            if state.selected_sprint_name:
+                return AgentStep.final(f"Resumed with {state.selected_sprint_name}.")
             return AgentStep.tool_calls([ToolCall(tool_name="get_active_sprints", arguments={})], uncertainty=UncertaintyClass.KNOWN)
 
     monkeypatch.setattr("app.services.ai.pm_tools.build_tool_registry", lambda manager=None: registry)

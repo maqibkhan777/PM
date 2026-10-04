@@ -239,8 +239,8 @@ async def test_inferable_carries_derivation_in_state():
 async def test_clarification_continuity_resumes_original_goal():
     class ContinuityProvider:
         async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
-            if state.selected_sprint:
-                return AgentStep.final(f"Resumed goal for {state.selected_sprint}.")
+            if state.selected_sprint_name:
+                return AgentStep.final(f"Resumed goal for {state.selected_sprint_name}.")
             return AgentStep.tool_calls([ToolCall(tool_name="get_active_sprints", arguments={})], uncertainty=UncertaintyClass.AMBIGUOUS)
 
     async def sprints(_args):
@@ -351,6 +351,77 @@ async def test_provider_clarification_accepted_after_ambiguous_tool_result():
     res = await core.run("Ali Raza", actor="u1", session_id=session_id)
     assert res["status"] == "NEEDS_CLARIFICATION"
     assert "Which Ali" in res["question"]
+
+
+@pytest.mark.asyncio
+async def test_sprint_goal_forces_active_sprint_lookup_before_final_answer():
+    async def get_planning_context(_args):
+        return {
+            "status": ToolResultStatus.AVAILABLE.value,
+            "tool": "get_planning_context",
+            "value": {"summary": "team-level planning context only"},
+        }
+
+    async def get_active_sprints(_args):
+        return {
+            "status": ToolResultStatus.AMBIGUOUS.value,
+            "tool": "get_active_sprints",
+            "clarification_kind": "project",
+            "question": "Which project do you mean?",
+            "candidates": [
+                {"value": "TREN", "label": "Tren Project", "evidence": ["active sprint count=1"], "project_key": "TREN", "project_name": "Tren Project"},
+                {"value": "TEST", "label": "Test Project", "evidence": ["active sprint count=1"], "project_key": "TEST", "project_name": "Test Project"},
+            ],
+        }
+
+    class SprintGateProvider:
+        async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
+            if not state.last_tool_results.get("tools_called"):
+                return AgentStep.tool_calls([ToolCall(tool_name="get_planning_context", arguments={})], uncertainty=UncertaintyClass.KNOWN)
+            return AgentStep.final("Sprint is on track.")
+
+    registry = ToolRegistry()
+    registry.register("get_planning_context", ToolSpec(name="get_planning_context", description="planning"), get_planning_context)
+    registry.register("get_active_sprints", ToolSpec(name="get_active_sprints", description="sprints"), get_active_sprints)
+    provider = SprintGateProvider()
+    core = AgentCore(provider=provider, tool_registry=registry, agent_provider=AgentProvider(provider))  # type: ignore[arg-type]
+
+    res = await core.run("Is the sprint on track?", actor="u1", session_id="sprint-gate")
+    assert res["status"] == "NEEDS_CLARIFICATION"
+    assert "project" in res["question"].lower()
+    assert any(call["tool"] == "get_active_sprints" for call in res["tools_called"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply", ["cancel", "nevermind", "stop"])
+async def test_pending_clarification_can_be_cancelled_without_model_call(reply):
+    class NoCallProvider:
+        async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
+            raise AssertionError("Provider should not be called for clarification cancellation.")
+
+    core = AgentCore(provider=NoCallProvider(), tool_registry=ToolRegistry(), agent_provider=AgentProvider(NoCallProvider()))  # type: ignore[arg-type]
+    session_id = f"cancel-{reply}"
+    core._sessions[session_id] = {
+        "ts": time.time(),
+        "state": AgentState(
+            user_goal="Which sprint?",
+            current_input=reply,
+            pending_clarification=AmbiguityQuestion(
+                question="Which sprint do you mean?",
+                kind="sprint",
+                candidates=[
+                    Candidate(value="101", label="Sprint A", evidence=["active sprint"]),
+                    Candidate(value="102", label="Sprint B", evidence=["active sprint"]),
+                ],
+            ),
+            last_uncertainty=UncertaintyClass.AMBIGUOUS,
+        ),
+    }
+
+    res = await core.run(reply, actor="u1", session_id=session_id)
+    assert res["status"] == "CANCELLED"
+    assert res["answer"] == "OK, cancelled."
+    assert session_id not in core._sessions
 
 
 @pytest.mark.asyncio
@@ -670,8 +741,8 @@ async def test_get_active_sprints_two_stage_resume_project_then_sprint(temp_db):
 
     class ProjectSprintProvider:
         async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
-            if state.selected_sprint:
-                return AgentStep.final(f"Project {state.selected_project} sprint {state.selected_sprint} selected.")
+            if state.selected_sprint_name:
+                return AgentStep.final(f"Project {state.selected_project} sprint {state.selected_sprint_name} selected.")
             return AgentStep.tool_calls([ToolCall(tool_name="get_active_sprints", arguments={})], uncertainty=UncertaintyClass.AMBIGUOUS)
 
     registry = build_tool_registry(manager=temp_db)
@@ -799,7 +870,9 @@ async def test_project_clarification_lowercase_key_matches_without_setting_issue
     class LowercaseProjectProvider:
         async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
             if state.selected_project:
-                return AgentStep.final(f"project={state.selected_project}; issue={state.selected_issue}; sprint={state.selected_sprint}")
+                return AgentStep.final(
+                    f"project={state.selected_project}; issue={state.selected_issue}; sprint={state.selected_sprint}; sprint_name={state.selected_sprint_name}"
+                )
             return AgentStep.tool_calls([ToolCall(tool_name="get_active_sprints", arguments={})], uncertainty=UncertaintyClass.AMBIGUOUS)
 
     registry = build_tool_registry(manager=temp_db)
@@ -826,7 +899,8 @@ async def test_project_clarification_lowercase_key_matches_without_setting_issue
     result = await core.run("tren", actor="u1", session_id=session_id)
     assert result["status"] == "COMPLETED"
     assert "project=TREN" in result["answer"]
-    assert "sprint=Tren Sprint 1" in result["answer"]
+    assert "sprint=301" in result["answer"]
+    assert "sprint_name=Tren Sprint 1" in result["answer"]
     assert "issue=None" in result["answer"]
 
 

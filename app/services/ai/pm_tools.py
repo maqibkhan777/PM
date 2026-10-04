@@ -894,6 +894,12 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
                 continue
         rel_models = []
         # Keep relationships empty in Phase 2 unless we can safely normalize them.
+        resource_name_by_id: Dict[str, str] = {}
+        for resource in getattr(team, "resource_snapshots", []) or []:
+            rid = str(getattr(resource, "resource_id", None) or (resource.get("resource_id") if isinstance(resource, dict) else "")).strip()
+            rname = str(getattr(resource, "display_name", None) or (resource.get("display_name") if isinstance(resource, dict) else "")).strip()
+            if rid and rname:
+                resource_name_by_id[rid] = rname
         ctx = PlanningContextBuilder(max_resources=10, max_total_tasks=25).build_context(
             team_snapshots=team.resource_snapshots,
             schedule_projection=forecast,
@@ -903,13 +909,24 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
             team_group=team_group,
             horizon_working_days=horizon_working_days,
         )
+        def _task_assignee(task: Any) -> str:
+            if isinstance(task, dict):
+                assigned_id = str(task.get("assigned_resource_id") or "").strip()
+                assigned_name = str(task.get("assigned_resource_name") or "").strip()
+            else:
+                assigned_id = str(getattr(task, "assigned_resource_id", "") or "").strip()
+                assigned_name = str(getattr(task, "assigned_resource_name", "") or "").strip()
+            if assigned_id and assigned_id in resource_name_by_id:
+                return resource_name_by_id[assigned_id]
+            return assigned_name or assigned_id or "Unassigned"
+
         ctx_value = ctx.model_dump() if hasattr(ctx, "model_dump") else ctx
         task_summary = _summarize_issues(
             [
                 {
                     "key": getattr(task, "issue_key", None) if not isinstance(task, dict) else task.get("issue_key"),
                     "status": getattr(task, "status", None) if not isinstance(task, dict) else task.get("status"),
-                    "assignee": getattr(task, "assigned_resource_id", None) if not isinstance(task, dict) else task.get("assigned_resource_id"),
+                    "assignee": _task_assignee(task),
                 }
                 for task in (getattr(ctx, "tasks", []) or [])
             ]

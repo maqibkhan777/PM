@@ -82,6 +82,9 @@ class AgentCore:
             # If the previous turn ended in a clarification and the user replied with a narrow answer,
             # capture that reply and resume the original goal.
             if state.pending_clarification:
+                if self._clarification_cancelled(state.current_input):
+                    self._discard_session(session_id=session_id)
+                    return {"status": "CANCELLED", "answer": "OK, cancelled."}
                 clarification_resolution = self._apply_clarification_response(state)
                 if clarification_resolution == "NO_MATCH":
                     if self._clarification_looks_like_new_goal(state.current_input) or self._clarification_retry_count(state) >= 1:
@@ -174,6 +177,14 @@ class AgentCore:
                     return await self._handle_tool_outcome(state, session_id)
 
             if step.final_answer:
+                if self._goal_requires_sprint_resolution(state) and not self._sprint_is_resolved(state):
+                    try:
+                        force_args = {"project_key": state.selected_project} if state.selected_project else {}
+                        if await self._process_tool_call(state, ToolCall(tool_name="get_active_sprints", arguments=force_args), session_id=session_id):
+                            return await self._handle_tool_outcome(state, session_id)
+                    except RuntimeError as exc:
+                        return {"status": "FAILURE", "error": str(exc)}
+                    continue
                 self._discard_session(session_id=session_id)
                 return {
                     "status": "COMPLETED",
@@ -250,8 +261,10 @@ class AgentCore:
                 if value.get("project_key"):
                     state.selected_project = str(value.get("project_key"))
                 candidates = value.get("candidates") if isinstance(value.get("candidates"), list) else []
-                if value.get("name") and len(candidates) == 1:
-                    state.selected_sprint = str(value.get("name"))
+                if len(candidates) == 1:
+                    sprint_candidate = candidates[0] if isinstance(candidates[0], dict) else {}
+                    state.selected_sprint = str(sprint_candidate.get("value") or value.get("id") or "")
+                    state.selected_sprint_name = str(value.get("name") or sprint_candidate.get("label") or "")
         if verdict["status"] == ToolResultStatus.INFERABLE:
             state.inferable_facts[tool_name] = {
                 "value": verdict["value"],
@@ -394,6 +407,7 @@ class AgentCore:
                 state.selected_project = chosen.value
             elif qkind == "sprint":
                 state.selected_sprint = chosen.value
+                state.selected_sprint_name = chosen.label
             elif qkind == "user":
                 state.selected_user = chosen.value
             else:
@@ -427,6 +441,30 @@ class AgentCore:
         if self._looks_like_issue_key(stripped):
             return True
         return len(stripped.split()) >= 4
+
+    def _clarification_cancelled(self, text: str) -> bool:
+        lowered = (text or "").strip().lower()
+        return lowered in {"cancel", "cancel.", "nevermind", "never mind", "stop"}
+
+    def _goal_requires_sprint_resolution(self, state: AgentState) -> bool:
+        text = f"{state.user_goal} {state.current_input}".lower()
+        return bool(
+            re.search(r"\bsprint\b", text)
+            or "on track" in text
+            or re.search(r"\bvelocity\b", text)
+            or re.search(r"\bburndown\b", text)
+            or re.search(r"\bburn[- ]?down\b", text)
+        )
+
+    def _sprint_is_resolved(self, state: AgentState) -> bool:
+        if state.selected_sprint:
+            return True
+        if any(k in state.last_tool_results for k in ("get_sprint", "get_sprint_issues")):
+            return True
+        for call in state.last_tool_results.get("tools_called", []):
+            if isinstance(call, dict) and call.get("tool") in {"get_sprint", "get_sprint_issues"}:
+                return True
+        return False
 
     def _looks_like_issue_key(self, text: str) -> bool:
         return bool(re.search(r"\b[A-Z][A-Z0-9]+-\d+\b", text))

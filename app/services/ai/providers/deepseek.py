@@ -540,6 +540,7 @@ class DeepSeekAIProvider:
                 "selected_project": getattr(state, "selected_project", None),
                 "selected_issue": state.selected_issue,
                 "selected_sprint": state.selected_sprint,
+                "selected_sprint_name": getattr(state, "selected_sprint_name", None),
                 "selected_user": state.selected_user,
             },
             "clarification_state": {
