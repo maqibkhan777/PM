@@ -34,6 +34,27 @@ from app.core.intelligence.rework import ReviewReworkAnalyzer
 from app.core.intelligence.trends import HistoricalTrendAnalyzer
 from app.core.intelligence.workload import WorkloadPressureAnalyzer
 
+from app.core.intelligence.probe_models import (
+    FeasibilityRecommendation,
+    LifecycleVsEffortSummary,
+    MetricCounter,
+    MultiProjectProbeSummary,
+    ProjectQualityReport,
+    SingleIssueQualityRecord,
+)
+from app.core.intelligence.effort_benchmark_models import (
+    BenchmarkReliability,
+    EffortDistributionQuantiles,
+    MultiProjectBenchmarkSummary,
+    ProjectEffortBenchmarkReport,
+    SegmentedProjectBenchmark,
+)
+from app.core.intelligence.effort_benchmarking import (
+    EmpiricalHistoricalEffortBenchmarkingEngine,
+    calculate_quantiles_and_stats,
+)
+from app.core.intelligence.effort_benchmark_formatter import EffortBenchmarkReportFormatter
+
 __all__ = [
     "TaskNature",
     "BaselineComparisonState",
@@ -67,4 +88,34 @@ __all__ = [
     "BlockerHistoryAnalyzer",
     "DeliveryContextAnalyzer",
     "HistoricalIntelligenceEngine",
+    "FeasibilityRecommendation",
+    "LifecycleVsEffortSummary",
+    "MetricCounter",
+    "MultiProjectProbeSummary",
+    "ProjectQualityReport",
+    "SingleIssueQualityRecord",
+    "JiraHistoricalDataQualityProbe",
+    "JiraProbeReportFormatter",
+    "BenchmarkReliability",
+    "EffortDistributionQuantiles",
+    "MultiProjectBenchmarkSummary",
+    "ProjectEffortBenchmarkReport",
+    "SegmentedProjectBenchmark",
+    "EmpiricalHistoricalEffortBenchmarkingEngine",
+    "calculate_quantiles_and_stats",
+    "EffortBenchmarkReportFormatter",
+    "BenchmarkRecommendationStatus",
+    "TaskEffortBenchmarkRecommendation",
+    "HistoricalEffortBenchmarkRetrievalService",
 ]
+
+from app.core.intelligence.effort_recommendation_models import (
+    BenchmarkRecommendationStatus,
+    TaskEffortBenchmarkRecommendation,
+)
+from app.core.intelligence.effort_retrieval_service import (
+    HistoricalEffortBenchmarkRetrievalService,
+)
+
+
+

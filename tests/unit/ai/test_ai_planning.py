@@ -546,3 +546,60 @@ class TestAIPlanningService:
         assert provider.base_url == "https://api.deepseek.com"
         assert provider.model == "deepseek-chat"
 
+    # Y: Bottleneck model serialization
+    def test_y_bottleneck_model_serialization(self):
+        """Verify real Bottleneck model instances with all fields or optional fields serialize safely into compact prompt."""
+        from app.core.models.planning import Bottleneck, BottleneckType
+
+        # 1. Bottleneck with all supported fields
+        b_full = Bottleneck(
+            type=BottleneckType.OVERLOADED_RESOURCE,
+            affected_resource_id="acc-1",
+            affected_issue_key="WSSS-1",
+            severity="HIGH",
+            evidence="Resource workload (100h) exceeds capacity (67.5h)",
+            data_quality="HIGH",
+        )
+
+        # 2. Bottleneck with optional resource/issue information missing
+        b_cycle = Bottleneck(
+            type=BottleneckType.DEPENDENCY_CYCLE,
+            affected_resource_id=None,
+            affected_issue_key=None,
+            severity="HIGH",
+            evidence="Cycle path: WSSS-1 -> WSSS-2 -> WSSS-1",
+            data_quality="HIGH",
+        )
+
+        ctx = _build_test_context()
+        ctx.schedule.bottlenecks = [b_full, b_cycle]
+
+        compact_dict = PlanningPromptBuilder.format_compact_context(ctx)
+        assert "bottlenecks" in compact_dict
+        assert len(compact_dict["bottlenecks"]) == 2
+
+        # Verify full bottleneck fields
+        b0 = compact_dict["bottlenecks"][0]
+        assert b0["type"] == "OVERLOADED_RESOURCE"
+        assert b0["severity"] == "HIGH"
+        assert b0["resource_id"] == "acc-1"
+        assert b0["resource_name"] == "Alice"  # Resolved from context resources
+        assert b0["issue_key"] == "WSSS-1"
+        assert "Resource workload" in b0["evidence"]
+
+        # Verify missing resource bottleneck fields
+        b1 = compact_dict["bottlenecks"][1]
+        assert b1["type"] == "DEPENDENCY_CYCLE"
+        assert b1["severity"] == "HIGH"
+        assert "resource_id" not in b1
+        assert "resource_name" not in b1
+        assert "issue_key" not in b1
+        assert "Cycle path" in b1["evidence"]
+
+        # Verify full message serialization
+        messages = PlanningPromptBuilder.build_messages(ctx)
+        assert len(messages) == 2
+        user_content = messages[1]["content"]
+        assert "OVERLOADED_RESOURCE" in user_content
+        assert "DEPENDENCY_CYCLE" in user_content
+        assert json.loads(json.dumps(messages)) == messages  # JSON-serializable

@@ -419,6 +419,77 @@ class DeepSeekAIProvider:
                 f"DeepSeek response failed PMAttentionAnalysis schema validation: {sanitized_err}"
             )
 
+    def _normalize_planning_proposal_payload(self, raw_content: Any, context: Any) -> Dict[str, Any]:
+        """Normalize recognized planning response envelopes and populate trusted deterministic fields.
+
+        Handles:
+        - Direct PlanningProposal dictionary.
+        - Wrapped envelopes: {"type": "json_object", "planning_proposal": {...}} or {"planning_proposal": {...}}.
+        - Single proposal wrapper: {"proposal": {...}} when containing task_proposals.
+        - Populates deterministic application metadata (generated_at from clock, anchor_date/context_version/horizon from trusted context)
+          if absent, preserving strict schema validation for all model-reasoned content.
+        """
+        if not isinstance(raw_content, dict):
+            raise DeepSeekProviderError(
+                f"Expected a JSON object from DeepSeek planning response, got {type(raw_content).__name__}."
+            )
+
+        payload = raw_content
+
+        # Handle recognized outer envelope wrapping
+        if "planning_proposal" in payload:
+            inner = payload.get("planning_proposal")
+            if not isinstance(inner, dict):
+                raise DeepSeekProviderError(
+                    "DeepSeek 'planning_proposal' envelope key must contain a JSON object."
+                )
+            # Check for unexpected extra keys in outer envelope (beyond recognized wrapper metadata like 'type')
+            extra_keys = [k for k in payload.keys() if k not in ("planning_proposal", "type")]
+            if extra_keys:
+                raise DeepSeekProviderError(
+                    f"Unexpected outer envelope fields in DeepSeek planning response: {', '.join(sorted(extra_keys))}"
+                )
+            payload = inner
+        elif "proposal" in payload and isinstance(payload.get("proposal"), dict) and "task_proposals" in payload.get("proposal", {}):
+            inner = payload.get("proposal")
+            extra_keys = [k for k in payload.keys() if k not in ("proposal", "type")]
+            if extra_keys:
+                raise DeepSeekProviderError(
+                    f"Unexpected outer envelope fields in DeepSeek planning response: {', '.join(sorted(extra_keys))}"
+                )
+            payload = inner
+        else:
+            # Direct proposal object. If top-level wrapper 'type' metadata exists (e.g. {"type": "json_object", "summary": ...}), strip it.
+            if "type" in payload and payload.get("type") == "json_object":
+                payload = {k: v for k, v in payload.items() if k != "type"}
+
+        # Shallow copy to avoid mutating inputs
+        normalized = dict(payload)
+
+        # Deterministically populate application metadata if missing or empty
+        from app.utils.time import utc_now_iso
+        if not normalized.get("generated_at"):
+            normalized["generated_at"] = utc_now_iso()
+
+        if not normalized.get("proposal_version"):
+            normalized["proposal_version"] = "proposal-v1"
+
+        if not normalized.get("context_version") and hasattr(context, "context_version") and context.context_version:
+            normalized["context_version"] = context.context_version
+        elif not normalized.get("context_version"):
+            normalized["context_version"] = "planning-v1"
+
+        if not normalized.get("anchor_date") and hasattr(context, "anchor_date") and context.anchor_date:
+            normalized["anchor_date"] = str(context.anchor_date)
+        elif hasattr(context, "anchor_date") and context.anchor_date and normalized.get("anchor_date") != str(context.anchor_date):
+            # Prefer trusted anchor_date from the PlanningContext
+            normalized["anchor_date"] = str(context.anchor_date)
+
+        if "planning_horizon_working_days" not in normalized and hasattr(context, "planning_horizon_working_days"):
+            normalized["planning_horizon_working_days"] = context.planning_horizon_working_days
+
+        return normalized
+
     async def analyze_planning(self, context: Any) -> Any:
         """Analyze planning context using DeepSeek and return a typed PlanningProposal."""
         from app.core.models.planning import PlanningProposal
@@ -458,8 +529,11 @@ class DeepSeekAIProvider:
             else:
                 raise
 
+        # Normalize envelope and populate trusted metadata before schema validation
+        normalized_dict = self._normalize_planning_proposal_payload(content_dict, context)
+
         try:
-            proposal = PlanningProposal.model_validate(content_dict)
+            proposal = PlanningProposal.model_validate(normalized_dict)
             return proposal
         except ValidationError as ve:
             sanitized_err = self._sanitize_error_message(str(ve))

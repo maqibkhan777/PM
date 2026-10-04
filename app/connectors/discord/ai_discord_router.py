@@ -445,6 +445,20 @@ class AIDiscordRouterService:
         # 2. Run AI Planning Service
         proposal: PlanningProposal = await self.ai_planning_service.generate_plan(ctx, actor=actor)
 
+        # Retrieve empirical benchmarks for summary display if available
+        benchmark_recs = {}
+        try:
+            from app.core.intelligence.effort_retrieval_service import (
+                HistoricalEffortBenchmarkRetrievalService,
+            )
+            retrieval_svc = HistoricalEffortBenchmarkRetrievalService(self.mgr)
+            benchmark_recs = retrieval_svc.recommend_effort_for_context(
+                tasks=ctx.tasks,
+                default_project_key=project_key or ctx.team_group,
+            )
+        except Exception:
+            pass
+
         # Format proposal strictly as read-only advisory proposal
         max_proposal_tasks = getattr(settings, "PLANNING_MAX_PROPOSAL_TASKS", 15)
         max_proposal_risks = getattr(settings, "PLANNING_MAX_PROPOSAL_RISKS", 5)
@@ -467,6 +481,26 @@ class AIDiscordRouterService:
 
         if len(proposal.task_proposals) > max_proposal_tasks:
             lines.append(f"• ... and {len(proposal.task_proposals) - max_proposal_tasks} more tasks.")
+
+        # Concise Historical Effort Benchmark Evidence Section
+        if benchmark_recs:
+            usable_recs = [r for r in benchmark_recs.values() if r.reliability_status == "USABLE"]
+            low_conf_recs = [r for r in benchmark_recs.values() if r.reliability_status == "LOW_CONFIDENCE"]
+            insufficient_recs = [r for r in benchmark_recs.values() if r.reliability_status == "INSUFFICIENT_DATA"]
+
+            lines.append("")
+            lines.append("📊 **Historical Effort Reference (Empirical Benchmarks):**")
+            
+            sample_recs = (usable_recs + low_conf_recs)[:3]
+            for r in sample_recs:
+                status_label = "Usable" if r.reliability_status == "USABLE" else "Tentative"
+                range_str = f"P50: {r.p50_effort_hours}h" + (f", P75/P90: {r.p90_effort_hours}h" if r.p90_effort_hours else "")
+                lines.append(f"• **{r.issue_key}** ({r.issue_type}/{r.priority}): {range_str} (n={r.sample_count}, {status_label})")
+                if r.fallback_disclosure:
+                    lines.append(f"  ↳ *Note:* {r.fallback_disclosure}")
+
+            if insufficient_recs:
+                lines.append(f"• *Data Limitation:* {len(insufficient_recs)} task(s) had insufficient sample size (n < 5); estimates withheld.")
 
         if proposal.risk_signals:
             lines.append("")

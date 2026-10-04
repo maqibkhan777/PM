@@ -292,7 +292,7 @@ class MockAIProvider:
                     unit=EstimateUnit.HOURS,
                     confidence=0.85,
                     rationale=f"Grounded in task estimated remaining workload ({task.estimated_remaining_hours}h).",
-                    evidence_references=evidence_refs,
+                    evidence_references=list(evidence_refs),
                 )
 
             risk_level = "HIGH" if task.is_blocked or task.is_overdue else "LOW"

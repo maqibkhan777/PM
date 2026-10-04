@@ -806,3 +806,291 @@ async def test_deepseek_analyze_planning_second_truncation_fails_safely(valid_pl
     assert "truncated" in str(excinfo.value)
 
 
+@pytest.mark.asyncio
+async def test_deepseek_analyze_planning_wrapped_envelope_success(valid_planning_context, valid_planning_proposal_json):
+    """21. DeepSeek response wrapped in {"type": "json_object", "planning_proposal": {...}} envelope normalizes successfully."""
+    from app.core.models.planning import PlanningProposal
+
+    wrapped_json = {
+        "type": "json_object",
+        "planning_proposal": valid_planning_proposal_json,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(wrapped_json),
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 450, "completion_tokens": 250},
+            },
+        )
+
+    client = make_mock_transport(handler)
+    provider = DeepSeekAIProvider(api_key="sk-test-key", client=client)
+
+    proposal = await provider.analyze_planning(valid_planning_context)
+    assert isinstance(proposal, PlanningProposal)
+    assert proposal.anchor_date == "2026-09-27"
+    assert len(proposal.task_proposals) == 1
+    assert proposal.task_proposals[0].issue_key == "SMTPSUPORT-101"
+    assert proposal.summary == "Focus on resolving SMTPSUPORT-101 SSL timeout bug first."
+
+
+@pytest.mark.asyncio
+async def test_deepseek_analyze_planning_populates_trusted_clock_and_context(valid_planning_context):
+    """22. Missing generated_at and anchor_date are populated deterministically from clock and trusted context."""
+    from app.core.models.planning import PlanningProposal
+
+    # Minimal proposal payload omitting generated_at and anchor_date
+    partial_proposal = {
+        "summary": "Focus on high-priority task.",
+        "requires_human_review": True,
+        "overall_confidence": 0.85,
+        "task_proposals": [],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(partial_proposal),
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 300, "completion_tokens": 100},
+            },
+        )
+
+    client = make_mock_transport(handler)
+    provider = DeepSeekAIProvider(api_key="sk-test-key", client=client)
+
+    proposal = await provider.analyze_planning(valid_planning_context)
+    assert isinstance(proposal, PlanningProposal)
+    assert proposal.anchor_date == valid_planning_context.anchor_date
+    assert proposal.context_version == valid_planning_context.context_version
+    assert proposal.planning_horizon_working_days == valid_planning_context.planning_horizon_working_days
+    assert proposal.generated_at is not None and len(proposal.generated_at) > 10
+
+
+@pytest.mark.asyncio
+async def test_deepseek_analyze_planning_missing_summary_fails_validation(valid_planning_context):
+    """23. Missing required summary field fails validation with clear provider error."""
+    # Proposal missing required summary
+    invalid_proposal = {
+        "requires_human_review": True,
+        "overall_confidence": 0.85,
+        "task_proposals": [],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(invalid_proposal),
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 300, "completion_tokens": 100},
+            },
+        )
+
+    client = make_mock_transport(handler)
+    provider = DeepSeekAIProvider(api_key="sk-test-key", client=client)
+
+    with pytest.raises(DeepSeekProviderError) as excinfo:
+        await provider.analyze_planning(valid_planning_context)
+    assert "PlanningProposal schema validation" in str(excinfo.value)
+    assert "summary" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_deepseek_analyze_planning_unknown_envelope_keys_fails(valid_planning_context):
+    """24. Unknown envelope wrapper fields fail closed with clear error."""
+    unknown_envelope = {
+        "unexpected_wrapper_key": "some_value",
+        "planning_proposal": {
+            "summary": "Valid summary",
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(unknown_envelope),
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 300, "completion_tokens": 100},
+            },
+        )
+
+    client = make_mock_transport(handler)
+    provider = DeepSeekAIProvider(api_key="sk-test-key", client=client)
+
+    with pytest.raises(DeepSeekProviderError) as excinfo:
+        await provider.analyze_planning(valid_planning_context)
+    assert "Unexpected outer envelope fields" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_deepseek_analyze_planning_with_canonical_risk_signals(valid_planning_context, valid_planning_proposal_json):
+    """25. Valid response with canonical risk signals parses cleanly without schema errors."""
+    from app.core.models.planning import PlanningProposal, PlanningRiskType
+
+    proposal_with_risks = dict(valid_planning_proposal_json)
+    proposal_with_risks["risk_signals"] = [
+        {
+            "risk_type": "CAPACITY_RISK",
+            "issue_key": "SMTPSUPORT-101",
+            "severity": "HIGH",
+            "explanation": "Resource workload is near horizon limits.",
+            "evidence_references": [
+                {
+                    "evidence_type": "CAPACITY",
+                    "source_identifier": "acc_1",
+                    "description": "Committed hours reach available threshold",
+                    "relevance": "DIRECT",
+                }
+            ],
+            "confidence": 0.85,
+            "requires_human_review": True,
+        },
+        {
+            "risk_type": "ESTIMATION_UNCERTAINTY",
+            "issue_key": None,
+            "severity": "MEDIUM",
+            "explanation": "Missing historical pace baseline for several tasks.",
+            "evidence_references": [],
+            "confidence": 0.8,
+            "requires_human_review": True,
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=200,
+            json={
+                "choices": [
+                    {"finish_reason": "stop", "message": {"role": "assistant", "content": json.dumps(proposal_with_risks)}}
+                ],
+                "usage": {"prompt_tokens": 450, "completion_tokens": 250},
+            },
+        )
+
+    client = make_mock_transport(handler)
+    provider = DeepSeekAIProvider(api_key="sk-test-key", client=client)
+
+    proposal = await provider.analyze_planning(valid_planning_context)
+    assert isinstance(proposal, PlanningProposal)
+    assert len(proposal.risk_signals) == 2
+    assert proposal.risk_signals[0].risk_type == PlanningRiskType.CAPACITY_RISK
+    assert proposal.risk_signals[0].explanation == "Resource workload is near horizon limits."
+    assert proposal.risk_signals[1].risk_type == PlanningRiskType.ESTIMATION_UNCERTAINTY
+    assert proposal.risk_signals[1].explanation == "Missing historical pace baseline for several tasks."
+
+
+@pytest.mark.asyncio
+async def test_deepseek_analyze_planning_rejects_key_task_proposals_extra_field(valid_planning_context, valid_planning_proposal_json):
+    """26. Response containing non-canonical 'key_task_proposals' fails strict Pydantic schema validation."""
+    invalid_proposal = dict(valid_planning_proposal_json)
+    invalid_proposal["key_task_proposals"] = [
+        {"issue_key": "SMTPSUPORT-101", "risk_level": "LOW", "requires_human_review": True}
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=200,
+            json={
+                "choices": [
+                    {"finish_reason": "stop", "message": {"role": "assistant", "content": json.dumps(invalid_proposal)}}
+                ],
+                "usage": {"prompt_tokens": 450, "completion_tokens": 250},
+            },
+        )
+
+    client = make_mock_transport(handler)
+    provider = DeepSeekAIProvider(api_key="sk-test-key", client=client)
+
+    with pytest.raises(DeepSeekProviderError) as excinfo:
+        await provider.analyze_planning(valid_planning_context)
+    assert "PlanningProposal schema validation" in str(excinfo.value)
+    assert "key_task_proposals" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_deepseek_analyze_planning_rejects_non_canonical_risk_signal_fields(valid_planning_context, valid_planning_proposal_json):
+    """27. Risk signal containing non-canonical fields ('type', 'evidence', 'resource_name') fails schema validation."""
+    invalid_proposal = dict(valid_planning_proposal_json)
+    invalid_proposal["risk_signals"] = [
+        {
+            "type": "MISSING_DURATION_EVIDENCE",
+            "resource_name": "Nauman Sadiq",
+            "evidence": "No explicit estimate; deterministic fallback used.",
+        }
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=200,
+            json={
+                "choices": [
+                    {"finish_reason": "stop", "message": {"role": "assistant", "content": json.dumps(invalid_proposal)}}
+                ],
+                "usage": {"prompt_tokens": 450, "completion_tokens": 250},
+            },
+        )
+
+    client = make_mock_transport(handler)
+    provider = DeepSeekAIProvider(api_key="sk-test-key", client=client)
+
+    with pytest.raises(DeepSeekProviderError) as excinfo:
+        await provider.analyze_planning(valid_planning_context)
+    assert "PlanningProposal schema validation" in str(excinfo.value)
+
+
+def test_planning_prompt_builder_normal_and_compact_use_canonical_contract(valid_planning_context):
+    """28. Normal and compact prompts enforce canonical PlanningProposal schema (no key_task_proposals, risk_type/explanation)."""
+    from app.services.ai.planning_prompt import PlanningPromptBuilder
+
+    normal_msgs = PlanningPromptBuilder.build_messages(valid_planning_context, compact_mode=False)
+    compact_msgs = PlanningPromptBuilder.build_messages(valid_planning_context, compact_mode=True)
+
+    normal_sys = normal_msgs[0]["content"]
+    compact_sys = compact_msgs[0]["content"]
+
+    # Both must reference task_proposals and NOT key_task_proposals
+    assert "task_proposals" in normal_sys
+    assert "task_proposals" in compact_sys
+    assert "key_task_proposals" not in normal_sys
+    assert "NEVER name this \"key_task_proposals\"" in compact_sys
+
+    # Both must explicitly enforce risk_type and explanation
+    assert "risk_type" in normal_sys
+    assert "explanation" in normal_sys
+    assert "risk_type" in compact_sys
+    assert "explanation" in compact_sys
+

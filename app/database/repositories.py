@@ -1107,6 +1107,19 @@ class JiraIssueStateRepository:
             )
             return [self._format_row(dict(r)) for r in cursor.fetchall()]
 
+    def get_distinct_project_keys(self) -> List[str]:
+        """Return list of distinct, uppercase project keys present in jira_issue_state."""
+        with self.mgr.session() as conn:
+            cursor = conn.execute(
+                """
+                SELECT DISTINCT UPPER(project_key) as project_key
+                FROM jira_issue_state
+                WHERE project_key IS NOT NULL AND trim(project_key) != ''
+                ORDER BY project_key ASC
+                """
+            )
+            return [row["project_key"] for row in cursor.fetchall() if row["project_key"]]
+
 
 class JiraWorklogRepository:
     """Repository for persisting and querying Jira worklog records."""
