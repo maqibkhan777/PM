@@ -456,8 +456,9 @@ class AgentCore:
         return lowered in {"cancel", "cancel.", "nevermind", "never mind", "stop"}
 
     def _goal_requires_sprint_resolution(self, state: AgentState) -> bool:
-        text = f"{state.user_goal} {state.current_input}".lower()
-        if self._looks_like_issue_key(text):
+        raw_text = f"{state.user_goal} {state.current_input}"
+        text = raw_text.lower()
+        if self._looks_like_issue_key(raw_text):
             return False
         if state.selected_issue:
             return False
@@ -483,7 +484,7 @@ class AgentCore:
         return False
 
     def _looks_like_issue_key(self, text: str) -> bool:
-        return bool(re.search(r"\b[A-Z][A-Z0-9]+-\d+\b", text, re.IGNORECASE))
+        return bool(re.search(r"\b[A-Z][A-Z0-9]+-\d+\b", text))
 
     def _infer_clarification_kind(self, tool_name: str) -> str:
         if tool_name == "get_active_sprints":

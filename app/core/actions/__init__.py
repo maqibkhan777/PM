@@ -11,7 +11,14 @@ from app.core.actions.types import (
     create_assign_task_action,
     create_change_priority_action,
 )
-from app.core.actions.engine import ActionEngine, action_engine
+def __getattr__(name):
+    if name in {"ActionEngine", "action_engine"}:
+        from app.core.actions.engine import ActionEngine, action_engine
+
+        globals()["ActionEngine"] = ActionEngine
+        globals()["action_engine"] = action_engine
+        return globals()[name]
+    raise AttributeError(f"module 'app.core.actions' has no attribute '{name}'")
 
 __all__ = [
     "BaseAction",

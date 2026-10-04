@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from app.core.actions.engine import action_engine
 from app.core.actions.base import BaseAction
 from app.core.models.enums import ActionType, ActionStatus
+from app.config.settings import settings
 from app.database.repositories import ActionRepository
 
 router = APIRouter(tags=["Actions"])
@@ -103,6 +104,22 @@ async def approve_action(action_id: str, req: Optional[ActionApproveRequest] = N
         )
 
     approved_by = req.approved_by if req and req.approved_by else "PM"
+    parameters = action_rec.get("parameters") or {}
+    is_ai_originated = str(parameters.get("source") or parameters.get("origin") or "").strip().lower() == "ai"
+    if is_ai_originated:
+        if not settings.AI_WRITE_ACTIONS_ENABLED:
+            raise HTTPException(status_code=403, detail="AI write actions are disabled by configuration.")
+        allowlist = action_engine._ai_approver_allowlist()
+        if not allowlist:
+            raise HTTPException(
+                status_code=403,
+                detail="AI approvals are disabled because `AI_APPROVER_DISCORD_IDS` is not configured.",
+            )
+        if str(approved_by or "").strip() not in allowlist:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Discord user '{approved_by or 'unknown'}' is not authorized to approve AI write actions.",
+            )
     result = await action_engine.approve_action(action_id=action_id, approved_by=approved_by)
 
     return {

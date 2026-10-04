@@ -28,8 +28,7 @@ from app.database.repositories import (
     JiraIssueLinkRepository,
     ArtifactRepository,
 )
-from app.core.actions.base import BaseAction
-from app.core.models.enums import ActionStatus, ActionType
+from app.core.models.enums import ActionStatus
 from app.core.planning.dag import DependencyGraph
 from app.core.planning.artifacts import ArtifactEngine
 from app.core.planning.queue_composer import ResourceQueueComposer
@@ -40,7 +39,10 @@ from app.services.ai.models import (
     AIDecisionType,
     AIDecision,
     PMAttentionAnalysis,
+    AIRecommendationType,
+    ProposedAction,
 )
+from app.services.ai.safety import AISafetyGate, AISafetyViolation
 from app.core.models.planning import (
     PlanningContext,
     PlanningProposal,
@@ -114,13 +116,12 @@ def _clear_pending_write(session_id: str) -> None:
     AI_PENDING_WRITE_ACTIONS.pop(session_id, None)
 
 
-def _is_approval_reply(prompt: str) -> Optional[str]:
-    text = (prompt or "").strip().lower()
-    if text in {"approve", "approved", "yes", "confirm", "okay", "ok"}:
-        return "approve"
-    if text in {"reject", "rejected", "no", "decline"}:
-        return "reject"
-    return None
+def _parse_approval_command(prompt: str) -> Tuple[Optional[str], Optional[str]]:
+    text = (prompt or "").strip()
+    match = re.fullmatch(r"(approve|reject)(?:\s+([A-Za-z0-9_-]{6,}))?", text, re.IGNORECASE)
+    if not match:
+        return None, None
+    return match.group(1).lower(), (match.group(2) or "").strip()
 
 
 class AIDiscordRouterService:
@@ -233,34 +234,40 @@ class AIDiscordRouterService:
             else:
                 session_key = session_id or f"{channel_id}:{actor_id}"
                 pending_write = AI_PENDING_WRITE_ACTIONS.get(session_key)
-                approval_cmd = _is_approval_reply(prompt)
-                if pending_write and approval_cmd in {"approve", "reject"}:
-                    if approval_cmd == "approve":
-                        action_id = str(pending_write.get("action_id") or "").strip()
-                        if not action_id:
-                            res = "❌ No pending approval action is available to approve."
+                approval_cmd, approval_prefix = _parse_approval_command(prompt)
+                if approval_cmd in {"approve", "reject"}:
+                    action_id = str(pending_write.get("action_id") or "").strip() if pending_write else ""
+                    if not action_id:
+                        res = "❌ No pending approval action is available."
+                        outcome = "COMPLETED"
+                    elif not approval_prefix:
+                        res = f"⏳ Pending approval id: `{action_id}`. Reply `approve {action_id[:6]}` or `reject {action_id[:6]}`."
+                        outcome = "COMPLETED"
+                    elif len(approval_prefix) < 6:
+                        res = "❌ Approval commands must include at least 6 characters of the approval id."
+                        outcome = "COMPLETED"
+                    elif not action_id.lower().startswith(approval_prefix.lower()):
+                        res = f"❌ No pending approval matches prefix `{approval_prefix}`."
+                        outcome = "COMPLETED"
+                    elif approval_cmd == "approve":
+                        approval_res = await action_engine.approve_action(action_id=action_id, approved_by=actor_id)
+                        if approval_res.success:
+                            _clear_pending_write(session_key)
+                            res = (
+                                f"✅ Approved and posted the Jira comment to {pending_write.get('issue_key')}. "
+                                f"Action ID: {action_id}"
+                            )
                         else:
-                            approval_res = await action_engine.approve_action(action_id=action_id, approved_by=actor)
-                            if approval_res.success:
-                                _clear_pending_write(session_key)
-                                res = (
-                                    f"✅ Approved and posted the Jira comment to {pending_write.get('issue_key')}. "
-                                    f"Action ID: {action_id}"
-                                )
-                            else:
-                                res = f"❌ Approval failed for action {action_id}.\nReason: {approval_res.error_message or 'Action failed'}"
+                            res = f"❌ Approval failed for action {action_id}.\nReason: {approval_res.error_message or 'Action failed'}"
+                        outcome = "COMPLETED"
                     else:
-                        action_id = str(pending_write.get("action_id") or "").strip()
-                        if not action_id:
-                            res = "❌ No pending approval action is available to reject."
+                        reject_res = await action_engine.reject_action(action_id=action_id, rejected_by=actor_id, reason="Rejected in Discord")
+                        if reject_res.success:
+                            _clear_pending_write(session_key)
+                            res = f"✅ Rejected the pending Jira comment proposal for {pending_write.get('issue_key')}."
                         else:
-                            reject_res = await action_engine.reject_action(action_id=action_id, rejected_by=actor, reason="Rejected in Discord")
-                            if reject_res.success:
-                                _clear_pending_write(session_key)
-                                res = f"✅ Rejected the pending Jira comment proposal for {pending_write.get('issue_key')}."
-                            else:
-                                res = f"❌ Rejection failed for action {action_id}.\nReason: {reject_res.error_message or 'Action failed'}"
-                    outcome = "COMPLETED"
+                            res = f"❌ Rejection failed for action {action_id}.\nReason: {reject_res.error_message or 'Action failed'}"
+                        outcome = "COMPLETED"
                 elif not getattr(settings, "AI_ENABLED", False):
                     res = "ℹ️ PM AI assistant is disabled in system configuration (`AI_ENABLED=false`)."
                     outcome = "COMPLETED"
@@ -308,43 +315,57 @@ class AIDiscordRouterService:
                                 res = "❌ Proposed write action was malformed."
                                 outcome = "FAILED"
                             else:
-                                action = BaseAction(
-                                    action_type=ActionType.ADD_COMMENT,
-                                    target_system="jira",
-                                    target_id=issue_key,
-                                    parameters={
-                                        "task_key": issue_key,
-                                        "comment": comment_body,
-                                        "body": comment_body,
-                                        "rationale": rationale,
-                                    },
-                                    requested_by=actor,
+                                decision = AIDecision(
+                                    decision_type=AIDecisionType.GENERAL_ANALYSIS,
+                                    recommendation=AIRecommendationType.PROPOSE_COMMENT,
+                                    confidence=1.0,
+                                    evidence=[f"AI proposal for Jira comment on {issue_key}"],
+                                    explanation="AI-generated write proposal staged through the safety gate.",
+                                    proposed_action=ProposedAction(
+                                        action_type="ADD_COMMENT",
+                                        target_system="jira",
+                                        target_id=issue_key,
+                                        parameters={
+                                            "task_key": issue_key,
+                                            "comment": comment_body,
+                                            "body": comment_body,
+                                            "rationale": rationale,
+                                        },
+                                        rationale=rationale,
+                                    ),
                                     requires_approval=True,
                                 )
-                                pending_res = await action_engine.execute(action)
-                                if pending_res.status == ActionStatus.PENDING_APPROVAL:
-                                    _store_pending_write(
-                                        session_key,
-                                        {
-                                            "action_id": pending_res.action_id,
-                                            "issue_key": issue_key,
-                                            "comment_body": comment_body,
-                                            "rationale": rationale,
-                                            "created_at": utc_now_iso(),
-                                        },
-                                    )
-                                    res = (
-                                        "📝 **Pending Jira Comment Approval**\n"
-                                        f"Issue: {issue_key}\n"
-                                        f"Comment: {comment_body}\n"
-                                        f"Rationale: {rationale or 'N/A'}\n"
-                                        f"Approval ID: `{pending_res.action_id}`\n"
-                                        "Reply `approve` or `reject` in Discord to continue."
-                                    )
-                                    outcome = "COMPLETED"
-                                else:
-                                    res = f"❌ Could not stage comment approval.\nReason: {pending_res.error_message or 'Action failed'}"
+                                try:
+                                    action = AISafetyGate.to_staged_action(decision, requested_by=actor)
+                                except AISafetyViolation as exc:
+                                    res = f"❌ Proposed write action was rejected by safety gate.\nReason: {exc}"
                                     outcome = "FAILED"
+                                    action = None
+                                if action is not None:
+                                    pending_res = await action_engine.execute(action)
+                                    if pending_res.status == ActionStatus.PENDING_APPROVAL:
+                                        _store_pending_write(
+                                            session_key,
+                                            {
+                                                "action_id": pending_res.action_id,
+                                                "issue_key": issue_key,
+                                                "comment_body": comment_body,
+                                                "rationale": rationale,
+                                                "created_at": utc_now_iso(),
+                                            },
+                                        )
+                                        res = (
+                                            "📝 **Pending Jira Comment Approval**\n"
+                                            f"Issue: {issue_key}\n"
+                                            f"Comment: {comment_body}\n"
+                                            f"Rationale: {rationale or 'N/A'}\n"
+                                            f"Approval ID: `{pending_res.action_id}`\n"
+                                            f"Reply `approve {pending_res.action_id[:6]}` or `reject {pending_res.action_id[:6]}` to continue."
+                                        )
+                                        outcome = "COMPLETED"
+                                    else:
+                                        res = f"❌ Could not stage comment approval.\nReason: {pending_res.error_message or 'Action failed'}"
+                                        outcome = "FAILED"
                     elif agent_res.get("status") == "COMPLETED" and agent_res.get("answer"):
                         res = str(agent_res.get("answer"))
                         outcome = "COMPLETED"

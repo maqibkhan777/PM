@@ -143,7 +143,7 @@ class AISafetyGate:
             action_type=action_type_enum,
             target_system=p.target_system,
             target_id=p.target_id,
-            parameters=p.parameters,
+            parameters={**(p.parameters or {}), "source": "ai"},
             requested_by=requested_by,
             requires_approval=True,
             status=ActionStatus.REQUESTED,

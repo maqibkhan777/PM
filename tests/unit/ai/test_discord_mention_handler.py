@@ -742,7 +742,7 @@ async def test_write_proposal_stages_pending_approval_and_approval_resumes(menti
     with patch("app.services.ai.config.resolve_ai_provider", return_value=object()), \
          patch("app.services.ai.pm_tools.build_tool_registry", return_value=ToolRegistry()), \
          patch("app.agent_core.core.AgentCore.run", new=AsyncMock(return_value=proposal_step)), \
-         patch("app.connectors.discord.ai_discord_router.action_engine.execute", new=AsyncMock(return_value=type("PendingResult", (), {"status": ActionStatus.PENDING_APPROVAL, "action_id": "act-1", "error_message": None})())):
+         patch("app.connectors.discord.ai_discord_router.action_engine.execute", new=AsyncMock(return_value=type("PendingResult", (), {"status": ActionStatus.PENDING_APPROVAL, "action_id": "act-123456", "error_message": None})())):
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=MagicMock(status_code=200))
         message_payload = {
@@ -756,6 +756,7 @@ async def test_write_proposal_stages_pending_approval_and_approval_resumes(menti
 
     assert res["status"] == "processed"
     assert "Pending Jira Comment Approval" in str(res["response"])
+    assert "approve act-12" in str(res["response"])
 
     from app.connectors.discord.ai_discord_router import AI_PENDING_WRITE_ACTIONS
     assert AI_PENDING_WRITE_ACTIONS
@@ -768,7 +769,7 @@ async def test_write_proposal_stages_pending_approval_and_approval_resumes(menti
         approval_payload = {
             "id": "msg_write_approve",
             "channel_id": TEST_CHANNEL_ID,
-            "content": f"<@{AI_BOT_ID}> approve",
+            "content": f"<@{AI_BOT_ID}> approve act-123456",
             "author": {"id": AUTHORIZED_USER_ID, "bot": False},
             "mentions": [{"id": AI_BOT_ID}],
         }
@@ -806,7 +807,7 @@ async def test_pending_write_reject_clears_session_without_execution(mention_han
         approval_payload = {
             "id": "msg_write_reject",
             "channel_id": TEST_CHANNEL_ID,
-            "content": f"<@{AI_BOT_ID}> reject",
+            "content": f"<@{AI_BOT_ID}> reject act-reject",
             "author": {"id": AUTHORIZED_USER_ID, "bot": False},
             "mentions": [{"id": AI_BOT_ID}],
         }
@@ -815,6 +816,45 @@ async def test_pending_write_reject_clears_session_without_execution(mention_han
     assert reject_res["status"] == "processed"
     assert "Rejected the pending Jira comment proposal" in str(reject_res["response"])
     assert not mock_approve.called
+
+
+@pytest.mark.asyncio
+async def test_plain_approve_echoes_pending_id_without_deepseek(mention_handler, monkeypatch):
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_ENABLED", True)
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_TOKEN", "mock_ai_token")
+    monkeypatch.setattr(settings, "DISCORD_AI_APPLICATION_ID", AI_BOT_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_CHANNEL_IDS", TEST_CHANNEL_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_USER_IDS", AUTHORIZED_USER_ID)
+    monkeypatch.setattr(settings, "AI_ENABLED", True)
+    monkeypatch.setattr(settings, "AI_WRITE_ACTIONS_ENABLED", True)
+
+    from app.connectors.discord.ai_discord_router import AI_PENDING_WRITE_ACTIONS
+
+    session_id = f"{TEST_CHANNEL_ID}:{AUTHORIZED_USER_ID}"
+    AI_PENDING_WRITE_ACTIONS[session_id] = {
+        "action_id": "act-1234567890",
+        "issue_key": "WSSS-326",
+        "comment_body": "Please review this issue.",
+        "rationale": "Need human review before execution.",
+        "created_at": "2026-09-26T00:00:00Z",
+    }
+
+    with patch("app.agent_core.core.AgentCore.run", new_callable=AsyncMock) as mock_core_run:
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=MagicMock(status_code=200))
+        approval_payload = {
+            "id": "msg_plain_approve",
+            "channel_id": TEST_CHANNEL_ID,
+            "content": f"<@{AI_BOT_ID}> approve",
+            "author": {"id": AUTHORIZED_USER_ID, "bot": False},
+            "mentions": [{"id": AI_BOT_ID}],
+        }
+        res = await mention_handler.handle_message_create(approval_payload, http_client=mock_client)
+
+    assert res["status"] == "processed"
+    assert "Pending approval id" in str(res["response"])
+    assert "act-1234567890" in str(res["response"])
+    assert not mock_core_run.called
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional, Set
 
 from app.connectors.base.connector import BaseConnector
 from app.connectors.discord.formatter import DiscordFormatter
+from app.connectors.jira.normalizer import JiraEventNormalizer
 from app.core.actions.base import BaseAction, ActionResult
 from app.core.models.enums import (
     ActionType,
@@ -20,6 +21,7 @@ from app.services.audit_service import AuditService, audit_service
 from app.database.repositories import ActionRepository
 from app.database.connection import db_manager, DatabaseManager
 from app.config.settings import settings
+from app.utils.time import parse_iso_datetime
 from app.utils.logger import logger, sanitize_dict
 
 # Map ActionType to required Capability
@@ -67,6 +69,49 @@ class ActionEngine:
 
     def get_connector(self, name: str) -> Optional[BaseConnector]:
         return self._connectors.get(name.lower())
+
+    def _is_ai_originated(self, action: BaseAction | Dict[str, Any]) -> bool:
+        params: Dict[str, Any] = {}
+        if isinstance(action, BaseAction):
+            params = action.parameters or {}
+        elif isinstance(action, dict):
+            params = action.get("parameters") or {}
+        source = str(params.get("source") or params.get("origin") or "").strip().lower()
+        return source == "ai"
+
+    def _ai_approver_allowlist(self) -> Set[str]:
+        raw = (settings.AI_APPROVER_DISCORD_IDS or "").strip()
+        if not raw:
+            return set()
+        return {item.strip() for item in raw.split(",") if item.strip()}
+
+    def _check_ai_approval_policy(self, action_rec: Dict[str, Any], approved_by: str) -> Optional[str]:
+        if not self._is_ai_originated(action_rec):
+            return None
+
+        if not settings.AI_WRITE_ACTIONS_ENABLED:
+            return "AI write actions are disabled by configuration (`AI_WRITE_ACTIONS_ENABLED=false`)."
+
+        allowlist = self._ai_approver_allowlist()
+        if not allowlist:
+            return "AI approvals are disabled because `AI_APPROVER_DISCORD_IDS` is not configured."
+
+        approver = str(approved_by or "").strip()
+        if approver not in allowlist:
+            return f"Discord user '{approver or 'unknown'}' is not authorized to approve AI write actions."
+
+        ttl_minutes = max(1, int(getattr(settings, "AI_APPROVAL_TTL_MINUTES", 30) or 30))
+        created_at = str(action_rec.get("created_at") or "").strip()
+        created_dt = parse_iso_datetime(created_at) if created_at else None
+        if created_dt is not None:
+            age_seconds = (datetime.now(timezone.utc) - created_dt).total_seconds()
+            if age_seconds > ttl_minutes * 60:
+                return (
+                    f"Approval request '{action_rec.get('action_id') or ''}' has expired "
+                    f"after {ttl_minutes} minute(s)."
+                )
+
+        return None
 
     def validate_action(self, action: BaseAction) -> Optional[str]:
         """Validate an action before approval or execution.
@@ -202,6 +247,7 @@ class ActionEngine:
 
         target_system = (action.target_system or "").lower()
         target_id = action.target_id
+        is_ai_originated = self._is_ai_originated(action)
 
         # ----------------------------------------------------------------------
         # 1. Idempotency Check
@@ -242,7 +288,11 @@ class ActionEngine:
         # 2. Centrally Determine Approval Policy & Record REQUESTED
         # ----------------------------------------------------------------------
         classification = approval_engine.classify(action)
-        action.requires_approval = bool(action.requires_approval or classification == ApprovalClassification.APPROVAL_REQUIRED)
+        action.requires_approval = bool(
+            action.requires_approval
+            or classification == ApprovalClassification.APPROVAL_REQUIRED
+            or is_ai_originated
+        )
         action.status = ActionStatus.REQUESTED
 
         existing_by_id = self.action_repo.get_by_action_id(action.action_id)
@@ -315,6 +365,31 @@ class ActionEngine:
                 target_system=target_system,
                 target_id=target_id,
                 error_message=val_error
+            )
+
+        if is_ai_originated and not settings.AI_WRITE_ACTIONS_ENABLED:
+            err = "AI write actions are disabled by configuration (`AI_WRITE_ACTIONS_ENABLED=false`)."
+            logger.warning(f"Action {action.action_id} blocked by AI write kill switch.")
+            action.status = ActionStatus.REJECTED
+            self.action_repo.update_status(
+                action.action_id,
+                ActionStatus.REJECTED.value,
+                last_error="blocked_by_kill_switch",
+            )
+            self.audit_service.log_action(
+                actor=action.requested_by,
+                action=action.action_type.value,
+                target=target_id,
+                result="Blocked by Kill Switch",
+                details={"reason": "blocked_by_kill_switch", "origin": "ai"},
+            )
+            return ActionResult(
+                success=False,
+                action_id=action.action_id,
+                status=ActionStatus.REJECTED,
+                target_system=target_system,
+                target_id=target_id,
+                error_message=err,
             )
 
         # Transition to VALIDATED (only update and audit if not already approved via approve_action)
@@ -433,6 +508,31 @@ class ActionEngine:
             )
 
         if approved and action.requires_approval:
+            if is_ai_originated and not settings.AI_WRITE_ACTIONS_ENABLED:
+                err = "AI write actions are disabled by configuration (`AI_WRITE_ACTIONS_ENABLED=false`)."
+                logger.warning(f"Action {action.action_id} blocked at approval time by AI write kill switch.")
+                action.status = ActionStatus.REJECTED
+                self.action_repo.update_status(
+                    action.action_id,
+                    ActionStatus.REJECTED.value,
+                    last_error="blocked_by_kill_switch",
+                    increment_attempt=False,
+                )
+                self.audit_service.log_action(
+                    actor=action.approved_by or "PM",
+                    action=action.action_type.value,
+                    target=target_id,
+                    result="Blocked by Kill Switch",
+                    details={"reason": "blocked_by_kill_switch", "origin": "ai"},
+                )
+                return ActionResult(
+                    success=False,
+                    action_id=action.action_id,
+                    status=ActionStatus.REJECTED,
+                    target_system=target_system,
+                    target_id=target_id,
+                    error_message=err,
+                )
             action.status = ActionStatus.APPROVED
             # Update DB and audit if not already recorded by approve_action
             existing_rec = self.action_repo.get_by_action_id(action.action_id)
@@ -511,28 +611,50 @@ class ActionEngine:
             if action.action_type == ActionType.ADD_COMMENT:
                 client = getattr(connector, "client", None)
                 comment_body = str(action.parameters.get("comment") or action.parameters.get("body") or "").strip()
+                comment_id = str((result_data or {}).get("id") or (result_data or {}).get("comment_id") or "").strip()
                 if client and hasattr(client, "get_issue"):
-                    live_issue = await client.get_issue(target_id)
-                    if not live_issue:
+                    try:
+                        live_issue = await client.get_issue(target_id)
+                    except Exception as exc:
+                        if is_ai_originated:
+                            raise RuntimeError(
+                                f"Live Jira issue '{target_id}' could not be re-read after comment execution."
+                            ) from exc
+                        live_issue = None
+                    if not live_issue and is_ai_originated:
                         raise RuntimeError(f"Live Jira issue '{target_id}' could not be re-read after comment execution.")
-                    verification_details["live_issue_verified"] = True
+                    if live_issue:
+                        verification_details["live_issue_verified"] = True
+                comments = None
                 if client and hasattr(client, "get_issue_comments"):
                     comments = await client.get_issue_comments(target_id)
+                should_hard_fail = is_ai_originated
+                if comments is None:
+                    if should_hard_fail:
+                        raise RuntimeError("Live Jira comments could not be re-read for AI comment verification.")
+                else:
                     if not isinstance(comments, list):
-                        raise RuntimeError(f"Live Jira comments for '{target_id}' could not be verified.")
-                    comment_id = str((result_data or {}).get("id") or (result_data or {}).get("comment_id") or "").strip()
-                    matched = False
-                    for comment in comments:
-                        if not isinstance(comment, dict):
-                            continue
-                        body = str(comment.get("body") or "").strip()
-                        cid = str(comment.get("id") or "").strip()
-                        if comment_body and body == comment_body and (not comment_id or cid == comment_id):
-                            matched = True
-                            verification_details["verified_comment_id"] = cid or comment_id
-                            break
-                    if not matched:
-                        raise RuntimeError(f"Verified comments on '{target_id}' did not contain the newly added comment body.")
+                        if should_hard_fail:
+                            raise RuntimeError(f"Live Jira comments for '{target_id}' could not be verified.")
+                    else:
+                        matched = False
+                        for comment in comments:
+                            if not isinstance(comment, dict):
+                                continue
+                            cid = str(comment.get("id") or "").strip()
+                            if comment_id and cid != comment_id:
+                                continue
+                            body = comment.get("body")
+                            body_text, _, _ = JiraEventNormalizer.extract_adf_text_and_mentions(body)
+                            if comment_body and body_text.strip() == comment_body:
+                                matched = True
+                                verification_details["verified_comment_id"] = cid or comment_id
+                                verification_details["verified_comment_text"] = body_text.strip()
+                                break
+                        if not matched and should_hard_fail:
+                            raise RuntimeError(
+                                f"Verified comments on '{target_id}' did not contain the newly added comment body."
+                            )
                 if verification_details:
                     result_data = {**(result_data or {}), **verification_details}
             action.status = ActionStatus.COMPLETED
@@ -603,6 +725,47 @@ class ActionEngine:
                 target_system=action_rec.get("target_system", ""),
                 target_id=action_rec.get("target_id", ""),
                 error_message=f"Action '{action_id}' has status '{current_status}'. Only PENDING_APPROVAL actions can be approved."
+            )
+
+        policy_error = self._check_ai_approval_policy(action_rec, approved_by)
+        if policy_error:
+            logger.warning(f"Approval blocked for action {action_id}: {policy_error}")
+            if "expired" in policy_error.lower():
+                self.action_repo.update_status(
+                    action_id,
+                    ActionStatus.EXPIRED.value,
+                    last_error="approval_expired",
+                    increment_attempt=False,
+                )
+                self.audit_service.log_action(
+                    actor=approved_by,
+                    action=action_rec["action_type"],
+                    target=action_rec["target_id"],
+                    result="Expired",
+                    details={"error": policy_error, "approved_by": approved_by},
+                )
+                return ActionResult(
+                    success=False,
+                    action_id=action_id,
+                    status=ActionStatus.EXPIRED,
+                    target_system=action_rec.get("target_system", ""),
+                    target_id=action_rec.get("target_id", ""),
+                    error_message=policy_error,
+                )
+            self.audit_service.log_action(
+                actor=approved_by,
+                action=action_rec["action_type"],
+                target=action_rec["target_id"],
+                result="Approval Blocked",
+                details={"error": policy_error, "approved_by": approved_by},
+            )
+            return ActionResult(
+                success=False,
+                action_id=action_id,
+                status=ActionStatus.FAILED,
+                target_system=action_rec.get("target_system", ""),
+                target_id=action_rec.get("target_id", ""),
+                error_message=policy_error,
             )
 
         # Mark APPROVED in database

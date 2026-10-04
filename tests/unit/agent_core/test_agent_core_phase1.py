@@ -6,7 +6,7 @@ from app.agent_core.agent_models import AgentStep, AgentState, Candidate, ToolCa
 from app.agent_core.core import AgentCore
 from app.agent_core.tooling import ToolRegistry
 from app.services.ai.agent_provider import AgentProvider
-from app.services.ai.provider import AIProvider
+from app.services.ai.provider import AIProvider, NullAIProvider
 from app.services.ai.pm_tools import build_tool_registry
 
 
@@ -404,6 +404,20 @@ async def test_issue_key_goal_skips_sprint_gate_and_allows_final_answer():
     res = await core.run("Is WSSS-326 on track?", actor="u1", session_id="issue-gate")
     assert res["status"] == "COMPLETED"
     assert res["answer"] == "Issue answer grounded."
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("WSSS-326", True),
+        ("sprint-12", False),
+        ("covid-19", False),
+        ("q3-2026", False),
+    ],
+)
+def test_issue_key_detection_requires_uppercase_project_prefix(text, expected):
+    core = AgentCore(provider=NullAIProvider(), tool_registry=ToolRegistry(), agent_provider=AgentProvider(NullAIProvider()))  # type: ignore[arg-type]
+    assert core._looks_like_issue_key(text) is expected
 
 
 @pytest.mark.asyncio
