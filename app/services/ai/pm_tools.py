@@ -152,23 +152,33 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
         fields: List[str],
         page_size: int = 100,
         cap: int = 1000,
+        max_pages: int = 50,
     ) -> Dict[str, Any]:
         collected: List[Dict[str, Any]] = []
         next_page_token: Optional[str] = None
         reported_total: Optional[int] = None
         truncated = False
+        error: Optional[str] = None
+        page_count = 0
 
         while True:
-            raw = await client.search_issues(
-                jql=jql,
-                next_page_token=next_page_token,
-                max_results=page_size,
-                expand=None,
-                fields=fields,
-            )
+            try:
+                raw = await client.search_issues(
+                    jql=jql,
+                    next_page_token=next_page_token,
+                    max_results=page_size,
+                    expand=None,
+                    fields=fields,
+                )
+            except Exception as exc:
+                error = str(exc)
+                break
+            page_count += 1
             page_issues = raw.get("issues", []) if isinstance(raw, dict) else []
             if not isinstance(page_issues, list):
                 page_issues = []
+            if not page_issues:
+                break
             collected.extend([item for item in page_issues if isinstance(item, dict)])
 
             if isinstance(raw, dict) and raw.get("total") is not None:
@@ -177,19 +187,21 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
                 except Exception:
                     pass
 
-            if len(collected) >= cap:
-                truncated = True
-                collected = collected[:cap]
-                break
-
             if reported_total is not None and len(collected) >= reported_total:
                 break
 
             next_page_token = str(raw.get("nextPageToken") or raw.get("next_page_token") or "").strip() if isinstance(raw, dict) else ""
             is_last = bool(raw.get("isLast")) if isinstance(raw, dict) and "isLast" in raw else False
-            if is_last or not next_page_token:
-                if reported_total is not None and len(collected) < reported_total:
-                    truncated = True
+            if is_last:
+                break
+            if page_count >= max_pages:
+                truncated = True
+                break
+            if len(collected) >= cap:
+                truncated = True
+                collected = collected[:cap]
+                break
+            if not next_page_token:
                 break
 
         if reported_total is not None and len(collected) < reported_total:
@@ -198,6 +210,8 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
             "issues": collected,
             "truncated": truncated,
             "total": reported_total,
+            "page_count": page_count,
+            "error": error,
         }
 
     def _extract_sprint_names(fields: Any) -> List[str]:
@@ -220,6 +234,31 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
         elif sprint_val:
             names.append(str(sprint_val).strip())
         return [n for n in names if n]
+
+    def _extract_active_sprint_candidates(fields: Any) -> List[Dict[str, Any]]:
+        candidates: Dict[str, Dict[str, Any]] = {}
+        if not isinstance(fields, dict):
+            return []
+        sprint_val = fields.get("sprint") or fields.get("customfield_10020") or fields.get("sprints")
+        sprint_items = sprint_val if isinstance(sprint_val, list) else ([sprint_val] if sprint_val else [])
+        for sv in sprint_items:
+            if not isinstance(sv, dict):
+                continue
+            state = str(sv.get("state") or sv.get("status") or "").strip().lower()
+            if state != "active":
+                continue
+            sprint_id = str(sv.get("id") or sv.get("sprint_id") or sv.get("originBoardId") or "").strip()
+            sprint_name = str(sv.get("name") or sprint_id or "Unknown sprint").strip()
+            candidate_key = sprint_id or sprint_name
+            if not candidate_key or candidate_key in candidates:
+                continue
+            candidates[candidate_key] = {
+                "id": sprint_id or sprint_name,
+                "name": sprint_name,
+                "state": state,
+                "evidence": ["state=active"],
+            }
+        return list(candidates.values())
 
     async def get_issue(args: Dict[str, Any]) -> Dict[str, Any]:
         key = str(args.get("issue_key") or "").upper().strip()
@@ -304,27 +343,59 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
 
     async def get_active_sprints(args: Dict[str, Any]) -> Dict[str, Any]:
         team_group = args.get("team_group")
-        sprint_names = set()
+        sprint_candidates: Dict[str, Dict[str, Any]] = {}
         if client:
-            try:
-                jql = "sprint in openSprints() ORDER BY updated DESC"
-                page = await _paged_search_issues(jql, ["sprint", "customfield_10020"], page_size=100, cap=1000)
-                for item in page["issues"]:
-                    fields = item.get("fields", {}) if isinstance(item, dict) else {}
-                    sprint_names.update(_extract_sprint_names(fields))
-                if page.get("truncated"):
-                    sprint_names = {s for s in sprint_names if s}
-                    sprints = sorted(sprint_names)
+            jql = "sprint in openSprints() ORDER BY updated DESC"
+            page = await _paged_search_issues(jql, ["sprint", "customfield_10020"], page_size=100, cap=1000)
+            if page.get("error"):
+                if page["issues"]:
+                    for item in page["issues"]:
+                        fields = item.get("fields", {}) if isinstance(item, dict) else {}
+                        for candidate in _extract_active_sprint_candidates(fields):
+                            sprint_candidates[candidate["id"]] = candidate
+                    sprints = sorted(sprint_candidates.values(), key=lambda c: c["name"])
+                    payload = {
+                        "candidates": [
+                            {"value": c["id"], "label": c["name"], "evidence": c["evidence"]} for c in sprints
+                        ],
+                        "partial_total": len(sprints),
+                        "truncated": bool(page.get("truncated")),
+                        "error": page["error"],
+                    }
                     return {
                         "status": "INSUFFICIENT_DATA",
                         "tool": "get_active_sprints",
-                        "value": {"candidates": sprints, "truncated": True},
-                        "reason": "Active sprint search hit the 1000-result cap.",
-                        "truncated": True,
+                        "value": payload,
+                        "reason": page["error"],
+                        "truncated": bool(page.get("truncated")),
+                        "derivation": [f"partial_total={len(sprints)}", f"error={page['error']}"],
                     }
-            except Exception:
-                pass
-        if not sprint_names:
+                return {"status": "ERROR", "tool": "get_active_sprints", "reason": page["error"]}
+            for item in page["issues"]:
+                fields = item.get("fields", {}) if isinstance(item, dict) else {}
+                for candidate in _extract_active_sprint_candidates(fields):
+                    sprint_candidates[candidate["id"]] = candidate
+            if page.get("truncated"):
+                sprints = sorted(sprint_candidates.values(), key=lambda c: c["name"])
+                if len(sprints) > 1:
+                    payload = {
+                        "status": "AMBIGUOUS",
+                        "tool": "get_active_sprints",
+                        "candidates": [{"value": c["id"], "label": c["name"], "evidence": c["evidence"]} for c in sprints],
+                        "truncated": True,
+                        "derivation": [f"partial_total={len(sprints)}", "truncated=true"],
+                    }
+                    payload["question"] = "I found multiple active sprints. Which sprint do you mean?"
+                    return payload
+                return {
+                    "status": "INSUFFICIENT_DATA",
+                    "tool": "get_active_sprints",
+                    "value": {"candidates": [{"value": c["id"], "label": c["name"], "evidence": c["evidence"]} for c in sprints], "partial_total": len(sprints), "truncated": True},
+                    "reason": "Active sprint search hit the page cap.",
+                    "truncated": True,
+                    "derivation": [f"partial_total={len(sprints)}", "truncated=true"],
+                }
+        if not sprint_candidates:
             all_issues = issue_repo.list_all(limit=1000)
             for it in all_issues:
                 if team_group and it.get("team_group") != team_group:
@@ -335,23 +406,39 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
                 except Exception:
                     raw_obj = raw
                 fields = raw_obj.get("fields", {}) if isinstance(raw_obj, dict) else {}
-                sprint_names.update(_extract_sprint_names(fields))
+                for candidate in _extract_active_sprint_candidates(fields):
+                    sprint_candidates[candidate["id"]] = candidate
             if len(all_issues) >= 1000:
-                sprints = sorted({s for s in sprint_names if s})
+                sprints = sorted(sprint_candidates.values(), key=lambda c: c["name"])
+                if len(sprints) > 1:
+                    payload = {
+                        "status": "AMBIGUOUS",
+                        "tool": "get_active_sprints",
+                        "candidates": [{"value": c["id"], "label": c["name"], "evidence": c["evidence"]} for c in sprints],
+                        "truncated": True,
+                        "derivation": [f"partial_total={len(sprints)}", "truncated=true"],
+                    }
+                    payload["question"] = "I found multiple active sprints. Which sprint do you mean?"
+                    return payload
                 return {
                     "status": "INSUFFICIENT_DATA",
                     "tool": "get_active_sprints",
-                    "value": {"candidates": sprints, "truncated": True},
+                    "value": {
+                        "candidates": [{"value": c["id"], "label": c["name"], "evidence": c["evidence"]} for c in sprints],
+                        "partial_total": len(sprints),
+                        "truncated": True,
+                    },
                     "reason": "Active sprint search hit the 1000-result cap.",
                     "truncated": True,
+                    "derivation": [f"partial_total={len(sprints)}", "truncated=true"],
                 }
-        sprint_names = {s for s in sprint_names if s}
-        if not sprint_names:
+        sprints = sorted(sprint_candidates.values(), key=lambda c: c["name"])
+        if not sprints:
             return _as_empty("get_active_sprints", "No active sprints found.")
-        sprints = sorted(sprint_names)
         if len(sprints) == 1:
-            return _as_available("get_active_sprints", {"name": sprints[0], "candidates": sprints})
-        return _as_ambiguous("get_active_sprints", [{"value": s, "label": s, "evidence": ["active sprint"]} for s in sprints], question="I found multiple active sprints. Which sprint do you mean?")
+            active = sprints[0]
+            return _as_available("get_active_sprints", {"name": active["name"], "candidates": [{"value": active["id"], "label": active["name"], "evidence": active["evidence"]}]})
+        return _as_ambiguous("get_active_sprints", [{"value": c["id"], "label": c["name"], "evidence": c["evidence"]} for c in sprints], question="I found multiple active sprints. Which sprint do you mean?")
 
     registry.register(
         "get_active_sprints",
@@ -396,48 +483,82 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
         issues: List[Dict[str, Any]] = []
         matched_records: List[Dict[str, Any]] = []
         if client:
-            try:
-                page = await _paged_search_issues(
-                    jql=f'sprint = "{sprint}" ORDER BY rank ASC',
-                    fields=["summary", "status", "priority", "assignee", "reporter", "issuetype", "sprint", "project", "duedate", "labels", "issuelinks"],
-                    page_size=100,
-                    cap=1000,
-                )
-                for item in page["issues"]:
-                    fields = item.get("fields", {}) if isinstance(item, dict) else {}
-                    issues.append({
-                        "key": item.get("key"),
-                        "summary": fields.get("summary"),
-                        "status": (fields.get("status") or {}).get("name"),
-                        "priority": (fields.get("priority") or {}).get("name"),
-                        "assignee": ((fields.get("assignee") or {}).get("displayName") or (fields.get("assignee") or {}).get("accountId")),
-                        "project": (fields.get("project") or {}).get("key"),
-                        "due_date": fields.get("duedate"),
-                    })
-                    matched_records.append({
-                        "key": item.get("key"),
-                        "status": (fields.get("status") or {}).get("name"),
-                        "assignee": ((fields.get("assignee") or {}).get("displayName") or (fields.get("assignee") or {}).get("accountId")),
-                        "raw_reference": item,
-                    })
-                if page.get("truncated"):
+            page = await _paged_search_issues(
+                jql=f'sprint = "{sprint}" ORDER BY rank ASC',
+                fields=["summary", "status", "priority", "assignee", "reporter", "issuetype", "sprint", "project", "duedate", "labels", "issuelinks"],
+                page_size=100,
+                cap=1000,
+            )
+            if page.get("error"):
+                if page["issues"]:
+                    for item in page["issues"]:
+                        fields = item.get("fields", {}) if isinstance(item, dict) else {}
+                        issues.append({
+                            "key": item.get("key"),
+                            "summary": fields.get("summary"),
+                            "status": (fields.get("status") or {}).get("name"),
+                            "priority": (fields.get("priority") or {}).get("name"),
+                            "assignee": ((fields.get("assignee") or {}).get("displayName") or (fields.get("assignee") or {}).get("accountId")),
+                            "project": (fields.get("project") or {}).get("key"),
+                            "due_date": fields.get("duedate"),
+                        })
+                        matched_records.append({
+                            "key": item.get("key"),
+                            "status": (fields.get("status") or {}).get("name"),
+                            "assignee": ((fields.get("assignee") or {}).get("displayName") or (fields.get("assignee") or {}).get("accountId")),
+                            "raw_reference": item,
+                        })
                     summary = _summarize_issues(matched_records)
                     return {
                         "status": "INSUFFICIENT_DATA",
                         "tool": "get_sprint_issues",
                         "value": {
                             "sprint_name": sprint,
-                            "total": summary["total"],
+                            "partial_total": summary["total"],
                             "status_counts": summary["status_counts"],
                             "assignee_counts": summary["assignee_counts"],
                             "issues": issues,
                             "truncated": True,
                         },
                         "truncated": True,
-                        "reason": "Sprint search hit the 1000-result cap.",
+                        "reason": page["error"],
+                        "derivation": [*summary["derivation"], f"partial_total={summary['total']}", f"error={page['error']}"],
                     }
-            except Exception:
-                pass
+                return {"status": "ERROR", "tool": "get_sprint_issues", "reason": page["error"]}
+            for item in page["issues"]:
+                fields = item.get("fields", {}) if isinstance(item, dict) else {}
+                issues.append({
+                    "key": item.get("key"),
+                    "summary": fields.get("summary"),
+                    "status": (fields.get("status") or {}).get("name"),
+                    "priority": (fields.get("priority") or {}).get("name"),
+                    "assignee": ((fields.get("assignee") or {}).get("displayName") or (fields.get("assignee") or {}).get("accountId")),
+                    "project": (fields.get("project") or {}).get("key"),
+                    "due_date": fields.get("duedate"),
+                })
+                matched_records.append({
+                    "key": item.get("key"),
+                    "status": (fields.get("status") or {}).get("name"),
+                    "assignee": ((fields.get("assignee") or {}).get("displayName") or (fields.get("assignee") or {}).get("accountId")),
+                    "raw_reference": item,
+                })
+            if page.get("truncated"):
+                summary = _summarize_issues(matched_records)
+                return {
+                    "status": "INSUFFICIENT_DATA",
+                    "tool": "get_sprint_issues",
+                    "value": {
+                        "sprint_name": sprint,
+                        "partial_total": summary["total"],
+                        "status_counts": summary["status_counts"],
+                        "assignee_counts": summary["assignee_counts"],
+                        "issues": issues,
+                        "truncated": True,
+                    },
+                    "truncated": True,
+                    "reason": "Sprint search hit the page/cap limit.",
+                    "derivation": [*summary["derivation"], f"partial_total={summary['total']}", "truncated=true"],
+                }
         if not issues:
             all_issues = issue_repo.list_all(limit=1000)
             for it in all_issues:
@@ -460,7 +581,7 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
                 "tool": "get_sprint_issues",
                 "value": {
                     "sprint_name": sprint,
-                    "total": summary["total"],
+                    "partial_total": summary["total"],
                     "status_counts": summary["status_counts"],
                     "assignee_counts": summary["assignee_counts"],
                     "issues": issues[:1000],
@@ -468,6 +589,7 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
                 },
                 "truncated": True,
                 "reason": "Sprint search hit the 1000-result cap.",
+                "derivation": [*summary["derivation"], f"partial_total={summary['total']}", "truncated=true"],
             }
         summary = _summarize_issues(matched_records)
         return _as_available(

@@ -568,7 +568,116 @@ async def test_get_sprint_issues_marks_truncation_when_cap_hit(temp_db):
     assert result["status"] == "INSUFFICIENT_DATA"
     assert result["truncated"] is True
     assert result["value"]["truncated"] is True
-    assert result["value"]["total"] == 1000
+    assert result["value"]["partial_total"] == 1000
+    assert any("partial_total=1000" in line for line in result["derivation"])
+
+
+@pytest.mark.asyncio
+async def test_get_active_sprints_filters_active_state_and_dedupes_by_sprint_id(temp_db):
+    class FakeJiraClient:
+        async def search_issues(self, jql, next_page_token=None, max_results=100, expand=None, fields=None):
+            assert expand is None
+            assert "sprint" in (fields or [])
+            if next_page_token is None:
+                return {
+                    "issues": [
+                        {
+                            "key": "SPR-1",
+                            "fields": {
+                                "sprint": [
+                                    {"id": 101, "name": "Sprint 10", "state": "active"},
+                                    {"id": 102, "name": "Sprint 11", "state": "active"},
+                                    {"id": 101, "name": "Sprint 10", "state": "active"},
+                                    {"id": 103, "name": "Sprint 12", "state": "future"},
+                                ],
+                            },
+                        }
+                    ],
+                    "nextPageToken": "page-2",
+                    "isLast": False,
+                    "total": 1,
+                }
+            assert next_page_token == "page-2"
+            return {"issues": [], "isLast": True, "total": 1}
+
+    registry = build_tool_registry(manager=temp_db, jira_client=FakeJiraClient())
+    tool = registry.get("get_active_sprints")
+    assert tool is not None
+    result = await tool.fn({})
+    assert result["status"] == "AMBIGUOUS"
+    labels = [candidate["label"] for candidate in result["candidates"]]
+    assert labels == ["Sprint 10", "Sprint 11"]
+    assert all(candidate["label"] != "Sprint 12" for candidate in result["candidates"])
+
+
+@pytest.mark.asyncio
+async def test_get_active_sprints_truncated_page_cap_returns_ambiguous_candidates(temp_db):
+    class FakeJiraClient:
+        def __init__(self):
+            self.pages = []
+            for idx in range(51):
+                self.pages.append(
+                    {
+                        "issues": [
+                            {
+                                "key": f"SPR-{idx + 1}",
+                                "fields": {
+                                    "sprint": [{"id": idx + 1, "name": f"Sprint {idx + 1}", "state": "active"}],
+                                },
+                            }
+                        ],
+                        "nextPageToken": str(idx + 1) if idx < 50 else None,
+                        "isLast": idx == 50,
+                        "total": 51,
+                    }
+                )
+
+        async def search_issues(self, jql, next_page_token=None, max_results=100, expand=None, fields=None):
+            page_idx = int(next_page_token or 0)
+            return self.pages[page_idx]
+
+    registry = build_tool_registry(manager=temp_db, jira_client=FakeJiraClient())
+    tool = registry.get("get_active_sprints")
+    assert tool is not None
+    result = await tool.fn({})
+    assert result["status"] == "AMBIGUOUS"
+    assert result["truncated"] is True
+    assert len(result["candidates"]) == 50
+
+
+@pytest.mark.asyncio
+async def test_get_sprint_issues_returns_partial_data_on_page_error(temp_db):
+    class FakeJiraClient:
+        async def search_issues(self, jql, next_page_token=None, max_results=100, expand=None, fields=None):
+            if next_page_token is None:
+                return {
+                    "issues": [
+                        {
+                            "key": "SPR-1",
+                            "fields": {
+                                "summary": "First page issue",
+                                "status": {"name": "Done", "statusCategory": {"key": "done"}},
+                                "priority": {"name": "High"},
+                                "assignee": {"accountId": "acc-a", "displayName": "Alice"},
+                                "project": {"key": "SPR"},
+                            },
+                        }
+                    ],
+                    "nextPageToken": "page-2",
+                    "isLast": False,
+                    "total": 2,
+                }
+            raise RuntimeError("page fetch failed")
+
+    registry = build_tool_registry(manager=temp_db, jira_client=FakeJiraClient())
+    tool = registry.get("get_sprint_issues")
+    assert tool is not None
+    result = await tool.fn({"sprint_name": "Sprint 42"})
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["value"]["partial_total"] == 1
+    assert result["value"]["issues"][0]["project"] == "SPR"
+    assert "page fetch failed" in result["reason"].lower()
+    assert any("partial_total=1" in line for line in result["derivation"])
 
 
 @pytest.mark.asyncio
