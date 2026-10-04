@@ -84,6 +84,11 @@ class AgentCore:
             if state.pending_clarification:
                 clarification_resolution = self._apply_clarification_response(state)
                 if clarification_resolution == "NO_MATCH":
+                    if self._clarification_looks_like_new_goal(state.current_input) or self._clarification_retry_count(state) >= 1:
+                        state = AgentState(user_goal=user_goal, current_input=user_goal)
+                        self._save_session(session_id=session_id, state=state)
+                        continue
+                    self._set_clarification_retry_count(state)
                     note = "I didn't recognise that."
                     question = state.pending_clarification.question
                     if not question.lower().startswith(note.lower()):
@@ -106,6 +111,7 @@ class AgentCore:
                         "tools_called": state.last_tool_results.get("tools_called", []),
                     }
                 if clarification_resolution == "MATCHED_PROJECT":
+                    state.context.pop("clarification_retry_count", None)
                     project_key = state.selected_project
                     if project_key:
                         try:
@@ -128,6 +134,7 @@ class AgentCore:
 
             if step.kind == "CLARIFICATION" and step.ambiguity_question:
                 if self._clarification_is_supported(state):
+                    state.context.pop("clarification_retry_count", None)
                     state.pending_clarification = step.ambiguity_question
                     self._save_session(session_id=session_id, state=state)
                     return {
@@ -224,6 +231,7 @@ class AgentCore:
         state.context["last_tool_verdict"] = {"tool": tool_name, **verdict}
         if verdict["status"] == ToolResultStatus.AMBIGUOUS:
             q = verdict["clarification_question"]
+            state.context.pop("clarification_retry_count", None)
             state.pending_clarification = q
             self._save_session(session_id=session_id, state=state)
             return True
@@ -237,6 +245,13 @@ class AgentCore:
             state.context.setdefault("unavailable_tools", {})[tool_name] = verdict["message"]
         if verdict["status"] == ToolResultStatus.AVAILABLE:
             state.known_facts[tool_name] = verdict["value"]
+            if tool_name == "get_active_sprints" and isinstance(verdict.get("value"), dict):
+                value = verdict.get("value") or {}
+                if value.get("project_key"):
+                    state.selected_project = str(value.get("project_key"))
+                candidates = value.get("candidates") if isinstance(value.get("candidates"), list) else []
+                if value.get("name") and len(candidates) == 1:
+                    state.selected_sprint = str(value.get("name"))
         if verdict["status"] == ToolResultStatus.INFERABLE:
             state.inferable_facts[tool_name] = {
                 "value": verdict["value"],
@@ -360,12 +375,12 @@ class AgentCore:
                 return True
             if names:
                 canonical_name = names[-1].lower()
-                if canonical_name.startswith(low) or canonical_name.endswith(low) or low in canonical_name:
+                if len(low) >= 3 and (canonical_name.startswith(low) or canonical_name.endswith(low) or low in canonical_name):
                     # unique prefix/contains on the real entity name only
                     matching = 0
                     for other in candidates:
                         other_names = [str(name).strip().lower() for name in _candidate_names(other) if str(name).strip()]
-                        if any(oname.startswith(low) or oname.endswith(low) or low in oname for oname in other_names[-1:]):
+                        if any(len(low) >= 3 and (oname.startswith(low) or oname.endswith(low) or low in oname) for oname in other_names[-1:]):
                             matching += 1
                     if matching == 1:
                         return True
@@ -386,9 +401,35 @@ class AgentCore:
             state.context["clarification_response"] = response
             state.context["clarification_resolved"] = chosen.value
             state.context["clarification_kind"] = qkind
+            state.context.pop("clarification_retry_count", None)
             state.pending_clarification = None
             return f"MATCHED_{qkind.upper()}"
         return "NO_MATCH"
+
+    def _clarification_retry_count(self, state: AgentState) -> int:
+        try:
+            return int(state.context.get("clarification_retry_count", 0))
+        except Exception:
+            return 0
+
+    def _set_clarification_retry_count(self, state: AgentState) -> None:
+        state.context["clarification_retry_count"] = self._clarification_retry_count(state) + 1
+
+    def _clarification_looks_like_new_goal(self, text: str) -> bool:
+        stripped = (text or "").strip()
+        lowered = stripped.lower()
+        if not stripped:
+            return False
+        if lowered in {"cancel", "cancel.", "nevermind", "never mind", "stop"}:
+            return True
+        if "?" in stripped:
+            return True
+        if self._looks_like_issue_key(stripped):
+            return True
+        return len(stripped.split()) >= 4
+
+    def _looks_like_issue_key(self, text: str) -> bool:
+        return bool(re.search(r"\b[A-Z][A-Z0-9]+-\d+\b", text))
 
     def _infer_clarification_kind(self, tool_name: str) -> str:
         if tool_name == "get_active_sprints":

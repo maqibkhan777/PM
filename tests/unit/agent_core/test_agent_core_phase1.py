@@ -326,9 +326,10 @@ async def test_provider_clarification_accepted_after_ambiguous_tool_result():
         "ts": time.time(),
         "state": AgentState(
             user_goal="Who is Ali?",
-            current_input="Who is Ali?",
+            current_input="Ali Raza",
             pending_clarification=AmbiguityQuestion(
                 question="Which Ali?",
+                kind="user",
                 candidates=[
                     Candidate(value="acc-1", label="Ali Raza (Developer)", evidence=["developer"]),
                     Candidate(value="acc-2", label="Ali Khan (QA)", evidence=["qa"]),
@@ -347,7 +348,7 @@ async def test_provider_clarification_accepted_after_ambiguous_tool_result():
             },
         ),
     }
-    res = await core.run("Who is Ali?", actor="u1", session_id=session_id)
+    res = await core.run("Ali Raza", actor="u1", session_id=session_id)
     assert res["status"] == "NEEDS_CLARIFICATION"
     assert "Which Ali" in res["question"]
 
@@ -692,7 +693,7 @@ async def test_get_active_sprints_two_stage_resume_project_then_sprint(temp_db):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reply", ["2", "banana"])
+@pytest.mark.parametrize("reply", ["2", "no", "banana"])
 async def test_project_clarification_reasks_on_unrecognised_reply(temp_db, reply):
     registry = ToolRegistry()
 
@@ -723,6 +724,66 @@ async def test_project_clarification_reasks_on_unrecognised_reply(temp_db, reply
     assert result["status"] == "NEEDS_CLARIFICATION"
     assert "didn't recognise" in result["question"].lower()
     assert result["clarification_kind"] == "project"
+
+
+@pytest.mark.asyncio
+async def test_clarification_escapes_to_fresh_issue_request(temp_db):
+    async def get_issue(args):
+        assert args["issue_key"] == "WSSS-326"
+        return {
+            "status": ToolResultStatus.AVAILABLE.value,
+            "tool": "get_issue",
+            "value": {"key": "WSSS-326", "summary": "Assigned work", "assignee": "Alice"},
+        }
+
+    class IssueProvider:
+        async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
+            if state.known_facts.get("get_issue"):
+                issue = state.known_facts["get_issue"]
+                return AgentStep.final(f"{issue['key']} assigned to {issue.get('assignee')}.")
+            if "WSSS-326" in (state.current_input or ""):
+                return AgentStep.tool_calls([ToolCall(tool_name="get_issue", arguments={"issue_key": "WSSS-326"})], uncertainty=UncertaintyClass.KNOWN)
+            return AgentStep.tool_calls([ToolCall(tool_name="get_active_sprints", arguments={})], uncertainty=UncertaintyClass.AMBIGUOUS)
+
+    registry = ToolRegistry()
+    registry.register("get_issue", ToolSpec(name="get_issue", description="issue"), get_issue)
+    async def get_active_sprints(_args):
+        return {
+            "status": ToolResultStatus.AMBIGUOUS.value,
+            "tool": "get_active_sprints",
+            "clarification_kind": "sprint",
+            "candidates": [
+                {"value": "Sprint A", "label": "Sprint A", "evidence": ["active sprint"]},
+                {"value": "Sprint B", "label": "Sprint B", "evidence": ["active sprint"]},
+            ],
+        }
+
+    registry.register("get_active_sprints", ToolSpec(name="get_active_sprints", description="sprints"), get_active_sprints)
+
+    provider = IssueProvider()
+    core = AgentCore(provider=provider, tool_registry=registry, agent_provider=AgentProvider(provider))  # type: ignore[arg-type]
+    session_id = "escape-new-goal"
+    core._sessions[session_id] = {
+        "ts": time.time(),
+        "state": AgentState(
+            user_goal="Is the sprint on track?",
+            current_input="Who is assigned WSSS-326?",
+            pending_clarification=AmbiguityQuestion(
+                question="Which sprint do you mean?",
+                kind="sprint",
+                candidates=[
+                    Candidate(value="Sprint A", label="Sprint A", evidence=["active sprint"]),
+                    Candidate(value="Sprint B", label="Sprint B", evidence=["active sprint"]),
+                ],
+            ),
+            last_uncertainty=UncertaintyClass.AMBIGUOUS,
+        ),
+    }
+
+    result = await core.run("Who is assigned WSSS-326?", actor="u1", session_id=session_id)
+    assert result["status"] == "COMPLETED"
+    assert any(call["tool"] == "get_issue" for call in result["tools_called"])
+    assert "WSSS-326 assigned to Alice." == result["answer"]
 
 
 @pytest.mark.asyncio
@@ -765,6 +826,7 @@ async def test_project_clarification_lowercase_key_matches_without_setting_issue
     result = await core.run("tren", actor="u1", session_id=session_id)
     assert result["status"] == "COMPLETED"
     assert "project=TREN" in result["answer"]
+    assert "sprint=Tren Sprint 1" in result["answer"]
     assert "issue=None" in result["answer"]
 
 
