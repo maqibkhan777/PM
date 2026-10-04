@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from app.agent_core.agent_models import AgentState, AgentStep, Candidate, ToolCall, ToolSpec, ToolResultStatus, AmbiguityQuestion
 from app.agent_core.tooling import ToolRegistry
@@ -31,6 +31,7 @@ class AgentCore:
         tool_registry: ToolRegistry,
         agent_provider: Optional[AgentProvider] = None,
         session_store: Optional[Dict[str, Dict[str, Any]]] = None,
+        known_project_keys: Optional[Set[str]] = None,
     ) -> None:
         self.provider = provider
         self.tool_registry = tool_registry
@@ -39,6 +40,7 @@ class AgentCore:
         self._sessions = session_store if session_store is not None else {}
         self._session_ttl_seconds = 15 * 60
         self._max_sessions = 200
+        self._known_project_keys = {str(key).strip().upper() for key in (known_project_keys or set()) if str(key).strip()}
 
     def _get_or_create_session(self, session_id: str, current_input: str) -> AgentState:
         now = time.time()
@@ -484,7 +486,15 @@ class AgentCore:
         return False
 
     def _looks_like_issue_key(self, text: str) -> bool:
-        return bool(re.search(r"\b[A-Z][A-Z0-9]+-\d+\b", text))
+        if not text:
+            return False
+        match = re.search(r"\b([A-Za-z][A-Za-z0-9_]+)-(\d+)\b", text)
+        if not match:
+            return False
+        prefix = match.group(1)
+        if prefix.isupper():
+            return True
+        return prefix.upper() in self._known_project_keys
 
     def _infer_clarification_kind(self, tool_name: str) -> str:
         if tool_name == "get_active_sprints":

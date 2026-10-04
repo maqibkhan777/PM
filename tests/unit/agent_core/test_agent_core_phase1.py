@@ -420,6 +420,16 @@ def test_issue_key_detection_requires_uppercase_project_prefix(text, expected):
     assert core._looks_like_issue_key(text) is expected
 
 
+def test_issue_key_detection_accepts_lowercase_known_project_key():
+    core = AgentCore(
+        provider=NullAIProvider(),
+        tool_registry=ToolRegistry(),
+        agent_provider=AgentProvider(NullAIProvider()),  # type: ignore[arg-type]
+        known_project_keys={"TREN"},
+    )
+    assert core._looks_like_issue_key("tren-12") is True
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reply", ["cancel", "nevermind", "stop"])
 async def test_pending_clarification_can_be_cancelled_without_model_call(reply):
@@ -481,10 +491,11 @@ async def test_unregistered_tool_rejected_and_loop_limit_safe():
 
 @pytest.mark.asyncio
 async def test_not_available_comments_path_returns_not_available(monkeypatch):
-    import app.services.ai.pm_tools as pm_tools
+    class FalseyJiraClient:
+        def __bool__(self) -> bool:
+            return False
 
-    monkeypatch.setattr(type(pm_tools.settings), "is_jira_configured", lambda self: False, raising=False)
-    registry = build_tool_registry()
+    registry = build_tool_registry(jira_client=FalseyJiraClient())
     tool = registry.get("get_comments")
     assert tool is not None
     result = await tool.fn({"issue_key": "WSSS-1"})

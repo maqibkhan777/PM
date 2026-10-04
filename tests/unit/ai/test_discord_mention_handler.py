@@ -760,11 +760,12 @@ async def test_write_proposal_stages_pending_approval_and_approval_resumes(menti
 
     from app.connectors.discord.ai_discord_router import AI_PENDING_WRITE_ACTIONS
     assert AI_PENDING_WRITE_ACTIONS
-    pending_session = next(iter(AI_PENDING_WRITE_ACTIONS.keys()))
-    pending = AI_PENDING_WRITE_ACTIONS[pending_session]
+    pending_channel = next(iter(AI_PENDING_WRITE_ACTIONS.keys()))
+    assert pending_channel == TEST_CHANNEL_ID
+    pending = AI_PENDING_WRITE_ACTIONS[pending_channel]["act-123456"]
     assert pending["issue_key"] == "WSSS-326"
 
-    approval_result = AsyncMock(return_value=type("ApprovalResult", (), {"success": True, "error_message": None})())
+    approval_result = AsyncMock(return_value=type("ApprovalResult", (), {"success": True, "error_message": None, "status": ActionStatus.COMPLETED})())
     with patch("app.core.actions.engine.action_engine.approve_action", new=approval_result):
         approval_payload = {
             "id": "msg_write_approve",
@@ -777,6 +778,7 @@ async def test_write_proposal_stages_pending_approval_and_approval_resumes(menti
 
     assert approve_res["status"] == "processed"
     assert "Approved and posted" in str(approve_res["response"])
+    assert TEST_CHANNEL_ID not in AI_PENDING_WRITE_ACTIONS
 
 
 @pytest.mark.asyncio
@@ -790,13 +792,15 @@ async def test_pending_write_reject_clears_session_without_execution(mention_han
 
     from app.connectors.discord.ai_discord_router import AI_PENDING_WRITE_ACTIONS
 
-    session_id = f"{TEST_CHANNEL_ID}:{AUTHORIZED_USER_ID}"
-    AI_PENDING_WRITE_ACTIONS[session_id] = {
-        "action_id": "act-reject",
-        "issue_key": "WSSS-326",
-        "comment_body": "Please review this issue.",
-        "rationale": "Need human review before execution.",
-        "created_at": "2026-09-26T00:00:00Z",
+    AI_PENDING_WRITE_ACTIONS[TEST_CHANNEL_ID] = {
+        "act-reject": {
+            "action_id": "act-reject",
+            "issue_key": "WSSS-326",
+            "comment_body": "Please review this issue.",
+            "rationale": "Need human review before execution.",
+            "created_at": "2026-09-26T00:00:00Z",
+            "status": "PENDING",
+        }
     }
 
     reject_result = AsyncMock(return_value=type("RejectResult", (), {"success": True, "error_message": None})())
@@ -816,6 +820,7 @@ async def test_pending_write_reject_clears_session_without_execution(mention_han
     assert reject_res["status"] == "processed"
     assert "Rejected the pending Jira comment proposal" in str(reject_res["response"])
     assert not mock_approve.called
+    assert TEST_CHANNEL_ID not in AI_PENDING_WRITE_ACTIONS
 
 
 @pytest.mark.asyncio
@@ -830,13 +835,15 @@ async def test_plain_approve_echoes_pending_id_without_deepseek(mention_handler,
 
     from app.connectors.discord.ai_discord_router import AI_PENDING_WRITE_ACTIONS
 
-    session_id = f"{TEST_CHANNEL_ID}:{AUTHORIZED_USER_ID}"
-    AI_PENDING_WRITE_ACTIONS[session_id] = {
-        "action_id": "act-1234567890",
-        "issue_key": "WSSS-326",
-        "comment_body": "Please review this issue.",
-        "rationale": "Need human review before execution.",
-        "created_at": "2026-09-26T00:00:00Z",
+    AI_PENDING_WRITE_ACTIONS[TEST_CHANNEL_ID] = {
+        "act-1234567890": {
+            "action_id": "act-1234567890",
+            "issue_key": "WSSS-326",
+            "comment_body": "Please review this issue.",
+            "rationale": "Need human review before execution.",
+            "created_at": "2026-09-26T00:00:00Z",
+            "status": "PENDING",
+        }
     }
 
     with patch("app.agent_core.core.AgentCore.run", new_callable=AsyncMock) as mock_core_run:

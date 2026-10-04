@@ -72,11 +72,14 @@ class ActionEngine:
 
     def _is_ai_originated(self, action: BaseAction | Dict[str, Any]) -> bool:
         params: Dict[str, Any] = {}
+        explicit_source: Optional[str] = None
         if isinstance(action, BaseAction):
             params = action.parameters or {}
+            explicit_source = action.source
         elif isinstance(action, dict):
             params = action.get("parameters") or {}
-        source = str(params.get("source") or params.get("origin") or "").strip().lower()
+            explicit_source = action.get("source")
+        source = str(explicit_source or params.get("source") or params.get("origin") or "").strip().lower()
         return source == "ai"
 
     def _ai_approver_allowlist(self) -> Set[str]:
@@ -793,6 +796,7 @@ class ActionEngine:
             target_system=action_rec["target_system"],
             target_id=action_rec["target_id"],
             parameters=action_rec.get("parameters", {}),
+            source=(action_rec.get("parameters", {}) or {}).get("source"),
             requested_by=action_rec.get("requested_by") or "PM",
             approved_by=approved_by,
             approved_at=now_iso,

@@ -142,12 +142,12 @@ from app.connectors.discord import DiscordWebhookConnector
 
 
 @pytest.fixture
-def slash_setup(temp_db):
+def slash_setup(temp_db, monkeypatch):
     """Setup ActionEngine and DiscordSlashCommandHandler for isolated testing."""
-    settings.JIRA_BASE_URL = "https://example.atlassian.net"
-    settings.JIRA_EMAIL = "pm-agent@example.com"
-    settings.JIRA_API_TOKEN = "dummy_token"
-    settings.JIRA_TEAM_GROUP = "Mursaleen Cluster"
+    monkeypatch.setattr(settings, "JIRA_BASE_URL", "https://example.atlassian.net")
+    monkeypatch.setattr(settings, "JIRA_EMAIL", "pm-agent@example.com")
+    monkeypatch.setattr(settings, "JIRA_API_TOKEN", "dummy_token")
+    monkeypatch.setattr(settings, "JIRA_TEAM_GROUP", "Mursaleen Cluster")
     engine = ActionEngine(manager=temp_db)
     mock_jira_client = MockJiraClientForDiscord()
     jira_conn = JiraConnector(client=mock_jira_client)
@@ -193,9 +193,9 @@ def slash_setup(temp_db):
     handler.execute_subcommand = _test_execute_subcommand
 
     # Setup allowed user and test channel
-    settings.DISCORD_PM_ALLOWED_USERS = "123456789,987654321"
-    settings.DISCORD_PM_CHANNEL_ID = "1547090800771604482"
-    settings.DRY_RUN = False
+    monkeypatch.setattr(settings, "DISCORD_PM_ALLOWED_USERS", "123456789,987654321")
+    monkeypatch.setattr(settings, "DISCORD_PM_CHANNEL_ID", "1547090800771604482")
+    monkeypatch.setattr(settings, "DRY_RUN", False)
 
     return handler, bot, mock_jira_client, engine, temp_db
 
