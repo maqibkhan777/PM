@@ -175,17 +175,38 @@ class AIDiscordRouterService:
             if intent == AIRequestIntent.HELP:
                 res = AI_HELP_MESSAGE
                 outcome = "COMPLETED"
-
-            elif intent == AIRequestIntent.ATTENTION_ANALYSIS:
-                res = await self._handle_attention_request(prompt, actor=actor)
-                outcome = "COMPLETED"
-
-            elif intent == AIRequestIntent.PLANNING_PROPOSAL:
-                res = await self._handle_planning_request(prompt, actor=actor)
-                outcome = "COMPLETED"
-
-            else:  # GENERAL_QA
-                res = await self._handle_general_qa(prompt, actor=actor, thread_context=thread_context)
+            else:
+                # Phase 1: route through AgentCore instead of fixed intent routing.
+                # Tools are read-only; approvals remain in Discord via existing approval flows.
+                from app.services.ai.config import resolve_ai_provider
+                ai_provider = resolve_ai_provider()
+                from app.services.ai.agent_provider import AgentProvider
+                from app.services.ai.pm_tools import build_tool_registry
+                tool_registry = build_tool_registry(manager=self.mgr)
+                agent_provider = AgentProvider(ai_provider)
+                from app.agent_core.core import AgentCore
+                core = AgentCore(provider=ai_provider, tool_registry=tool_registry, agent_provider=agent_provider)  # type: ignore[arg-type]
+                agent_res = await core.run(user_goal=prompt, actor=actor)
+                if agent_res.get("status") == "NEEDS_CLARIFICATION":
+                    res = (
+                        f"❓ {agent_res['question']}\n"
+                        + "\n".join(
+                            [f"- {c['label']} ({c['value']})" for c in agent_res.get("candidates", [])]
+                        )
+                    )
+                else:
+                    agent_answer = agent_res.get("answer")
+                    if agent_answer:
+                        res = str(agent_answer)
+                    else:
+                        # Phase 1 fallback: if Agent Core fails closed (e.g., provider can't decide tool calls),
+                        # use existing deterministic handlers so user-visible behavior remains correct.
+                        if intent == AIRequestIntent.ATTENTION_ANALYSIS:
+                            res = await self._handle_attention_request(prompt, actor=actor)
+                        elif intent == AIRequestIntent.PLANNING_PROPOSAL:
+                            res = await self._handle_planning_request(prompt, actor=actor)
+                        else:
+                            res = await self._handle_general_qa(prompt, actor=actor, thread_context=thread_context)
                 outcome = "COMPLETED"
 
             duration_ms = round((time.monotonic() - t0) * 1000, 2)

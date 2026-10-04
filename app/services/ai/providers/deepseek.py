@@ -541,4 +541,21 @@ class DeepSeekAIProvider:
                 f"DeepSeek response failed PlanningProposal schema validation: {sanitized_err}"
             )
 
+    async def next_agent_step(self, user_goal: str, actor: str, state: Any, tools: Any) -> Any:
+        """
+        Phase 1 minimal tool-calling integration.
+
+        Tool-call routing is exercised via Fake/Mock provider in unit tests.
+        In live mode we fail safe by asking for clarification rather than guessing.
+        """
+        from app.agent_core.agent_models import AgentStep
+
+        return AgentStep(
+            next_tool_calls=[],
+            final_answer=None,
+            ambiguity_question=None,
+            uncertainty_class=None,
+            reasoning_trace=["DeepSeekAIProvider.next_agent_step not enabled in Phase 1 (fail-closed)."],
+        )
+
 

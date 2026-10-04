@@ -1,6 +1,6 @@
 """Provider protocol and deterministic mock/null implementation for PM AI decision support."""
 
-from typing import List, Optional, Protocol, runtime_checkable
+from typing import Dict, List, Optional, Protocol, runtime_checkable
 from app.core.models.planning import (
     EstimateUnit,
     EvidenceReference,
@@ -24,6 +24,7 @@ from app.services.ai.models import (
     ProposedAction,
 )
 from app.services.ai.providers.deepseek import DeepSeekAIProvider
+from app.agent_core.agent_models import AgentState, AgentStep, ToolSpec
 
 
 @runtime_checkable
@@ -40,6 +41,16 @@ class AIProvider(Protocol):
 
     async def analyze_planning(self, context: PlanningContext) -> PlanningProposal:
         """Analyze deterministic planning context and return a structured PlanningProposal."""
+        ...
+
+    async def next_agent_step(
+        self,
+        user_goal: str,
+        actor: str,
+        state: AgentState,
+        tools: Dict[str, ToolSpec],
+    ) -> AgentStep:
+        """Tool-calling decision for AgentCore (read-only)."""
         ...
 
 
@@ -87,6 +98,48 @@ class NullAIProvider:
             risk_signals=[],
             assumptions=[],
             evidence_references=[],
+        )
+
+    async def next_agent_step(
+        self,
+        user_goal: str,
+        actor: str,
+        state: AgentState,
+        tools: Dict[str, ToolSpec],
+    ) -> AgentStep:
+        # Deterministic tests should inject scripts into state.context["scripted_agent_step"].
+        scripted = (state.context or {}).get("scripted_agent_step") if state else None
+        if isinstance(scripted, dict):
+            return AgentStep(
+                next_tool_calls=scripted.get("next_tool_calls", []),
+                final_answer=scripted.get("final_answer"),
+                ambiguity_question=scripted.get("ambiguity_question"),
+                uncertainty_class=scripted.get("uncertainty_class"),
+                reasoning_trace=scripted.get("reasoning_trace", []),
+            )
+
+        # Fail safely: do not guess when we don't have a tool-loop policy.
+        return AgentStep(
+            next_tool_calls=[],
+            final_answer=None,
+            ambiguity_question=None,
+            uncertainty_class=None,
+            reasoning_trace=["MockAIProvider has no scripted agent step; refusing to guess."],
+        )
+
+    async def next_agent_step(
+        self,
+        user_goal: str,
+        actor: str,
+        state: AgentState,
+        tools: Dict[str, ToolSpec],
+    ) -> AgentStep:
+        return AgentStep(
+            next_tool_calls=[],
+            final_answer=None,
+            ambiguity_question=None,
+            uncertainty_class=None,
+            reasoning_trace=["NullAIProvider cannot generate agent tool decisions."],
         )
 
 
@@ -377,6 +430,31 @@ class MockAIProvider:
             risk_signals=risk_signals,
             assumptions=assumptions,
             evidence_references=[],
+        )
+
+    async def next_agent_step(
+        self,
+        user_goal: str,
+        actor: str,
+        state: AgentState,
+        tools: Dict[str, ToolSpec],
+    ) -> AgentStep:
+        # Deterministic tests/scripts can inject an AgentStep into state.context.
+        scripted = (state.context or {}).get("scripted_agent_step") if state else None
+        if isinstance(scripted, dict):
+            return AgentStep(
+                next_tool_calls=scripted.get("next_tool_calls", []),
+                final_answer=scripted.get("final_answer"),
+                ambiguity_question=scripted.get("ambiguity_question"),
+                uncertainty_class=scripted.get("uncertainty_class"),
+                reasoning_trace=scripted.get("reasoning_trace", []),
+            )
+        return AgentStep(
+            next_tool_calls=[],
+            final_answer=None,
+            ambiguity_question=None,
+            uncertainty_class=None,
+            reasoning_trace=["MockAIProvider has no scripted agent step; refusing to guess."],
         )
 
 
