@@ -88,7 +88,8 @@ async def test_authorized_mention_accepted(mention_handler, monkeypatch):
     monkeypatch.setattr(settings, "DISCORD_AI_BOT_TOKEN", "mock_ai_token")
     monkeypatch.setattr(settings, "DISCORD_AI_APPLICATION_ID", AI_BOT_ID)
     monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_CHANNEL_IDS", TEST_CHANNEL_ID)
-    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_USER_IDS", AUTHORIZED_USER_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_USER_IDS", f"{AUTHORIZED_USER_ID},{UNAUTHORIZED_USER_ID}")
+    monkeypatch.setattr(settings, "AI_APPROVER_DISCORD_IDS", AUTHORIZED_USER_ID)
     monkeypatch.setattr(settings, "AI_ENABLED", True)
 
     message_payload = {
@@ -723,7 +724,8 @@ async def test_write_proposal_stages_pending_approval_and_approval_resumes(menti
     monkeypatch.setattr(settings, "DISCORD_AI_BOT_TOKEN", "mock_ai_token")
     monkeypatch.setattr(settings, "DISCORD_AI_APPLICATION_ID", AI_BOT_ID)
     monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_CHANNEL_IDS", TEST_CHANNEL_ID)
-    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_USER_IDS", AUTHORIZED_USER_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_USER_IDS", f"{AUTHORIZED_USER_ID},{UNAUTHORIZED_USER_ID}")
+    monkeypatch.setattr(settings, "AI_APPROVER_DISCORD_IDS", AUTHORIZED_USER_ID)
     monkeypatch.setattr(settings, "AI_ENABLED", True)
     monkeypatch.setattr(settings, "AI_WRITE_ACTIONS_ENABLED", True)
 
@@ -765,8 +767,39 @@ async def test_write_proposal_stages_pending_approval_and_approval_resumes(menti
     pending = AI_PENDING_WRITE_ACTIONS[pending_channel]["act-123456"]
     assert pending["issue_key"] == "WSSS-326"
 
-    approval_result = AsyncMock(return_value=type("ApprovalResult", (), {"success": True, "error_message": None, "status": ActionStatus.COMPLETED})())
-    with patch("app.core.actions.engine.action_engine.approve_action", new=approval_result):
+    unauthorized_result = type(
+        "ApprovalResult",
+        (),
+        {
+            "success": False,
+            "error_message": "Discord user '999999999999999999' is not authorized to approve AI write actions.",
+            "status": ActionStatus.FAILED,
+        },
+    )()
+    approval_result = type(
+        "ApprovalResult",
+        (),
+        {
+            "success": True,
+            "error_message": None,
+            "status": ActionStatus.COMPLETED,
+        },
+    )()
+    with patch("app.core.actions.engine.action_engine.approve_action", new=AsyncMock(side_effect=[unauthorized_result, approval_result])):
+        approval_payload = {
+            "id": "msg_write_approve_unauthorized",
+            "channel_id": TEST_CHANNEL_ID,
+            "content": f"<@{AI_BOT_ID}> approve act-123456",
+            "author": {"id": UNAUTHORIZED_USER_ID, "bot": False},
+            "mentions": [{"id": AI_BOT_ID}],
+        }
+        unauthorized_res = await mention_handler.handle_message_create(approval_payload, http_client=mock_client)
+
+    assert unauthorized_res["status"] == "processed"
+    assert "not authorized" in str(unauthorized_res["response"]).lower()
+    assert TEST_CHANNEL_ID in AI_PENDING_WRITE_ACTIONS
+
+    with patch("app.core.actions.engine.action_engine.approve_action", new=AsyncMock(return_value=approval_result)):
         approval_payload = {
             "id": "msg_write_approve",
             "channel_id": TEST_CHANNEL_ID,
@@ -782,12 +815,75 @@ async def test_write_proposal_stages_pending_approval_and_approval_resumes(menti
 
 
 @pytest.mark.asyncio
+async def test_write_proposal_dry_run_reply_mentions_simulation(mention_handler, monkeypatch):
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_ENABLED", True)
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_TOKEN", "mock_ai_token")
+    monkeypatch.setattr(settings, "DISCORD_AI_APPLICATION_ID", AI_BOT_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_CHANNEL_IDS", TEST_CHANNEL_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_USER_IDS", f"{AUTHORIZED_USER_ID},{UNAUTHORIZED_USER_ID}")
+    monkeypatch.setattr(settings, "AI_APPROVER_DISCORD_IDS", AUTHORIZED_USER_ID)
+    monkeypatch.setattr(settings, "AI_ENABLED", True)
+    monkeypatch.setattr(settings, "AI_WRITE_ACTIONS_ENABLED", True)
+
+    proposal_step = {
+        "status": "PROPOSED_ACTION",
+        "proposed_actions": [
+            {
+                "action_type": "ADD_COMMENT",
+                "issue_key": "WSSS-326",
+                "comment_body": "Dry run comment.",
+                "rationale": "Need a simulated approval path.",
+            }
+        ],
+    }
+
+    dry_run_result = type(
+        "ApprovalResult",
+        (),
+        {
+            "success": True,
+            "error_message": None,
+            "status": ActionStatus.DRY_RUN_SIMULATED,
+        },
+    )()
+
+    with patch("app.services.ai.config.resolve_ai_provider", return_value=object()), \
+         patch("app.services.ai.pm_tools.build_tool_registry", return_value=ToolRegistry()), \
+         patch("app.agent_core.core.AgentCore.run", new=AsyncMock(return_value=proposal_step)), \
+         patch("app.connectors.discord.ai_discord_router.action_engine.execute", new=AsyncMock(return_value=type("PendingResult", (), {"status": ActionStatus.PENDING_APPROVAL, "action_id": "act-dry-run", "error_message": None})())), \
+         patch("app.core.actions.engine.action_engine.approve_action", new=AsyncMock(return_value=dry_run_result)):
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=MagicMock(status_code=200))
+        message_payload = {
+            "id": "msg_write_proposal_dry_run",
+            "channel_id": TEST_CHANNEL_ID,
+            "content": f"<@{AI_BOT_ID}> comment on WSSS-326",
+            "author": {"id": AUTHORIZED_USER_ID, "bot": False},
+            "mentions": [{"id": AI_BOT_ID}],
+        }
+        await mention_handler.handle_message_create(message_payload, http_client=mock_client)
+
+        approval_payload = {
+            "id": "msg_write_approve_dry_run",
+            "channel_id": TEST_CHANNEL_ID,
+            "content": f"<@{AI_BOT_ID}> approve act-dry-run",
+            "author": {"id": AUTHORIZED_USER_ID, "bot": False},
+            "mentions": [{"id": AI_BOT_ID}],
+        }
+        approve_res = await mention_handler.handle_message_create(approval_payload, http_client=mock_client)
+
+    assert approve_res["status"] == "processed"
+    assert "Approved — simulated (dry run), nothing was posted to Jira." in str(approve_res["response"])
+
+
+@pytest.mark.asyncio
 async def test_pending_write_reject_clears_session_without_execution(mention_handler, monkeypatch):
     monkeypatch.setattr(settings, "DISCORD_AI_BOT_ENABLED", True)
     monkeypatch.setattr(settings, "DISCORD_AI_BOT_TOKEN", "mock_ai_token")
     monkeypatch.setattr(settings, "DISCORD_AI_APPLICATION_ID", AI_BOT_ID)
     monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_CHANNEL_IDS", TEST_CHANNEL_ID)
-    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_USER_IDS", AUTHORIZED_USER_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_USER_IDS", f"{AUTHORIZED_USER_ID},{UNAUTHORIZED_USER_ID}")
+    monkeypatch.setattr(settings, "AI_APPROVER_DISCORD_IDS", AUTHORIZED_USER_ID)
     monkeypatch.setattr(settings, "AI_ENABLED", True)
 
     from app.connectors.discord.ai_discord_router import AI_PENDING_WRITE_ACTIONS
@@ -821,6 +917,49 @@ async def test_pending_write_reject_clears_session_without_execution(mention_han
     assert "Rejected the pending Jira comment proposal" in str(reject_res["response"])
     assert not mock_approve.called
     assert TEST_CHANNEL_ID not in AI_PENDING_WRITE_ACTIONS
+
+
+@pytest.mark.asyncio
+async def test_pending_write_reject_blocks_unauthorized_user_but_keeps_pending_entry(mention_handler, monkeypatch):
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_ENABLED", True)
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_TOKEN", "mock_ai_token")
+    monkeypatch.setattr(settings, "DISCORD_AI_APPLICATION_ID", AI_BOT_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_CHANNEL_IDS", TEST_CHANNEL_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_USER_IDS", f"{AUTHORIZED_USER_ID},{UNAUTHORIZED_USER_ID}")
+    monkeypatch.setattr(settings, "AI_APPROVER_DISCORD_IDS", AUTHORIZED_USER_ID)
+    monkeypatch.setattr(settings, "AI_ENABLED", True)
+
+    from app.connectors.discord.ai_discord_router import AI_PENDING_WRITE_ACTIONS
+
+    AI_PENDING_WRITE_ACTIONS[TEST_CHANNEL_ID] = {
+        "act-reject-unauth": {
+            "action_id": "act-reject-unauth",
+            "issue_key": "WSSS-326",
+            "comment_body": "Please review this issue.",
+            "rationale": "Need human review before execution.",
+            "created_at": "2026-09-26T00:00:00Z",
+            "requester_id": AUTHORIZED_USER_ID,
+            "status": "PENDING",
+        }
+    }
+
+    with patch("app.core.actions.engine.action_engine.reject_action", new_callable=AsyncMock) as mock_reject:
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=MagicMock(status_code=200))
+        approval_payload = {
+            "id": "msg_write_reject_unauth",
+            "channel_id": TEST_CHANNEL_ID,
+            "content": f"<@{AI_BOT_ID}> reject act-reject-unauth",
+            "author": {"id": UNAUTHORIZED_USER_ID, "bot": False},
+            "mentions": [{"id": AI_BOT_ID}],
+        }
+        reject_res = await mention_handler.handle_message_create(approval_payload, http_client=mock_client)
+
+    assert reject_res["status"] == "processed"
+    assert "not authorized" in str(reject_res["response"]).lower()
+    assert TEST_CHANNEL_ID in AI_PENDING_WRITE_ACTIONS
+    assert "act-reject-unauth" in AI_PENDING_WRITE_ACTIONS[TEST_CHANNEL_ID]
+    assert not mock_reject.called
 
 
 @pytest.mark.asyncio

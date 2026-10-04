@@ -243,6 +243,11 @@ class ActionEngine:
         8. Real Connector Execution (EXECUTING -> COMPLETED or FAILED)
         9. Audit Logging
         """
+        # Persist explicit source into the parameters payload until the actions table
+        # grows a dedicated column; downstream reads derive origin from parameters.source.
+        if action.source and not action.parameters.get("source"):
+            action.parameters["source"] = action.source
+
         # Ensure Idempotency Key & Preview
         key = action.ensure_idempotency_key()
         if not action.preview:

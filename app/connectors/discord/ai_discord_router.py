@@ -142,7 +142,11 @@ def _list_pending_ids(channel_id: str) -> List[str]:
 def _find_pending_write(channel_id: str, approval_prefix: str) -> Tuple[Optional[str], List[str]]:
     channel_store = AI_PENDING_WRITE_ACTIONS.get(channel_id, {})
     low = (approval_prefix or "").strip().lower()
-    matches = [aid for aid in channel_store if aid.lower().startswith(low)]
+    matches = [
+        aid
+        for aid, rec in channel_store.items()
+        if str(rec.get("status") or "PENDING").upper() == "PENDING" and aid.lower().startswith(low)
+    ]
     if len(matches) == 1:
         return matches[0], matches
     return None, matches
@@ -311,53 +315,90 @@ class AIDiscordRouterService:
                                         }
                                     )
                                     _clear_pending_write(channel_id, action_id)
-                                    res = (
-                                        f"✅ Approved and posted the Jira comment to {pending_write.get('issue_key')}. "
-                                        f"Action ID: {action_id}"
-                                    )
+                                    if approval_status_value == ActionStatus.DRY_RUN_SIMULATED.value:
+                                        res = (
+                                            "✅ Approved — simulated (dry run), nothing was posted to Jira. "
+                                            f"Issue: {pending_write.get('issue_key')}. Action ID: {action_id}"
+                                        )
+                                    else:
+                                        res = (
+                                            f"✅ Approved and posted the Jira comment to {pending_write.get('issue_key')}. "
+                                            f"Action ID: {action_id}"
+                                        )
                                 else:
                                     approval_status = getattr(approval_res, "status", None)
                                     new_status = approval_status.value if approval_status is not None and hasattr(approval_status, "value") else "FAILED"
-                                    pending_write.update(
-                                        {
-                                            "status": "EXPIRED" if new_status == "EXPIRED" else "FAILED",
-                                            "failure_reason": approval_res.error_message or "Action failed",
-                                            "resolved_at": utc_now_iso(),
-                                        }
+                                    refusal_text = str(approval_res.error_message or "").lower()
+                                    clear_after_failure = not (
+                                        "not authorized" in refusal_text
+                                        or "disabled by configuration" in refusal_text
+                                        or "approvals are disabled" in refusal_text
+                                        or "approval is disabled" in refusal_text
                                     )
-                                    _clear_pending_write(channel_id, action_id)
+                                    if clear_after_failure:
+                                        pending_write.update(
+                                            {
+                                                "status": "EXPIRED" if new_status == "EXPIRED" else "FAILED",
+                                                "failure_reason": approval_res.error_message or "Action failed",
+                                                "resolved_at": utc_now_iso(),
+                                            }
+                                        )
+                                        _clear_pending_write(channel_id, action_id)
+                                    else:
+                                        pending_write["last_refusal_reason"] = approval_res.error_message or "Action failed"
+                                        pending_write["last_refusal_at"] = utc_now_iso()
                                     if new_status == "EXPIRED":
                                         res = f"❌ Approval `{action_id}` has expired."
+                                    elif not clear_after_failure:
+                                        res = f"❌ Approval failed for action {action_id}.\nReason: {approval_res.error_message or 'Action failed'}"
                                     else:
                                         res = f"❌ Approval failed for action {action_id}.\nReason: {approval_res.error_message or 'Action failed'}"
                                 outcome = "COMPLETED"
                             else:
-                                reject_res = await action_engine.reject_action(action_id=action_id, rejected_by=actor_id, reason="Rejected in Discord")
-                                if reject_res.success:
-                                    pending_write.update(
-                                        {
-                                            "status": "REJECTED",
-                                            "rejected_by": actor_id,
-                                            "rejected_at": utc_now_iso(),
-                                            "resolved_at": utc_now_iso(),
-                                        }
+                                allowlist = action_engine._ai_approver_allowlist()
+                                requester_id = str(pending_write.get("requester_id") or "").strip()
+                                if actor_id != requester_id and actor_id not in allowlist:
+                                    action_engine.audit_service.log_action(
+                                        actor=f"discord:{actor_id}",
+                                        action="AI_APPROVAL_REJECT",
+                                        target=action_id,
+                                        result="Forbidden",
+                                        details={
+                                            "reason": "reject_not_authorized",
+                                            "channel_id": channel_id,
+                                            "requester_id": requester_id,
+                                            "actor_id": actor_id,
+                                        },
                                     )
-                                    _clear_pending_write(channel_id, action_id)
-                                    res = f"✅ Rejected the pending Jira comment proposal for {pending_write.get('issue_key')}."
-                                elif current_status == "EXPIRED":
-                                    _clear_pending_write(channel_id, action_id)
-                                    res = f"❌ Approval `{action_id}` has expired."
+                                    res = "❌ You are not authorized to reject this approval."
+                                    outcome = "COMPLETED"
                                 else:
-                                    pending_write.update(
-                                        {
-                                            "status": "FAILED",
-                                            "failure_reason": reject_res.error_message or "Action failed",
-                                            "resolved_at": utc_now_iso(),
-                                        }
-                                    )
-                                    _clear_pending_write(channel_id, action_id)
-                                    res = f"❌ Rejection failed for action {action_id}.\nReason: {reject_res.error_message or 'Action failed'}"
-                                outcome = "COMPLETED"
+                                    reject_res = await action_engine.reject_action(action_id=action_id, rejected_by=actor_id, reason="Rejected in Discord")
+                                    if reject_res.success:
+                                        pending_write.update(
+                                            {
+                                                "status": "REJECTED",
+                                                "rejected_by": actor_id,
+                                                "rejected_at": utc_now_iso(),
+                                                "resolved_at": utc_now_iso(),
+                                            }
+                                        )
+                                        _clear_pending_write(channel_id, action_id)
+                                        res = f"✅ Rejected the pending Jira comment proposal for {pending_write.get('issue_key')}."
+                                    elif current_status == "EXPIRED":
+                                        _clear_pending_write(channel_id, action_id)
+                                        res = f"❌ Approval `{action_id}` has expired."
+                                    else:
+                                        pending_write.update(
+                                            {
+                                                "status": "FAILED",
+                                                "failure_reason": reject_res.error_message or "Action failed",
+                                                "resolved_at": utc_now_iso(),
+                                            }
+                                        )
+                                        _clear_pending_write(channel_id, action_id)
+                                        res = f"❌ Rejection failed for action {action_id}.\nReason: {reject_res.error_message or 'Action failed'}"
+                                    outcome = "COMPLETED"
                 elif not getattr(settings, "AI_ENABLED", False):
                     res = "ℹ️ PM AI assistant is disabled in system configuration (`AI_ENABLED=false`)."
                     outcome = "COMPLETED"
