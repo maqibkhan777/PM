@@ -395,14 +395,19 @@ async def test_get_sprint_issues_returns_deterministic_aggregates(temp_db):
     from app.database.repositories import JiraIssueStateRepository
 
     issue_repo = JiraIssueStateRepository(temp_db)
-    sprint_ref = {"fields": {"sprint": [{"name": "Sprint 42"}]}}
+    def sprint_ref(status_name: str, status_category: str | None):
+        status = {"name": status_name}
+        if status_category is not None:
+            status["statusCategory"] = {"key": status_category}
+        return {"fields": {"sprint": [{"name": "Sprint 42"}], "status": status}}
+
     issue_repo.upsert(
         jira_issue_key="SPR-1",
         summary="Done task",
         status="Done",
         assignee="acc-a",
         project_key="SPR",
-        raw_reference=sprint_ref,
+        raw_reference=sprint_ref("Done", "done"),
     )
     issue_repo.upsert(
         jira_issue_key="SPR-2",
@@ -410,15 +415,31 @@ async def test_get_sprint_issues_returns_deterministic_aggregates(temp_db):
         status="In Progress",
         assignee="acc-b",
         project_key="SPR",
-        raw_reference=sprint_ref,
+        raw_reference=sprint_ref("In Progress", "indeterminate"),
     )
     issue_repo.upsert(
         jira_issue_key="SPR-3",
         summary="Queued task",
-        status="To Do",
+        status="New",
         assignee="acc-a",
         project_key="SPR",
-        raw_reference=sprint_ref,
+        raw_reference=sprint_ref("New", "new"),
+    )
+    issue_repo.upsert(
+        jira_issue_key="SPR-4",
+        summary="Cancelled task",
+        status="Cancelled",
+        assignee="acc-c",
+        project_key="SPR",
+        raw_reference=sprint_ref("Cancelled", "done"),
+    )
+    issue_repo.upsert(
+        jira_issue_key="SPR-5",
+        summary="Mystery task",
+        status="Mystery",
+        assignee="acc-d",
+        project_key="SPR",
+        raw_reference=sprint_ref("Mystery", None),
     )
 
     registry = build_tool_registry(manager=temp_db)
@@ -427,10 +448,13 @@ async def test_get_sprint_issues_returns_deterministic_aggregates(temp_db):
     result = await tool.fn({"sprint_name": "Sprint 42"})
     assert result["status"] == "AVAILABLE"
     value = result["value"]
-    assert value["total"] == 3
-    assert value["status_counts"] == {"Done": 1, "In Progress": 1, "To Do": 1}
-    assert value["assignee_counts"] == {"acc-a": 2, "acc-b": 1}
-    assert result["derivation"]
+    assert value["total"] == 5
+    assert value["status_counts"] == {"Done": 1, "In Progress": 1, "To Do": 1, "cancelled": 1, "unknown": 1}
+    assert value["assignee_counts"] == {"acc-a": 2, "acc-b": 1, "acc-c": 1, "acc-d": 1}
+    assert any("statusCategory=done" in line for line in result["derivation"])
+    assert any("statusCategory=indeterminate" in line for line in result["derivation"])
+    assert any("fallback-name=unknown" in line for line in result["derivation"])
+    assert any("cancelled" in line.lower() for line in result["derivation"])
 
 
 @pytest.mark.asyncio

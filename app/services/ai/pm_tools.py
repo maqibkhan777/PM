@@ -87,28 +87,59 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
             payload["question"] = question
         return payload
 
-    def _status_category(status: Optional[str]) -> str:
-        status_text = str(status or "").strip().lower()
-        if not status_text:
-            return "To Do"
-        if any(token in status_text for token in ("done", "closed", "resolved", "complete")):
-            return "Done"
-        if any(token in status_text for token in ("progress", "review", "qa", "testing", "blocked", "started", "development")):
-            return "In Progress"
-        return "To Do"
+    def _status_category(issue: Dict[str, Any]) -> Dict[str, str]:
+        raw_reference = issue.get("raw_reference")
+        if isinstance(raw_reference, str):
+            try:
+                raw_reference = json.loads(raw_reference)
+            except Exception:
+                raw_reference = None
+        fields = raw_reference.get("fields", {}) if isinstance(raw_reference, dict) else {}
+        status_obj = fields.get("status", {}) if isinstance(fields, dict) else {}
+        status_name = str(
+            (status_obj.get("name") if isinstance(status_obj, dict) else None)
+            or issue.get("status")
+            or "Unknown"
+        ).strip()
+        status_category = str(
+            (status_obj.get("statusCategory") or {}).get("key") if isinstance(status_obj, dict) and isinstance(status_obj.get("statusCategory"), dict) else ""
+        ).strip().lower()
+        cancelled_terms = ("cancelled", "canceled", "won't do", "wont do", "won't-do", "wont-do", "abandoned")
+        name_lower = status_name.lower()
+
+        if status_category:
+            if status_category == "done":
+                if any(term in name_lower for term in cancelled_terms):
+                    return {"bucket": "cancelled", "method": "statusCategory=done + cancelled-name"}
+                return {"bucket": "Done", "method": "statusCategory=done"}
+            if status_category == "new":
+                return {"bucket": "To Do", "method": "statusCategory=new"}
+            if status_category == "indeterminate":
+                return {"bucket": "In Progress", "method": "statusCategory=indeterminate"}
+            return {"bucket": "unknown", "method": f"statusCategory={status_category or 'missing'}"}
+
+        if any(term in name_lower for term in cancelled_terms):
+            return {"bucket": "cancelled", "method": "fallback-name=cancelled"}
+        if any(token in name_lower for token in ("done", "closed", "resolved", "complete")):
+            return {"bucket": "Done", "method": "fallback-name=done"}
+        if any(token in name_lower for token in ("progress", "review", "qa", "testing", "blocked", "started", "development")):
+            return {"bucket": "In Progress", "method": "fallback-name=in-progress"}
+        if any(token in name_lower for token in ("todo", "to do", "open", "backlog", "new", "ready")):
+            return {"bucket": "To Do", "method": "fallback-name=to-do"}
+        return {"bucket": "unknown", "method": "fallback-name=unknown"}
 
     def _summarize_issues(issues: List[Dict[str, Any]]) -> Dict[str, Any]:
-        status_counts = {"Done": 0, "In Progress": 0, "To Do": 0}
+        status_counts = {"Done": 0, "In Progress": 0, "To Do": 0, "cancelled": 0, "unknown": 0}
         assignee_counts: Dict[str, int] = {}
         derivation: List[str] = []
         for issue in issues:
             key = str(issue.get("key") or issue.get("jira_issue_key") or "unknown").strip()
-            status = str(issue.get("status") or "Unknown").strip()
-            category = _status_category(status)
+            status_meta = _status_category(issue)
+            category = status_meta["bucket"]
             status_counts[category] = status_counts.get(category, 0) + 1
             assignee = str(issue.get("assignee") or "Unassigned").strip() or "Unassigned"
             assignee_counts[assignee] = assignee_counts.get(assignee, 0) + 1
-            derivation.append(f"{key}: status='{status}' -> {category}; assignee='{assignee}'")
+            derivation.append(f"{key}: {status_meta['method']} -> {category}; assignee='{assignee}'")
         return {
             "total": len(issues),
             "status_counts": status_counts,
@@ -291,6 +322,7 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
         if not sprint:
             return {"status": "ERROR", "tool": "get_sprint_issues", "reason": "sprint_name_required"}
         issues: List[Dict[str, Any]] = []
+        matched_records: List[Dict[str, Any]] = []
         if client and settings.is_jira_configured():
             try:
                 raw = await client.search_issues(jql=f'sprint = "{sprint}" ORDER BY rank ASC', max_results=100, fields=["summary", "status", "priority", "assignee", "reporter", "issuetype", "sprint", "duedate", "labels", "issuelinks"])
@@ -304,6 +336,12 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
                         "assignee": ((fields.get("assignee") or {}).get("displayName") or (fields.get("assignee") or {}).get("accountId")),
                         "project": (fields.get("project") or {}).get("key"),
                         "due_date": fields.get("duedate"),
+                    })
+                    matched_records.append({
+                        "key": item.get("key"),
+                        "status": (fields.get("status") or {}).get("name"),
+                        "assignee": ((fields.get("assignee") or {}).get("displayName") or (fields.get("assignee") or {}).get("accountId")),
+                        "raw_reference": item,
                     })
             except Exception:
                 pass
@@ -319,9 +357,10 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
                 sprint_names = {s.lower() for s in _extract_sprint_names(fields)}
                 if sprint.lower() in sprint_names:
                     issues.append(_issue_value(it))
+                    matched_records.append(it)
         if not issues:
             return _as_empty("get_sprint_issues", "No issues found for sprint.")
-        summary = _summarize_issues(issues)
+        summary = _summarize_issues(matched_records)
         return _as_available(
             "get_sprint_issues",
             {
