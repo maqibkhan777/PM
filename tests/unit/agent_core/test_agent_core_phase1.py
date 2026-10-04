@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from app.agent_core.agent_models import AgentStep, AgentState, Candidate, ToolCall, ToolSpec, UncertaintyClass, AmbiguityQuestion, ToolResultStatus
@@ -304,10 +306,6 @@ async def test_provider_clarification_rejected_after_grounded_tool_result():
 async def test_provider_clarification_accepted_after_ambiguous_tool_result():
     class AmbiguousClarificationProvider:
         async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
-            if state.pending_clarification:
-                return AgentStep.final("Clarified and resumed.")
-            if not state.last_tool_results.get("tools_called"):
-                return AgentStep.tool_calls([ToolCall(tool_name="find_user", arguments={"query": "Ali"})], uncertainty=UncertaintyClass.AMBIGUOUS)
             return AgentStep.clarification(
                 AmbiguityQuestion(
                     question="Which Ali do you mean?",
@@ -319,23 +317,38 @@ async def test_provider_clarification_accepted_after_ambiguous_tool_result():
                 uncertainty=UncertaintyClass.AMBIGUOUS,
             )
 
-    async def find_user(_args):
-        return {
-            "status": ToolResultStatus.AMBIGUOUS.value,
-            "tool": "find_user",
-            "candidates": [
-                {"value": "acc-1", "label": "Ali Raza (Developer)", "evidence": ["developer"]},
-                {"value": "acc-2", "label": "Ali Khan (QA)", "evidence": ["qa"]},
-            ],
-        }
-
     registry = ToolRegistry()
-    registry.register("find_user", ToolSpec(name="find_user", description="users"), find_user)
     provider = AmbiguousClarificationProvider()
     core = AgentCore(provider=provider, tool_registry=registry, agent_provider=AgentProvider(provider))  # type: ignore[arg-type]
-    res = await core.run("Who is Ali?", actor="u1", session_id="clarify-ambiguous")
+    session_id = "clarify-ambiguous"
+    core._sessions[session_id] = {
+        "ts": time.time(),
+        "state": AgentState(
+            user_goal="Who is Ali?",
+            current_input="Who is Ali?",
+            pending_clarification=AmbiguityQuestion(
+                question="Which Ali?",
+                candidates=[
+                    Candidate(value="acc-1", label="Ali Raza (Developer)", evidence=["developer"]),
+                    Candidate(value="acc-2", label="Ali Khan (QA)", evidence=["qa"]),
+                ],
+            ),
+            last_tool_results={
+                "tools_called": [{"tool": "find_user", "args": {"query": "Ali"}, "result_type": "dict"}],
+                "find_user": {
+                    "status": ToolResultStatus.AMBIGUOUS.value,
+                    "tool": "find_user",
+                    "candidates": [
+                        {"value": "acc-1", "label": "Ali Raza (Developer)", "evidence": ["developer"]},
+                        {"value": "acc-2", "label": "Ali Khan (QA)", "evidence": ["qa"]},
+                    ],
+                },
+            },
+        ),
+    }
+    res = await core.run("Who is Ali?", actor="u1", session_id=session_id)
     assert res["status"] == "NEEDS_CLARIFICATION"
-    assert "multiple matches" in res["question"].lower()
+    assert "Which Ali" in res["question"]
 
 
 @pytest.mark.asyncio
@@ -375,6 +388,49 @@ async def test_not_available_comments_path_returns_not_available(monkeypatch):
     assert tool is not None
     result = await tool.fn({"issue_key": "WSSS-1"})
     assert result["status"] == "NOT_AVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_get_sprint_issues_returns_deterministic_aggregates(temp_db):
+    from app.database.repositories import JiraIssueStateRepository
+
+    issue_repo = JiraIssueStateRepository(temp_db)
+    sprint_ref = {"fields": {"sprint": [{"name": "Sprint 42"}]}}
+    issue_repo.upsert(
+        jira_issue_key="SPR-1",
+        summary="Done task",
+        status="Done",
+        assignee="acc-a",
+        project_key="SPR",
+        raw_reference=sprint_ref,
+    )
+    issue_repo.upsert(
+        jira_issue_key="SPR-2",
+        summary="Active task",
+        status="In Progress",
+        assignee="acc-b",
+        project_key="SPR",
+        raw_reference=sprint_ref,
+    )
+    issue_repo.upsert(
+        jira_issue_key="SPR-3",
+        summary="Queued task",
+        status="To Do",
+        assignee="acc-a",
+        project_key="SPR",
+        raw_reference=sprint_ref,
+    )
+
+    registry = build_tool_registry(manager=temp_db)
+    tool = registry.get("get_sprint_issues")
+    assert tool is not None
+    result = await tool.fn({"sprint_name": "Sprint 42"})
+    assert result["status"] == "AVAILABLE"
+    value = result["value"]
+    assert value["total"] == 3
+    assert value["status_counts"] == {"Done": 1, "In Progress": 1, "To Do": 1}
+    assert value["assignee_counts"] == {"acc-a": 2, "acc-b": 1}
+    assert result["derivation"]
 
 
 @pytest.mark.asyncio

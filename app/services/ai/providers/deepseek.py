@@ -548,6 +548,13 @@ class DeepSeekAIProvider:
                     for c in (state.pending_clarification.candidates if state.pending_clarification else [])
                 ],
             },
+            "clarification_rejections": state.context.get("clarification_rejections", [])[-3:],
+            "clarification_feedback": [
+                "Your clarification was rejected because no tool evidence supports it; call a tool or answer."
+                if not isinstance(item, dict) or not str(item.get("reason") or "").strip()
+                else f"Your clarification was rejected because {str(item.get('reason')).replace('_', ' ')}; call a tool or answer."
+                for item in state.context.get("clarification_rejections", [])[-3:]
+            ],
             "recent_tool_results": {k: v for k, v in state.last_tool_results.items() if k != "tools_called"},
         }
 
@@ -564,6 +571,8 @@ class DeepSeekAIProvider:
             "You are a deterministic PM agent orchestrator. "
             "Use only the provided tools. "
             "Never invent Jira facts. "
+            "When sprint or planning tools provide aggregate counts, use those counts directly and do not count raw issue lists yourself. "
+            "If clarification feedback says a prior clarification was rejected, respond by calling a tool or answering with grounded evidence. "
             "Return strict JSON only matching the response schema. "
             "If more information is needed, output CLARIFICATION with a narrow question and candidates. "
             "If tools are needed, output TOOL_CALL with one or more tool calls. "

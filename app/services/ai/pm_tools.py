@@ -87,6 +87,35 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
             payload["question"] = question
         return payload
 
+    def _status_category(status: Optional[str]) -> str:
+        status_text = str(status or "").strip().lower()
+        if not status_text:
+            return "To Do"
+        if any(token in status_text for token in ("done", "closed", "resolved", "complete")):
+            return "Done"
+        if any(token in status_text for token in ("progress", "review", "qa", "testing", "blocked", "started", "development")):
+            return "In Progress"
+        return "To Do"
+
+    def _summarize_issues(issues: List[Dict[str, Any]]) -> Dict[str, Any]:
+        status_counts = {"Done": 0, "In Progress": 0, "To Do": 0}
+        assignee_counts: Dict[str, int] = {}
+        derivation: List[str] = []
+        for issue in issues:
+            key = str(issue.get("key") or issue.get("jira_issue_key") or "unknown").strip()
+            status = str(issue.get("status") or "Unknown").strip()
+            category = _status_category(status)
+            status_counts[category] = status_counts.get(category, 0) + 1
+            assignee = str(issue.get("assignee") or "Unassigned").strip() or "Unassigned"
+            assignee_counts[assignee] = assignee_counts.get(assignee, 0) + 1
+            derivation.append(f"{key}: status='{status}' -> {category}; assignee='{assignee}'")
+        return {
+            "total": len(issues),
+            "status_counts": status_counts,
+            "assignee_counts": assignee_counts,
+            "derivation": derivation,
+        }
+
     def _extract_sprint_names(fields: Any) -> List[str]:
         names: List[str] = []
         if not isinstance(fields, dict):
@@ -234,8 +263,17 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
         issues_res = await get_sprint_issues({"sprint_name": sprint_name})
         if issues_res.get("status") == "AVAILABLE":
             val = issues_res.get("value")
-            issues = val if isinstance(val, list) else [val]
-            return _as_available("get_sprint", {"name": sprint_name, "issue_count": len(issues), "issues_preview": issues[:10]})
+            issues = val.get("issues", []) if isinstance(val, dict) else []
+            summary = {
+                "total": val.get("total", len(issues)) if isinstance(val, dict) else len(issues),
+                "status_counts": val.get("status_counts", {}) if isinstance(val, dict) else {},
+                "assignee_counts": val.get("assignee_counts", {}) if isinstance(val, dict) else {},
+            }
+            return _as_available(
+                "get_sprint",
+                {"name": sprint_name, "summary": summary, "issues_preview": issues[:10]},
+                derivation=issues_res.get("derivation") or [],
+            )
         if issues_res.get("status") == "AMBIGUOUS":
             return issues_res
         if issues_res.get("status") == "EMPTY":
@@ -283,9 +321,18 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
                     issues.append(_issue_value(it))
         if not issues:
             return _as_empty("get_sprint_issues", "No issues found for sprint.")
-        if len(issues) == 1:
-            return _as_available("get_sprint_issues", issues[0])
-        return _as_available("get_sprint_issues", issues)
+        summary = _summarize_issues(issues)
+        return _as_available(
+            "get_sprint_issues",
+            {
+                "sprint_name": sprint,
+                "total": summary["total"],
+                "status_counts": summary["status_counts"],
+                "assignee_counts": summary["assignee_counts"],
+                "issues": issues,
+            },
+            derivation=summary["derivation"],
+        )
 
     registry.register(
         "get_sprint_issues",
@@ -478,7 +525,28 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
             team_group=team_group,
             horizon_working_days=horizon_working_days,
         )
-        return _as_available("get_planning_context", ctx.model_dump() if hasattr(ctx, "model_dump") else ctx, derivation=["ResourceQueueComposer", "TeamScheduleForecaster", "PlanningContextBuilder"])
+        ctx_value = ctx.model_dump() if hasattr(ctx, "model_dump") else ctx
+        task_summary = _summarize_issues(
+            [
+                {
+                    "key": getattr(task, "issue_key", None) if not isinstance(task, dict) else task.get("issue_key"),
+                    "status": getattr(task, "status", None) if not isinstance(task, dict) else task.get("status"),
+                    "assignee": getattr(task, "assigned_resource_id", None) if not isinstance(task, dict) else task.get("assigned_resource_id"),
+                }
+                for task in (getattr(ctx, "tasks", []) or [])
+            ]
+        )
+        if isinstance(ctx_value, dict):
+            ctx_value["summary"] = {
+                "total": task_summary["total"],
+                "status_counts": task_summary["status_counts"],
+                "assignee_counts": task_summary["assignee_counts"],
+            }
+        return _as_available(
+            "get_planning_context",
+            ctx_value,
+            derivation=["ResourceQueueComposer", "TeamScheduleForecaster", "PlanningContextBuilder", *task_summary["derivation"]],
+        )
 
     registry.register(
         "analyze_dependencies",

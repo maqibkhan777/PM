@@ -603,6 +603,52 @@ class TestAIPlanningService:
         with pytest.raises(DeepSeekProviderError):
             await provider.next_agent_step("goal", "discord:1", state, tools)
 
+    @pytest.mark.asyncio
+    async def test_aa_next_agent_step_includes_clarification_rejection_feedback(self):
+        captured: Dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["request"] = json.loads(request.content)
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": json.dumps(
+                                    {
+                                        "kind": "FINAL_ANSWER",
+                                        "final_answer": "done",
+                                    }
+                                ),
+                            }
+                        }
+                    ]
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        provider = DeepSeekAIProvider(api_key="sk-test", client=client)
+        state = AgentState(user_goal="Why is WSSS-1 blocked?", current_input="Why is WSSS-1 blocked?")
+        state.context["clarification_rejections"] = [
+            {
+                "question": "Which sprint?",
+                "reason": "clarification_not_supported_by_tool_history",
+                "tools_called": [{"tool": "get_active_sprints"}],
+            }
+        ]
+        tools = {"get_issue": ToolSpec(name="get_issue", description="inspect issue", parameters_schema={"issue_key": "string"})}
+
+        step = await provider.next_agent_step("Why is WSSS-1 blocked?", "discord:1", state, tools)
+        assert step.kind == "FINAL_ANSWER"
+        user_payload = json.loads(captured["request"]["messages"][1]["content"])
+        assert any(
+            "Your clarification was rejected because" in msg
+            for msg in user_payload["state"]["clarification_feedback"]
+        )
+        assert user_payload["state"]["clarification_rejections"][0]["reason"] == "clarification_not_supported_by_tool_history"
+
     # Y: Bottleneck model serialization
     def test_y_bottleneck_model_serialization(self):
         """Verify real Bottleneck model instances with all fields or optional fields serialize safely into compact prompt."""
