@@ -572,6 +572,126 @@ async def test_get_sprint_issues_marks_truncation_when_cap_hit(temp_db):
     assert any("partial_total=1000" in line for line in result["derivation"])
 
 
+def _seed_active_sprint_issues(temp_db, rows):
+    from app.database.repositories import JiraIssueStateRepository
+
+    issue_repo = JiraIssueStateRepository(temp_db)
+    for row in rows:
+        issue_repo.upsert(
+            jira_issue_key=row["key"],
+            summary=row["summary"],
+            status=row["status"],
+            assignee=row.get("assignee"),
+            project_key=row["project_key"],
+            raw_reference={
+                "fields": {
+                    "project": {"key": row["project_key"], "name": row.get("project_name") or row["project_key"]},
+                    "sprint": [
+                        {
+                            "id": row["sprint_id"],
+                            "name": row["sprint_name"],
+                            "state": "active",
+                        }
+                    ],
+                }
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_active_sprints_multiple_projects_prompts_for_project(temp_db):
+    _seed_active_sprint_issues(
+        temp_db,
+        [
+            {"key": "SPR-1", "summary": "A", "status": "In Progress", "project_key": "SPR", "project_name": "Sprint Project", "sprint_id": 11, "sprint_name": "SPR Sprint 1"},
+            {"key": "TST-1", "summary": "B", "status": "In Progress", "project_key": "TST", "project_name": "Test Project", "sprint_id": 21, "sprint_name": "TST Sprint 1"},
+        ],
+    )
+    registry = build_tool_registry(manager=temp_db)
+    tool = registry.get("get_active_sprints")
+    assert tool is not None
+    result = await tool.fn({})
+    assert result["status"] == "AMBIGUOUS"
+    labels = [c["label"] for c in result["candidates"]]
+    assert any("SPR" in label for label in labels)
+    assert any("TST" in label for label in labels)
+    assert any("active_sprint_count" in str(candidate["evidence"][0]).lower() for candidate in result["candidates"])
+
+
+@pytest.mark.asyncio
+async def test_get_active_sprints_named_project_skips_project_question(temp_db):
+    _seed_active_sprint_issues(
+        temp_db,
+        [
+            {"key": "SPR-1", "summary": "A", "status": "In Progress", "project_key": "SPR", "project_name": "Sprint Project", "sprint_id": 11, "sprint_name": "SPR Sprint 1"},
+            {"key": "SPR-2", "summary": "B", "status": "In Progress", "project_key": "SPR", "project_name": "Sprint Project", "sprint_id": 12, "sprint_name": "SPR Sprint 2"},
+            {"key": "TST-1", "summary": "C", "status": "In Progress", "project_key": "TST", "project_name": "Test Project", "sprint_id": 21, "sprint_name": "TST Sprint 1"},
+        ],
+    )
+    registry = build_tool_registry(manager=temp_db)
+    tool = registry.get("get_active_sprints")
+    assert tool is not None
+    result = await tool.fn({"project_key": "SPR"})
+    assert result["status"] == "AMBIGUOUS"
+    assert all("SPR" in candidate["label"] for candidate in result["candidates"])
+    assert all("project" not in result.get("question", "").lower() for _ in [0])
+
+
+@pytest.mark.asyncio
+async def test_get_active_sprints_single_project_single_sprint_auto_selects(temp_db):
+    _seed_active_sprint_issues(
+        temp_db,
+        [
+            {"key": "SPR-1", "summary": "A", "status": "In Progress", "project_key": "SPR", "project_name": "Sprint Project", "sprint_id": 11, "sprint_name": "SPR Sprint 1"},
+        ],
+    )
+    registry = build_tool_registry(manager=temp_db)
+    tool = registry.get("get_active_sprints")
+    assert tool is not None
+    result = await tool.fn({"project_key": "SPR"})
+    assert result["status"] == "AVAILABLE"
+    assert result["value"]["name"] == "SPR Sprint 1"
+    assert len(result["value"]["candidates"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_active_sprints_two_stage_resume_project_then_sprint(temp_db):
+    _seed_active_sprint_issues(
+        temp_db,
+        [
+            {"key": "SPR-1", "summary": "A", "status": "In Progress", "project_key": "SPR", "project_name": "Sprint Project", "sprint_id": 11, "sprint_name": "SPR Sprint 1"},
+            {"key": "SPR-2", "summary": "B", "status": "In Progress", "project_key": "SPR", "project_name": "Sprint Project", "sprint_id": 12, "sprint_name": "SPR Sprint 2"},
+            {"key": "TST-1", "summary": "C", "status": "In Progress", "project_key": "TST", "project_name": "Test Project", "sprint_id": 21, "sprint_name": "TST Sprint 1"},
+        ],
+    )
+
+    class ProjectSprintProvider:
+        async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
+            if state.selected_sprint:
+                return AgentStep.final(f"Project {state.selected_project} sprint {state.selected_sprint} selected.")
+            project_choice = state.selected_project or (state.current_input.strip().upper() if state.current_input.strip() else None)
+            if project_choice and project_choice in {"SPR", "SPRINT PROJECT"}:
+                return AgentStep.tool_calls([ToolCall(tool_name="get_active_sprints", arguments={"project_key": "SPR"})], uncertainty=UncertaintyClass.AMBIGUOUS)
+            return AgentStep.tool_calls([ToolCall(tool_name="get_active_sprints", arguments={})], uncertainty=UncertaintyClass.AMBIGUOUS)
+
+    registry = build_tool_registry(manager=temp_db)
+    provider = ProjectSprintProvider()
+    core = AgentCore(provider=provider, tool_registry=registry, agent_provider=AgentProvider(provider))  # type: ignore[arg-type]
+    session_id = "project-sprint-flow"
+
+    first = await core.run("Which sprint should I use?", actor="u1", session_id=session_id)
+    assert first["status"] == "NEEDS_CLARIFICATION"
+    assert "project" in first["question"].lower()
+
+    second = await core.run("SPR", actor="u1", session_id=session_id)
+    assert second["status"] == "NEEDS_CLARIFICATION"
+    assert "sprint" in second["question"].lower()
+
+    third = await core.run("SPR Sprint 2", actor="u1", session_id=session_id)
+    assert third["status"] == "COMPLETED"
+    assert "Project SPR sprint" in third["answer"]
+
+
 @pytest.mark.asyncio
 async def test_get_active_sprints_filters_active_state_and_dedupes_by_sprint_id(temp_db):
     class FakeJiraClient:
@@ -622,6 +742,7 @@ async def test_get_active_sprints_truncated_page_cap_returns_ambiguous_candidate
                             {
                                 "key": f"SPR-{idx + 1}",
                                 "fields": {
+                                    "project": {"key": f"PRJ{idx + 1}", "name": f"Project {idx + 1}"},
                                     "sprint": [{"id": idx + 1, "name": f"Sprint {idx + 1}", "state": "active"}],
                                 },
                             }

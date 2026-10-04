@@ -697,3 +697,41 @@ async def test_sequential_questions_same_channel_user_start_new_goal_after_compl
     assert recorded_goals == ["What is the status of WSSS-326?", "Is the sprint on track?"]
 
 
+@pytest.mark.asyncio
+async def test_clarification_response_is_truncated_under_discord_limit(mention_handler, monkeypatch):
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_ENABLED", True)
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_TOKEN", "mock_ai_token")
+    monkeypatch.setattr(settings, "DISCORD_AI_APPLICATION_ID", AI_BOT_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_CHANNEL_IDS", TEST_CHANNEL_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_USER_IDS", AUTHORIZED_USER_ID)
+    monkeypatch.setattr(settings, "AI_ENABLED", True)
+
+    many_candidates = [{"value": f"proj-{i}", "label": f"Project {i} with a very long descriptive name", "evidence": ["active sprint count"]} for i in range(1, 120)]
+
+    with patch(
+        "app.agent_core.core.AgentCore.run",
+        new=AsyncMock(
+            return_value={
+                "status": "NEEDS_CLARIFICATION",
+                "question": "Which project do you mean?",
+                "candidates": many_candidates,
+            }
+        ),
+    ):
+        message_payload = {
+            "id": "msg_len_001",
+            "channel_id": TEST_CHANNEL_ID,
+            "content": f"<@{AI_BOT_ID}> which sprint should I use?",
+            "author": {"id": AUTHORIZED_USER_ID, "bot": False},
+            "mentions": [{"id": AI_BOT_ID}],
+        }
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=MagicMock(status_code=200))
+
+        res = await mention_handler.handle_message_create(message_payload, http_client=mock_client)
+        assert res["status"] == "processed"
+        response_text = str(res["response"])
+        assert len(response_text) <= 2000
+        assert "and" in response_text.lower()
+
+

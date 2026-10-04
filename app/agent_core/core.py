@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import re
 from typing import Any, Dict, List, Optional
 
 from app.agent_core.agent_models import AgentState, AgentStep, Candidate, ToolCall, ToolSpec, ToolResultStatus, AmbiguityQuestion
@@ -276,10 +277,22 @@ class AgentCore:
         if not candidates:
             return
         low = response.lower()
-        matched = [c for c in candidates if low == c.value.lower() or low in c.label.lower() or c.label.lower() in low]
+        response_tokens = {tok for tok in re.split(r"[^a-z0-9]+", low) if tok}
+
+        def _candidate_matches(candidate: Candidate) -> bool:
+            value_low = candidate.value.lower()
+            label_low = candidate.label.lower()
+            if low == value_low or low == label_low:
+                return True
+            candidate_tokens = {tok for tok in re.split(r"[^a-z0-9]+", f"{candidate.value} {candidate.label}".lower()) if tok}
+            return bool(response_tokens) and response_tokens.issubset(candidate_tokens)
+
+        matched = [c for c in candidates if _candidate_matches(c)]
         if len(matched) == 1:
             chosen = matched[0]
             qtxt = state.pending_clarification.question.lower()
+            if "project" in qtxt or "team" in qtxt:
+                state.selected_project = chosen.value
             if "sprint" in qtxt:
                 state.selected_sprint = chosen.value
             elif "user" in qtxt or "person" in qtxt or "assignee" in qtxt:

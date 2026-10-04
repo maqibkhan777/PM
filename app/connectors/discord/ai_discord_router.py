@@ -76,6 +76,23 @@ AI_HELP_MESSAGE = (
 )
 
 
+def _format_clarification_response(question: str, candidates: List[Dict[str, Any]], max_len: int = 1900) -> str:
+    lines = [f"❓ {question}"]
+    rendered = 0
+    for idx, candidate in enumerate(candidates):
+        line = f"- {candidate.get('label')} ({candidate.get('value')})"
+        next_text = "\n".join(lines + [line])
+        if len(next_text) > max_len:
+            remaining = len(candidates) - idx
+            lines.append(f"... and {remaining} more")
+            break
+        lines.append(line)
+        rendered += 1
+    if rendered == 0 and len(candidates) > 0:
+        lines.append(f"... and {len(candidates)} more")
+    return "\n".join(lines)
+
+
 class AIDiscordRouterService:
     """Application router connecting Discord mention requests to PM AI services."""
 
@@ -194,12 +211,7 @@ class AIDiscordRouterService:
                 core = AgentCore(provider=ai_provider, tool_registry=tool_registry, agent_provider=agent_provider, session_store=AI_AGENT_SESSION_STORE)  # type: ignore[arg-type]
                 agent_res = await core.run(user_goal=prompt, actor=actor, session_id=session_id or f"{channel_id}:{actor_id}")
                 if agent_res.get("status") == "NEEDS_CLARIFICATION":
-                    res = (
-                        f"❓ {agent_res['question']}\n"
-                        + "\n".join(
-                            [f"- {c['label']} ({c['value']})" for c in agent_res.get("candidates", [])]
-                        )
-                    )
+                    res = _format_clarification_response(agent_res["question"], agent_res.get("candidates", []))
                     outcome = "COMPLETED"
                 elif agent_res.get("status") == "COMPLETED" and agent_res.get("answer"):
                     res = str(agent_res.get("answer"))

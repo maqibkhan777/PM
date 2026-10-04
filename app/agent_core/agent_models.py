@@ -51,6 +51,7 @@ class AgentState:
     last_tool_results: Dict[str, Any] = field(default_factory=dict)
     last_uncertainty: Optional[UncertaintyClass] = None
     pending_clarification: Optional[AmbiguityQuestion] = None
+    selected_project: Optional[str] = None
     selected_issue: Optional[str] = None
     selected_sprint: Optional[str] = None
     selected_user: Optional[str] = None

@@ -342,103 +342,188 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
     )
 
     async def get_active_sprints(args: Dict[str, Any]) -> Dict[str, Any]:
-        team_group = args.get("team_group")
-        sprint_candidates: Dict[str, Dict[str, Any]] = {}
-        if client:
-            jql = "sprint in openSprints() ORDER BY updated DESC"
-            page = await _paged_search_issues(jql, ["sprint", "customfield_10020"], page_size=100, cap=1000)
-            if page.get("error"):
-                if page["issues"]:
-                    for item in page["issues"]:
-                        fields = item.get("fields", {}) if isinstance(item, dict) else {}
-                        for candidate in _extract_active_sprint_candidates(fields):
-                            sprint_candidates[candidate["id"]] = candidate
-                    sprints = sorted(sprint_candidates.values(), key=lambda c: c["name"])
-                    payload = {
-                        "candidates": [
-                            {"value": c["id"], "label": c["name"], "evidence": c["evidence"]} for c in sprints
-                        ],
-                        "partial_total": len(sprints),
-                        "truncated": bool(page.get("truncated")),
-                        "error": page["error"],
-                    }
-                    return {
-                        "status": "INSUFFICIENT_DATA",
-                        "tool": "get_active_sprints",
-                        "value": payload,
-                        "reason": page["error"],
-                        "truncated": bool(page.get("truncated")),
-                        "derivation": [f"partial_total={len(sprints)}", f"error={page['error']}"],
-                    }
-                return {"status": "ERROR", "tool": "get_active_sprints", "reason": page["error"]}
-            for item in page["issues"]:
-                fields = item.get("fields", {}) if isinstance(item, dict) else {}
-                for candidate in _extract_active_sprint_candidates(fields):
-                    sprint_candidates[candidate["id"]] = candidate
-            if page.get("truncated"):
-                sprints = sorted(sprint_candidates.values(), key=lambda c: c["name"])
-                if len(sprints) > 1:
-                    payload = {
-                        "status": "AMBIGUOUS",
-                        "tool": "get_active_sprints",
-                        "candidates": [{"value": c["id"], "label": c["name"], "evidence": c["evidence"]} for c in sprints],
-                        "truncated": True,
-                        "derivation": [f"partial_total={len(sprints)}", "truncated=true"],
-                    }
-                    payload["question"] = "I found multiple active sprints. Which sprint do you mean?"
-                    return payload
-                return {
-                    "status": "INSUFFICIENT_DATA",
-                    "tool": "get_active_sprints",
-                    "value": {"candidates": [{"value": c["id"], "label": c["name"], "evidence": c["evidence"]} for c in sprints], "partial_total": len(sprints), "truncated": True},
-                    "reason": "Active sprint search hit the page cap.",
-                    "truncated": True,
-                    "derivation": [f"partial_total={len(sprints)}", "truncated=true"],
-                }
-        if not sprint_candidates:
-            all_issues = issue_repo.list_all(limit=1000)
-            for it in all_issues:
-                if team_group and it.get("team_group") != team_group:
-                    continue
-                raw = it.get("raw_reference")
+        project_filter = str(args.get("project_key") or "").strip()
+        project_map: Dict[str, Dict[str, Any]] = {}
+        page_error: Optional[str] = None
+        page_truncated = False
+
+        def _project_key_name(fields: Any, issue: Dict[str, Any]) -> Dict[str, str]:
+            project = fields.get("project", {}) if isinstance(fields, dict) else {}
+            project_key = str(
+                (project.get("key") if isinstance(project, dict) else None)
+                or issue.get("project_key")
+                or issue.get("project")
+                or ""
+            ).strip()
+            project_name = str((project.get("name") if isinstance(project, dict) else None) or project_key or "Unknown project").strip()
+            return {"key": project_key or project_name, "name": project_name}
+
+        def _add_issue_to_project_map(issue: Dict[str, Any]) -> None:
+            raw_fields = None
+            if "fields" in issue and isinstance(issue.get("fields"), dict):
+                raw_fields = issue.get("fields")
+            else:
+                raw = issue.get("raw_reference")
                 try:
                     raw_obj = json.loads(raw) if isinstance(raw, str) else raw
                 except Exception:
                     raw_obj = raw
-                fields = raw_obj.get("fields", {}) if isinstance(raw_obj, dict) else {}
-                for candidate in _extract_active_sprint_candidates(fields):
-                    sprint_candidates[candidate["id"]] = candidate
+                raw_fields = raw_obj.get("fields", {}) if isinstance(raw_obj, dict) else {}
+            fields = raw_fields if isinstance(raw_fields, dict) else {}
+            project_meta = _project_key_name(fields, issue)
+            active_sprints = _extract_active_sprint_candidates(fields)
+            if not active_sprints:
+                return
+            project_key_norm = project_meta["key"].lower()
+            entry = project_map.setdefault(
+                project_key_norm,
+                {
+                    "project_key": project_meta["key"],
+                    "project_name": project_meta["name"],
+                    "sprints": {},
+                },
+            )
+            if not entry.get("project_key"):
+                entry["project_key"] = project_meta["key"]
+            if not entry.get("project_name"):
+                entry["project_name"] = project_meta["name"]
+            for sprint in active_sprints:
+                sprint_id = str(sprint.get("id") or sprint.get("name") or "").strip().lower()
+                if sprint_id and sprint_id not in entry["sprints"]:
+                    entry["sprints"][sprint_id] = sprint
+
+        if client:
+            jql = "sprint in openSprints() ORDER BY updated DESC"
+            page = await _paged_search_issues(jql, ["sprint", "customfield_10020", "project"], page_size=100, cap=1000)
+            page_error = page.get("error")
+            page_truncated = bool(page.get("truncated"))
+            for item in page["issues"]:
+                _add_issue_to_project_map(item)
+        if not project_map:
+            all_issues = issue_repo.list_all(limit=1000)
+            for it in all_issues:
+                if "fields" not in it and project_filter and it.get("project_key") and str(it.get("project_key")).strip().lower() != project_filter.lower():
+                    continue
+                _add_issue_to_project_map(it)
             if len(all_issues) >= 1000:
-                sprints = sorted(sprint_candidates.values(), key=lambda c: c["name"])
-                if len(sprints) > 1:
-                    payload = {
+                page_truncated = True
+
+        if page_error and not project_map:
+            return {"status": "ERROR", "tool": "get_active_sprints", "reason": page_error}
+
+        def _project_candidates() -> List[Dict[str, Any]]:
+            return [
+                {
+                    "value": entry["project_key"],
+                    "label": f"{entry['project_key']} - {entry['project_name']} ({len(entry['sprints'])} active sprints)",
+                    "evidence": [f"active_sprint_count={len(entry['sprints'])}"],
+                    "project_key": entry["project_key"],
+                    "project_name": entry["project_name"],
+                    "active_sprint_count": len(entry["sprints"]),
+                }
+                for entry in sorted(project_map.values(), key=lambda e: (e.get("project_key") or "", e.get("project_name") or ""))
+                if entry["sprints"]
+            ]
+
+        selected_project: Optional[Dict[str, Any]] = None
+        if project_filter:
+            matches = []
+            for entry in project_map.values():
+                if project_filter.lower() in {str(entry.get("project_key") or "").lower(), str(entry.get("project_name") or "").lower()}:
+                    matches.append(entry)
+            if len(matches) > 1:
+                return {
+                    "status": "AMBIGUOUS",
+                    "tool": "get_active_sprints",
+                    "candidates": _project_candidates(),
+                    "question": "I found multiple matching projects. Which project do you mean?",
+                }
+            if len(matches) == 1:
+                selected_project = matches[0]
+            else:
+                return {"status": "EMPTY", "tool": "get_active_sprints", "reason": f"No active sprints found for project '{project_filter}'."}
+        else:
+            projects_with_sprints = [entry for entry in project_map.values() if entry["sprints"]]
+            if len(projects_with_sprints) > 1:
+                candidates = _project_candidates()
+                if page_error or page_truncated:
+                    return {
                         "status": "AMBIGUOUS",
                         "tool": "get_active_sprints",
-                        "candidates": [{"value": c["id"], "label": c["name"], "evidence": c["evidence"]} for c in sprints],
-                        "truncated": True,
-                        "derivation": [f"partial_total={len(sprints)}", "truncated=true"],
+                        "candidates": candidates,
+                        "question": "I found multiple active projects. Which project do you mean?",
+                        "truncated": page_truncated,
+                        "derivation": [f"partial_total={len(candidates)}", f"project_count={len(projects_with_sprints)}"],
                     }
-                    payload["question"] = "I found multiple active sprints. Which sprint do you mean?"
-                    return payload
+                return {
+                    "status": "AMBIGUOUS",
+                    "tool": "get_active_sprints",
+                    "candidates": candidates,
+                    "question": "I found multiple active projects. Which project do you mean?",
+                }
+            if projects_with_sprints:
+                selected_project = projects_with_sprints[0]
+
+        if not selected_project:
+            return _as_empty("get_active_sprints", "No active sprints found.")
+
+        sprint_list = sorted(selected_project["sprints"].values(), key=lambda s: str(s.get("name") or s.get("id") or ""))
+        sprint_candidates = [{"value": s["id"], "label": s["name"], "evidence": s["evidence"]} for s in sprint_list]
+        if page_error:
+            if sprint_list:
                 return {
                     "status": "INSUFFICIENT_DATA",
                     "tool": "get_active_sprints",
                     "value": {
-                        "candidates": [{"value": c["id"], "label": c["name"], "evidence": c["evidence"]} for c in sprints],
-                        "partial_total": len(sprints),
-                        "truncated": True,
+                        "project_key": selected_project["project_key"],
+                        "project_name": selected_project["project_name"],
+                        "candidates": sprint_candidates,
+                        "partial_total": len(sprint_list),
+                        "truncated": page_truncated,
                     },
-                    "reason": "Active sprint search hit the 1000-result cap.",
-                    "truncated": True,
-                    "derivation": [f"partial_total={len(sprints)}", "truncated=true"],
+                    "reason": page_error,
+                    "truncated": page_truncated,
+                    "derivation": [f"partial_total={len(sprint_list)}", f"error={page_error}"],
                 }
-        sprints = sorted(sprint_candidates.values(), key=lambda c: c["name"])
-        if not sprints:
-            return _as_empty("get_active_sprints", "No active sprints found.")
-        if len(sprints) == 1:
-            active = sprints[0]
-            return _as_available("get_active_sprints", {"name": active["name"], "candidates": [{"value": active["id"], "label": active["name"], "evidence": active["evidence"]}]})
-        return _as_ambiguous("get_active_sprints", [{"value": c["id"], "label": c["name"], "evidence": c["evidence"]} for c in sprints], question="I found multiple active sprints. Which sprint do you mean?")
+            return {"status": "ERROR", "tool": "get_active_sprints", "reason": page_error}
+        if page_truncated and len(sprint_list) > 1:
+            return {
+                "status": "AMBIGUOUS",
+                "tool": "get_active_sprints",
+                "candidates": sprint_candidates,
+                "question": f"I found multiple active sprints for {selected_project['project_key']}. Which sprint do you mean?",
+                "truncated": True,
+                "derivation": [f"partial_total={len(sprint_list)}", "truncated=true"],
+            }
+        if page_truncated and len(sprint_list) <= 1:
+            return {
+                "status": "INSUFFICIENT_DATA",
+                "tool": "get_active_sprints",
+                "value": {
+                    "project_key": selected_project["project_key"],
+                    "project_name": selected_project["project_name"],
+                    "candidates": sprint_candidates,
+                    "partial_total": len(sprint_list),
+                    "truncated": True,
+                },
+                "reason": "Active sprint search hit the page cap.",
+                "truncated": True,
+                "derivation": [f"partial_total={len(sprint_list)}", "truncated=true"],
+            }
+        if not sprint_list:
+            return _as_empty("get_active_sprints", f"No active sprints found for project '{selected_project['project_key']}'.")
+        if len(sprint_list) == 1:
+            active = sprint_list[0]
+            return _as_available(
+                "get_active_sprints",
+                {
+                    "project_key": selected_project["project_key"],
+                    "project_name": selected_project["project_name"],
+                    "name": active["name"],
+                    "candidates": sprint_candidates,
+                },
+            )
+        return _as_ambiguous("get_active_sprints", sprint_candidates, question=f"I found multiple active sprints for {selected_project['project_key']}. Which sprint do you mean?")
 
     registry.register(
         "get_active_sprints",

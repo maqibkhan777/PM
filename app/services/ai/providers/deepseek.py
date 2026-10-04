@@ -537,6 +537,7 @@ class DeepSeekAIProvider:
             "inferable_facts": state.inferable_facts,
             "previous_tool_results": state.last_tool_results.get("tools_called", [])[-6:],
             "unresolved_entities": {
+                "selected_project": getattr(state, "selected_project", None),
                 "selected_issue": state.selected_issue,
                 "selected_sprint": state.selected_sprint,
                 "selected_user": state.selected_user,
