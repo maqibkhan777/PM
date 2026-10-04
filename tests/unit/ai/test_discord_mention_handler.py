@@ -76,7 +76,7 @@ async def test_authorized_mention_accepted(mention_handler, monkeypatch):
     message_payload = {
         "id": "msg_001",
         "channel_id": TEST_CHANNEL_ID,
-        "content": f"<@{AI_BOT_ID}> what can you do?",
+        "content": f"<@{AI_BOT_ID}> help",
         "author": {"id": AUTHORIZED_USER_ID, "bot": False, "username": "TestPM"},
         "mentions": [{"id": AI_BOT_ID, "username": "PMAIBot"}],
     }
@@ -87,7 +87,7 @@ async def test_authorized_mention_accepted(mention_handler, monkeypatch):
     res = await mention_handler.handle_message_create(message_payload, http_client=mock_client)
     assert res is not None
     assert res["status"] == "processed"
-    assert res["prompt"] == "what can you do?"
+    assert res["prompt"] == "help"
     assert "PM AI Operations Assistant" in str(res["response"])
     assert mock_client.post.called
 
@@ -269,8 +269,7 @@ async def test_ai_disabled_default_behavior(mention_handler, monkeypatch):
 
     res = await mention_handler.handle_message_create(message_payload, http_client=mock_client)
     assert res["status"] == "processed"
-    assert "PM AI assistant is currently disabled" in str(res["response"])
-    assert "AI_ENABLED=false" in str(res["response"])
+    assert "AI decision support is currently disabled" in str(res["response"])
 
 
 @pytest.mark.asyncio
@@ -580,5 +579,66 @@ async def test_discord_planning_request_unknown_board_fails_closed(mention_handl
     resp_text = str(res["response"])
     assert "❌" in resp_text
     assert "Could not resolve Jira project/board scope" in resp_text
+
+
+@pytest.mark.asyncio
+async def test_follow_up_discord_reply_resumes_pending_clarification(mention_handler, monkeypatch):
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_ENABLED", True)
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_TOKEN", "mock_ai_token")
+    monkeypatch.setattr(settings, "DISCORD_AI_APPLICATION_ID", AI_BOT_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_CHANNEL_IDS", TEST_CHANNEL_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_USER_IDS", AUTHORIZED_USER_ID)
+    monkeypatch.setattr(settings, "AI_ENABLED", True)
+
+    from app.agent_core.agent_models import AgentStep, AgentState, Candidate, ToolCall, ToolResultStatus, ToolSpec, UncertaintyClass
+    from app.agent_core.tooling import ToolRegistry
+
+    async def get_active_sprints(_args):
+        return {
+            "status": ToolResultStatus.AMBIGUOUS.value,
+            "tool": "get_active_sprints",
+            "candidates": [
+                {"value": "Sprint A", "label": "Sprint A", "evidence": ["active sprint"]},
+                {"value": "Sprint B", "label": "Sprint B", "evidence": ["active sprint"]},
+            ],
+        }
+
+    registry = ToolRegistry()
+    registry.register("get_active_sprints", ToolSpec(name="get_active_sprints", description="sprints"), get_active_sprints)
+
+    class ResumeProvider:
+        async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
+            if state.selected_sprint:
+                return AgentStep.final(f"Resumed with {state.selected_sprint}.")
+            return AgentStep.tool_calls([ToolCall(tool_name="get_active_sprints", arguments={})], uncertainty=UncertaintyClass.KNOWN)
+
+    monkeypatch.setattr("app.services.ai.pm_tools.build_tool_registry", lambda manager=None: registry)
+    monkeypatch.setattr("app.services.ai.config.resolve_ai_provider", lambda *args, **kwargs: ResumeProvider())
+
+    first = {
+        "id": "msg_resume_1",
+        "channel_id": TEST_CHANNEL_ID,
+        "content": f"<@{AI_BOT_ID}> create a plan for the WPEPSUP work",
+        "author": {"id": AUTHORIZED_USER_ID, "bot": False},
+        "mentions": [{"id": AI_BOT_ID}],
+    }
+    second = {
+        "id": "msg_resume_2",
+        "channel_id": TEST_CHANNEL_ID,
+        "content": f"<@{AI_BOT_ID}> Sprint B",
+        "author": {"id": AUTHORIZED_USER_ID, "bot": False},
+        "mentions": [{"id": AI_BOT_ID}],
+    }
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=MagicMock(status_code=200))
+
+    res1 = await mention_handler.handle_message_create(first, http_client=mock_client)
+    assert res1["status"] == "processed"
+    assert "Which one do you mean?" in str(res1["response"])
+
+    res2 = await mention_handler.handle_message_create(second, http_client=mock_client)
+    assert res2["status"] == "processed"
+    assert "Resumed with Sprint B." in str(res2["response"])
 
 

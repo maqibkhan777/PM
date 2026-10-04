@@ -49,6 +49,10 @@ from app.utils.time import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
+# Shared short-term conversation memory for Discord AI sessions.
+# Keyed by channel/user session_id and bounded by AgentCore TTL.
+AI_AGENT_SESSION_STORE: Dict[str, Dict[str, Any]] = {}
+
 
 class AIRequestIntent(str, Enum):
     """Categorized user intent for Discord AI requests."""
@@ -134,6 +138,26 @@ class AIDiscordRouterService:
         # 4. General PM / Ticket Query
         return AIRequestIntent.GENERAL_QA
 
+    def _is_literal_help_request(self, prompt: str) -> bool:
+        if not prompt:
+            return False
+        p = prompt.strip().lower()
+        return p in ("help", "commands", "what can you do", "capabilities", "features", "?", "--help", "-h")
+
+    async def _legacy_compatibility_fallback(
+        self,
+        prompt: str,
+        actor: str,
+        thread_context: Optional[List[str]],
+        intent: AIRequestIntent,
+    ) -> Union[str, Dict[str, Any]]:
+        logger.info("Using legacy compatibility fallback path.")
+        if intent == AIRequestIntent.ATTENTION_ANALYSIS:
+            return await self._handle_attention_request(prompt, actor=actor)
+        if intent == AIRequestIntent.PLANNING_PROPOSAL:
+            return await self._handle_planning_request(prompt, actor=actor)
+        return await self._handle_general_qa(prompt, actor=actor, thread_context=thread_context)
+
     async def route_request(
         self,
         prompt: str,
@@ -145,40 +169,24 @@ class AIDiscordRouterService:
     ) -> Union[str, Dict[str, Any]]:
         """Route a user request to the appropriate read-only AI service and return formatted response."""
         t0 = time.monotonic()
-        intent = self.classify_intent(prompt)
         provider_name = getattr(settings, "AI_PROVIDER", "mock")
         model_name = getattr(settings, "AI_MODEL", None)
         provider_id = f"{provider_name}:{model_name}" if model_name else provider_name
         actor = f"discord:{actor_id}"
-
-        # If AI is globally disabled
-        if not getattr(settings, "AI_ENABLED", False):
-            self.audit_service.log_action(
-                actor=actor,
-                action="AI_DISCORD_REQUEST",
-                target=channel_id,
-                result="AI_DISABLED",
-                details={
-                    "message_id": message_id,
-                    "channel_id": channel_id,
-                    "intent": intent.value,
-                    "prompt_length": len(prompt),
-                    "error_category": "AI_DISABLED",
-                    "duration_ms": round((time.monotonic() - t0) * 1000, 2),
-                },
-            )
-            return (
-                "ℹ️ PM AI assistant is currently disabled (`AI_ENABLED=false`). "
-                "Contact an administrator to enable AI capabilities."
-            )
+        intent = AIRequestIntent.HELP if self._is_literal_help_request(prompt) else AIRequestIntent.UNKNOWN
+        fallback_used = False
 
         try:
             if intent == AIRequestIntent.HELP:
                 res = AI_HELP_MESSAGE
                 outcome = "COMPLETED"
+            elif not getattr(settings, "AI_ENABLED", False):
+                fallback_used = True
+                logger.info("Using legacy compatibility fallback because AI is disabled.")
+                intent = self.classify_intent(prompt)
+                res = await self._legacy_compatibility_fallback(prompt, actor=actor, thread_context=thread_context, intent=intent)
+                outcome = "COMPLETED"
             else:
-                # Phase 1: route through AgentCore instead of fixed intent routing.
-                # Tools are read-only; approvals remain in Discord via existing approval flows.
                 from app.services.ai.config import resolve_ai_provider
                 ai_provider = resolve_ai_provider()
                 from app.services.ai.agent_provider import AgentProvider
@@ -186,7 +194,7 @@ class AIDiscordRouterService:
                 tool_registry = build_tool_registry(manager=self.mgr)
                 agent_provider = AgentProvider(ai_provider)
                 from app.agent_core.core import AgentCore
-                core = AgentCore(provider=ai_provider, tool_registry=tool_registry, agent_provider=agent_provider)  # type: ignore[arg-type]
+                core = AgentCore(provider=ai_provider, tool_registry=tool_registry, agent_provider=agent_provider, session_store=AI_AGENT_SESSION_STORE)  # type: ignore[arg-type]
                 agent_res = await core.run(user_goal=prompt, actor=actor, session_id=session_id or f"{channel_id}:{actor_id}")
                 if agent_res.get("status") == "NEEDS_CLARIFICATION":
                     res = (
@@ -195,19 +203,15 @@ class AIDiscordRouterService:
                             [f"- {c['label']} ({c['value']})" for c in agent_res.get("candidates", [])]
                         )
                     )
+                    outcome = "COMPLETED"
+                elif agent_res.get("status") == "COMPLETED" and agent_res.get("answer"):
+                    res = str(agent_res.get("answer"))
+                    outcome = "COMPLETED"
                 else:
-                    agent_answer = agent_res.get("answer")
-                    if agent_answer:
-                        res = str(agent_answer)
-                    else:
-                        # Legacy compatibility fallback: if Agent Core fails closed (e.g., provider can't decide tool calls),
-                        # use existing deterministic handlers so user-visible behavior remains correct.
-                        if intent == AIRequestIntent.ATTENTION_ANALYSIS:
-                            res = await self._handle_attention_request(prompt, actor=actor)
-                        elif intent == AIRequestIntent.PLANNING_PROPOSAL:
-                            res = await self._handle_planning_request(prompt, actor=actor)
-                        else:
-                            res = await self._handle_general_qa(prompt, actor=actor, thread_context=thread_context)
+                    fallback_used = True
+                    logger.info("Using legacy compatibility fallback because AgentCore returned no answer/failure.")
+                    intent = self.classify_intent(prompt)
+                    res = await self._legacy_compatibility_fallback(prompt, actor=actor, thread_context=thread_context, intent=intent)
                 outcome = "COMPLETED"
 
             duration_ms = round((time.monotonic() - t0) * 1000, 2)
@@ -224,6 +228,7 @@ class AIDiscordRouterService:
                     "prompt_length": len(prompt),
                     "duration_ms": duration_ms,
                     "outcome": outcome,
+                    "fallback_used": fallback_used,
                 },
             )
             return res
@@ -242,7 +247,7 @@ class AIDiscordRouterService:
                     details={
                         "message_id": message_id,
                         "channel_id": channel_id,
-                        "intent": intent.value,
+                    "intent": intent.value,
                         "provider": provider_id,
                         "error_category": "SAFETY_VIOLATION",
                         "violation": str(sv),

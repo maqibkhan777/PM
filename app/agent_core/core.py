@@ -29,12 +29,13 @@ class AgentCore:
         provider: AIProvider,
         tool_registry: ToolRegistry,
         agent_provider: Optional[AgentProvider] = None,
+        session_store: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> None:
         self.provider = provider
         self.tool_registry = tool_registry
         self.agent_provider = agent_provider
         # Bounded in-memory session state (Phase 2 continuity).
-        self._sessions: Dict[str, Dict[str, Any]] = {}
+        self._sessions = session_store if session_store is not None else {}
         self._session_ttl_seconds = 15 * 60
         self._max_sessions = 200
 
@@ -90,19 +91,23 @@ class AgentCore:
             state.last_uncertainty = step.uncertainty_class
 
             if step.kind == "CLARIFICATION" and step.ambiguity_question:
-                # Deterministic enforcement: we only accept model-provided ambiguity
-                # when tool results indicate ambiguity/unknown. Otherwise request more tools.
-                state.pending_clarification = step.ambiguity_question
-                self._save_session(session_id=session_id, state=state)
-                return {
-                    "status": "NEEDS_CLARIFICATION",
-                    "uncertainty": state.pending_clarification and state.last_uncertainty.value,
-                    "question": state.pending_clarification.question,
-                    "candidates": [
-                        {"value": c.value, "label": c.label, "evidence": c.evidence} for c in state.pending_clarification.candidates
-                    ],
-                    "tools_called": state.last_tool_results.get("tools_called", []),
+                if self._clarification_is_supported(state):
+                    state.pending_clarification = step.ambiguity_question
+                    self._save_session(session_id=session_id, state=state)
+                    return {
+                        "status": "NEEDS_CLARIFICATION",
+                        "uncertainty": state.pending_clarification and state.last_uncertainty.value,
+                        "question": state.pending_clarification.question,
+                        "candidates": [
+                            {"value": c.value, "label": c.label, "evidence": c.evidence} for c in state.pending_clarification.candidates
+                        ],
+                        "tools_called": state.last_tool_results.get("tools_called", []),
+                    }
+                state.context["clarification_rejected"] = {
+                    "question": step.ambiguity_question.question,
+                    "reason": "clarification_not_supported_by_tool_history",
                 }
+                continue
 
             if step.kind == "TOOL_CALL":
                 if not step.next_tool_calls:
@@ -271,4 +276,24 @@ class AgentCore:
             state.context["clarification_response"] = response
             state.context["clarification_resolved"] = chosen.value
             state.pending_clarification = None
+
+    def _clarification_is_supported(self, state: AgentState) -> bool:
+        tools_called = state.last_tool_results.get("tools_called", [])
+        if not tools_called:
+            return True
+        unresolved_statuses = {
+            ToolResultStatus.AMBIGUOUS.value,
+            ToolResultStatus.EMPTY.value,
+            ToolResultStatus.NOT_AVAILABLE.value,
+            ToolResultStatus.INSUFFICIENT_DATA.value,
+        }
+        for call in tools_called:
+            tool_name = call.get("tool")
+            raw_result = state.last_tool_results.get(tool_name)
+            if not isinstance(raw_result, dict):
+                continue
+            status = str(raw_result.get("status") or "").upper().strip()
+            if status in unresolved_statuses:
+                return True
+        return False
 

@@ -253,6 +253,44 @@ async def test_clarification_continuity_resumes_original_goal():
 
 
 @pytest.mark.asyncio
+async def test_provider_clarification_accepted_with_no_prior_tool_evidence():
+    class ClarificationProvider:
+        async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
+            return AgentStep.clarification(AmbiguityQuestion(question="Which sprint?", candidates=[Candidate(value="Sprint B", label="Sprint B")]), uncertainty=UncertaintyClass.UNKNOWN)
+
+    core = AgentCore(provider=ClarificationProvider(), tool_registry=ToolRegistry(), agent_provider=AgentProvider(ClarificationProvider()))  # type: ignore[arg-type]
+    res = await core.run("Create a plan for the WPEPSUP work.", actor="u1", session_id="clarify-accept")
+    assert res["status"] == "NEEDS_CLARIFICATION"
+    assert "Which sprint?" in res["question"]
+
+
+@pytest.mark.asyncio
+async def test_provider_clarification_rejected_after_grounded_tool_result():
+    class GroundedClarificationProvider:
+        async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
+            if state.context.get("clarification_rejected"):
+                return AgentStep.final("Grounded answer after continuing to retrieve tools.")
+            if not state.last_tool_results.get("tools_called"):
+                return AgentStep.tool_calls([ToolCall(tool_name="get_issue", arguments={"issue_key": "WSSS-326"})], uncertainty=UncertaintyClass.KNOWN)
+            return AgentStep.clarification(AmbiguityQuestion(question="Which sprint?", candidates=[]), uncertainty=UncertaintyClass.UNKNOWN)
+
+    async def get_issue(_args):
+        return {
+            "status": ToolResultStatus.AVAILABLE.value,
+            "tool": "get_issue",
+            "value": {"key": "WSSS-326", "summary": "Blocked ticket", "status": "In Progress"},
+        }
+
+    registry = ToolRegistry()
+    registry.register("get_issue", ToolSpec(name="get_issue", description="issue"), get_issue)
+    provider = GroundedClarificationProvider()
+    core = AgentCore(provider=provider, tool_registry=registry, agent_provider=AgentProvider(provider))  # type: ignore[arg-type]
+    res = await core.run("What is blocking WSSS-326?", actor="u1", session_id="clarify-reject")
+    assert res["status"] == "COMPLETED"
+    assert "Grounded answer" in res["answer"]
+
+
+@pytest.mark.asyncio
 async def test_unregistered_tool_rejected_and_loop_limit_safe():
     class BadProvider:
         async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
