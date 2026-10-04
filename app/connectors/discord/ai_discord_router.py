@@ -141,6 +141,7 @@ class AIDiscordRouterService:
         channel_id: str,
         message_id: str,
         thread_context: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
     ) -> Union[str, Dict[str, Any]]:
         """Route a user request to the appropriate read-only AI service and return formatted response."""
         t0 = time.monotonic()
@@ -186,7 +187,7 @@ class AIDiscordRouterService:
                 agent_provider = AgentProvider(ai_provider)
                 from app.agent_core.core import AgentCore
                 core = AgentCore(provider=ai_provider, tool_registry=tool_registry, agent_provider=agent_provider)  # type: ignore[arg-type]
-                agent_res = await core.run(user_goal=prompt, actor=actor)
+                agent_res = await core.run(user_goal=prompt, actor=actor, session_id=session_id or f"{channel_id}:{actor_id}")
                 if agent_res.get("status") == "NEEDS_CLARIFICATION":
                     res = (
                         f"❓ {agent_res['question']}\n"
@@ -199,7 +200,7 @@ class AIDiscordRouterService:
                     if agent_answer:
                         res = str(agent_answer)
                     else:
-                        # Phase 1 fallback: if Agent Core fails closed (e.g., provider can't decide tool calls),
+                        # Legacy compatibility fallback: if Agent Core fails closed (e.g., provider can't decide tool calls),
                         # use existing deterministic handlers so user-visible behavior remains correct.
                         if intent == AIRequestIntent.ATTENTION_ANALYSIS:
                             res = await self._handle_attention_request(prompt, actor=actor)

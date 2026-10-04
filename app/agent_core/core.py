@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from app.agent_core.agent_models import AgentState, AgentStep, Candidate, ToolCall, ToolSpec
+from app.agent_core.agent_models import AgentState, AgentStep, Candidate, ToolCall, ToolSpec, ToolResultStatus, AmbiguityQuestion
 from app.agent_core.tooling import ToolRegistry
 from app.agent_core.uncertainty import UncertaintyModel
 from app.services.ai.provider import AIProvider
@@ -38,18 +38,18 @@ class AgentCore:
         self._session_ttl_seconds = 15 * 60
         self._max_sessions = 200
 
-    def _get_or_create_session(self, session_id: str, user_goal: str) -> AgentState:
+    def _get_or_create_session(self, session_id: str, current_input: str) -> AgentState:
         now = time.time()
         sess = self._sessions.get(session_id)
         if not sess:
-            return AgentState(user_goal=user_goal)
+            return AgentState(user_goal=current_input, current_input=current_input)
         if now - sess.get("ts", now) > self._session_ttl_seconds:
-            return AgentState(user_goal=user_goal)
+            return AgentState(user_goal=current_input, current_input=current_input)
         state = sess.get("state")
         if not isinstance(state, AgentState):
-            return AgentState(user_goal=user_goal)
-        # keep pending_clarification if present
-        state.user_goal = user_goal
+            return AgentState(user_goal=current_input, current_input=current_input)
+        # keep original goal, only update current input
+        state.current_input = current_input
         return state
 
     def _save_session(self, session_id: str, state: AgentState) -> None:
@@ -66,12 +66,22 @@ class AgentCore:
         self._sessions[session_id] = {"ts": time.time(), "state": state}
 
     async def run(self, user_goal: str, actor: str, session_id: str = "default") -> Dict[str, Any]:
-        state = self._get_or_create_session(session_id=session_id, user_goal=user_goal)
+        state = self._get_or_create_session(session_id=session_id, current_input=user_goal)
+        state.current_input = user_goal
 
         # Tool loop budget: keep token use low and avoid runaway tool calls.
         # This loop is deterministic in shape; provider returns tool call lists.
         for _ in range(6):
-            step: AgentStep = await self._provider_next_step(state=state, actor=actor)
+            # If the previous turn ended in a clarification and the user replied with a narrow answer,
+            # capture that reply and resume the original goal.
+            if state.pending_clarification:
+                self._apply_clarification_response(state)
+
+            try:
+                step: AgentStep = await self._provider_next_step(state=state, actor=actor)
+            except Exception as e:
+                self._save_session(session_id=session_id, state=state)
+                return {"status": "FAILURE", "error": f"Provider failure: {e}"}
 
             # Audit (token-efficient): only log tool names and outcomes; never dump raw payload.
             state.last_uncertainty = step.uncertainty_class
@@ -100,20 +110,45 @@ class AgentCore:
                 tool_name = call.tool_name
                 registered = self.tool_registry.get(tool_name)
                 if not registered:
-                    raise RuntimeError(f"Unknown tool requested by provider: {tool_name}")
+                    self._save_session(session_id=session_id, state=state)
+                    return {"status": "FAILURE", "error": f"Unknown tool requested by provider: {tool_name}"}
+                if not registered.spec.read_only or registered.spec.mutates_external_system or registered.spec.requires_approval:
+                    self._save_session(session_id=session_id, state=state)
+                    return {"status": "FAILURE", "error": f"Tool '{tool_name}' is not permitted in read-only phase."}
 
-                result = await registered.fn(call.arguments)
+                try:
+                    result = await registered.fn(call.arguments)
+                except Exception as e:
+                    self._save_session(session_id=session_id, state=state)
+                    return {"status": "FAILURE", "error": f"Tool '{tool_name}' failed: {e}"}
                 state.last_tool_results.setdefault("tools_called", []).append(
                     {"tool": tool_name, "args": call.arguments, "result_type": type(result).__name__}
                 )
                 state.last_tool_results[tool_name] = result
 
-                # Deterministic uncertainty enforcement: update known facts only when tool reports AVAILABLE.
-                if isinstance(result, dict) and result.get("status") == "AVAILABLE":
-                    # Allow tools to return structured fields as known facts.
-                    state.known_facts[tool_name] = result.get("value", result)
-                elif isinstance(result, dict) and result.get("status") in ("ERROR", "INSUFFICIENT_DATA"):
-                    state.known_facts.pop(tool_name, None)
+                verdict = self._normalize_tool_result(tool_name, result)
+                if verdict["status"] == ToolResultStatus.AMBIGUOUS:
+                    q = verdict["clarification_question"]
+                    state.pending_clarification = q
+                    self._save_session(session_id=session_id, state=state)
+                    return {
+                        "status": "NEEDS_CLARIFICATION",
+                        "uncertainty": ToolResultStatus.AMBIGUOUS.value,
+                        "question": q.question,
+                        "candidates": [
+                            {"value": c.value, "label": c.label, "evidence": c.evidence} for c in q.candidates
+                        ],
+                        "tools_called": state.last_tool_results.get("tools_called", []),
+                    }
+                if verdict["status"] == ToolResultStatus.EMPTY:
+                    self._save_session(session_id=session_id, state=state)
+                    return {"status": "FAILURE", "error": verdict["message"]}
+                if verdict["status"] == ToolResultStatus.NOT_AVAILABLE:
+                    state.context.setdefault("unavailable_tools", {})[tool_name] = verdict["message"]
+                if verdict["status"] == ToolResultStatus.AVAILABLE:
+                    state.known_facts[tool_name] = verdict["value"]
+                if verdict["status"] == ToolResultStatus.INFERABLE:
+                    state.inferable_facts[tool_name] = verdict["value"]
 
             if step.final_answer:
                 self._save_session(session_id=session_id, state=state)
@@ -147,4 +182,63 @@ class AgentCore:
 
         # Fallback: if provider doesn't support tool calling, force completion error.
         raise RuntimeError("No AgentProvider configured for tool-calling")
+
+    def _normalize_tool_result(self, tool_name: str, result: Any) -> Dict[str, Any]:
+        if not isinstance(result, dict):
+            return {"status": ToolResultStatus.ERROR, "message": f"Tool '{tool_name}' returned non-dict result."}
+        status_raw = str(result.get("status") or "").upper().strip()
+        try:
+            status = ToolResultStatus(status_raw)
+        except Exception:
+            return {"status": ToolResultStatus.ERROR, "message": f"Tool '{tool_name}' returned invalid status '{status_raw}'."}
+
+        if status == ToolResultStatus.AMBIGUOUS:
+            cands = result.get("candidates") or result.get("value") or []
+            candidates: List[Candidate] = []
+            for c in cands:
+                if isinstance(c, dict):
+                    candidates.append(
+                        Candidate(
+                            value=str(c.get("value") or c.get("account_id") or c.get("key") or c.get("id") or ""),
+                            label=str(c.get("label") or c.get("display_name") or c.get("summary") or c.get("name") or ""),
+                            evidence=list(c.get("evidence") or []),
+                        )
+                    )
+            question = result.get("question") or f"I found multiple matches for {tool_name}. Which one do you mean?"
+            return {"status": ToolResultStatus.AMBIGUOUS, "clarification_question": AmbiguityQuestion(question=question, candidates=candidates)}
+
+        if status == ToolResultStatus.EMPTY:
+            return {"status": ToolResultStatus.EMPTY, "message": f"I couldn't verify that from the available Jira data."}
+        if status == ToolResultStatus.NOT_AVAILABLE:
+            reason = str(result.get("reason") or "Resource not available from current tool.")
+            return {"status": ToolResultStatus.NOT_AVAILABLE, "message": reason}
+        if status == ToolResultStatus.INSUFFICIENT_DATA:
+            if result.get("derivation"):
+                return {"status": ToolResultStatus.INFERABLE, "value": result.get("value"), "derivation": result.get("derivation"), "message": str(result.get("reason") or "")}
+            return {"status": ToolResultStatus.AMBIGUOUS, "clarification_question": AmbiguityQuestion(question=str(result.get("reason") or "I need clarification."), candidates=[])}
+        if status == ToolResultStatus.AVAILABLE:
+            return {"status": ToolResultStatus.AVAILABLE, "value": result.get("value")}
+        return {"status": ToolResultStatus.ERROR, "message": str(result.get("reason") or "Unknown tool result error.")}
+
+    def _apply_clarification_response(self, state: AgentState) -> None:
+        response = (state.current_input or "").strip()
+        if not response or not state.pending_clarification:
+            return
+        candidates = state.pending_clarification.candidates
+        if not candidates:
+            return
+        low = response.lower()
+        matched = [c for c in candidates if low == c.value.lower() or low in c.label.lower() or c.label.lower() in low]
+        if len(matched) == 1:
+            chosen = matched[0]
+            qtxt = state.pending_clarification.question.lower()
+            if "sprint" in qtxt:
+                state.selected_sprint = chosen.value
+            elif "user" in qtxt or "person" in qtxt or "assignee" in qtxt:
+                state.selected_user = chosen.value
+            else:
+                state.selected_issue = chosen.value
+            state.context["clarification_response"] = response
+            state.context["clarification_resolved"] = chosen.value
+            state.pending_clarification = None
 

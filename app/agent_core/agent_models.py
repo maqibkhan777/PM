@@ -14,6 +14,8 @@ class UncertaintyClass(str, Enum):
 class ToolResultStatus(str, Enum):
     AVAILABLE = "AVAILABLE"
     EMPTY = "EMPTY"
+    AMBIGUOUS = "AMBIGUOUS"
+    INFERABLE = "INFERABLE"
     NOT_AVAILABLE = "NOT_AVAILABLE"
     INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
     ERROR = "ERROR"
@@ -41,6 +43,7 @@ class AgentState:
     """Short-term, request-scoped state for iterative tool loops."""
 
     user_goal: str
+    current_input: str = ""
     # Provider/context fields. AgentCore will still enforce uncertainty deterministically.
     context: Dict[str, Any] = field(default_factory=dict)
     known_facts: Dict[str, Any] = field(default_factory=dict)

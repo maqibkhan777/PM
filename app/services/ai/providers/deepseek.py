@@ -9,9 +9,9 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 import httpx
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from app.services.ai.models import (
     AIContext,
@@ -22,6 +22,7 @@ from app.services.ai.models import (
     PMAttentionAnalysis,
     ProposedAction,
 )
+from app.agent_core.agent_models import AgentState, AgentStep, AmbiguityQuestion, Candidate, ToolCall, ToolSpec, UncertaintyClass
 from app.utils.logger import redact_text, sanitize_dict
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,21 @@ logger = logging.getLogger(__name__)
 class DeepSeekProviderError(Exception):
     """Raised when DeepSeek API interaction fails, with guarantees that secrets are redacted."""
     pass
+
+
+class DeepSeekAgentToolCall(BaseModel):
+    tool_name: str
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+    purpose: str
+
+
+class DeepSeekAgentStepSchema(BaseModel):
+    kind: Literal["TOOL_CALL", "FINAL_ANSWER", "CLARIFICATION", "FAILURE"]
+    tool_calls: List[DeepSeekAgentToolCall] = Field(default_factory=list)
+    final_answer: Optional[str] = None
+    clarification_question: Optional[str] = None
+    uncertainty_class: Optional[str] = None
+    reasoning_trace: List[str] = Field(default_factory=list)
 
 
 AI_PROMPT_VERSION = "attention-v1"
@@ -490,6 +506,82 @@ class DeepSeekAIProvider:
 
         return normalized
 
+    def _build_agent_step_messages(
+        self,
+        user_goal: str,
+        actor: str,
+        state: AgentState,
+        tools: Dict[str, ToolSpec],
+    ) -> List[Dict[str, str]]:
+        tool_specs = []
+        for name, spec in sorted(tools.items()):
+            tool_specs.append(
+                {
+                    "name": name,
+                    "purpose": spec.description,
+                    "read_only": spec.read_only,
+                    "requires_approval": spec.requires_approval,
+                    "mutates_external_system": spec.mutates_external_system,
+                    "param_schema": spec.parameters_schema,
+                    "result_contract": {
+                        "status": ["AVAILABLE", "EMPTY", "AMBIGUOUS", "NOT_AVAILABLE", "INSUFFICIENT_DATA", "ERROR"],
+                        "required_keys": ["status", "tool"],
+                    },
+                }
+            )
+
+        state_payload = {
+            "current_goal": state.user_goal,
+            "current_input": state.current_input,
+            "known_facts": state.known_facts,
+            "inferable_facts": state.inferable_facts,
+            "previous_tool_results": state.last_tool_results.get("tools_called", [])[-6:],
+            "unresolved_entities": {
+                "selected_issue": state.selected_issue,
+                "selected_sprint": state.selected_sprint,
+                "selected_user": state.selected_user,
+            },
+            "clarification_state": {
+                "pending_question": state.pending_clarification.question if state.pending_clarification else None,
+                "candidates": [
+                    {"value": c.value, "label": c.label, "evidence": c.evidence}
+                    for c in (state.pending_clarification.candidates if state.pending_clarification else [])
+                ],
+            },
+            "recent_tool_results": {k: v for k, v in state.last_tool_results.items() if k != "tools_called"},
+        }
+
+        schema = {
+            "kind": "TOOL_CALL | FINAL_ANSWER | CLARIFICATION | FAILURE",
+            "tool_calls": [{"tool_name": "string", "arguments": {}, "purpose": "string"}],
+            "final_answer": "string|null",
+            "clarification_question": "string|null",
+            "uncertainty_class": "KNOWN|INFERABLE|UNKNOWN|AMBIGUOUS|null",
+            "reasoning_trace": ["string"],
+        }
+
+        system_prompt = (
+            "You are a deterministic PM agent orchestrator. "
+            "Use only the provided tools. "
+            "Never invent Jira facts. "
+            "Return strict JSON only matching the response schema. "
+            "If more information is needed, output CLARIFICATION with a narrow question and candidates. "
+            "If tools are needed, output TOOL_CALL with one or more tool calls. "
+            "If a tool result is ambiguous or unavailable, do not guess."
+        )
+
+        user_payload = {
+            "goal": user_goal,
+            "actor": actor,
+            "state": state_payload,
+            "tools": tool_specs,
+            "response_schema": schema,
+        }
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+        ]
+
     async def analyze_planning(self, context: Any) -> Any:
         """Analyze planning context using DeepSeek and return a typed PlanningProposal."""
         from app.core.models.planning import PlanningProposal
@@ -541,21 +633,37 @@ class DeepSeekAIProvider:
                 f"DeepSeek response failed PlanningProposal schema validation: {sanitized_err}"
             )
 
-    async def next_agent_step(self, user_goal: str, actor: str, state: Any, tools: Any) -> Any:
-        """
-        Phase 1 minimal tool-calling integration.
+    async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools: Dict[str, ToolSpec]) -> AgentStep:
+        messages = self._build_agent_step_messages(user_goal=user_goal, actor=actor, state=state, tools=tools)
+        raw_response = await self._post_chat_completion(messages)
 
-        Tool-call routing is exercised via Fake/Mock provider in unit tests.
-        In live mode we fail safe by asking for clarification rather than guessing.
-        """
-        from app.agent_core.agent_models import AgentStep
+        try:
+            content_dict = self._extract_content_json(raw_response)
+        except DeepSeekProviderError as e:
+            raise DeepSeekProviderError(f"Agent step output invalid: {e}")
 
-        return AgentStep(
-            next_tool_calls=[],
-            final_answer=None,
-            ambiguity_question=None,
-            uncertainty_class=None,
-            reasoning_trace=["DeepSeekAIProvider.next_agent_step not enabled in Phase 1 (fail-closed)."],
-        )
+        try:
+            step = DeepSeekAgentStepSchema.model_validate(content_dict)
+        except ValidationError as ve:
+            raise DeepSeekProviderError(f"Agent step schema validation failed: {self._sanitize_error_message(str(ve))}")
+
+        if step.kind == "TOOL_CALL":
+            calls = [
+                ToolCall(tool_name=c.tool_name, arguments=c.arguments)
+                for c in step.tool_calls
+            ]
+            if not calls:
+                raise DeepSeekProviderError("Agent step TOOL_CALL returned no tool calls.")
+            return AgentStep.tool_calls(calls, uncertainty=UncertaintyClass(step.uncertainty_class) if step.uncertainty_class else None, trace=step.reasoning_trace)
+        if step.kind == "FINAL_ANSWER":
+            if not step.final_answer:
+                raise DeepSeekProviderError("Agent step FINAL_ANSWER missing final_answer.")
+            return AgentStep.final(step.final_answer, uncertainty=UncertaintyClass(step.uncertainty_class) if step.uncertainty_class else None, trace=step.reasoning_trace)
+        if step.kind == "CLARIFICATION":
+            question = step.clarification_question or "I need one clarification to continue."
+            q = AmbiguityQuestion(question=question, candidates=[])
+            return AgentStep.clarification(q, uncertainty=UncertaintyClass(step.uncertainty_class) if step.uncertainty_class else UncertaintyClass.AMBIGUOUS, trace=step.reasoning_trace)
+        return AgentStep(kind="FAILURE", final_answer=step.final_answer or "Provider failure.", uncertainty_class=UncertaintyClass(step.uncertainty_class) if step.uncertainty_class else None, reasoning_trace=step.reasoning_trace)
+
 
 

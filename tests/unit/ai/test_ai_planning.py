@@ -59,6 +59,7 @@ from app.core.models.planning import (
 from app.services.ai.config import AIConfigurationError, AIProviderConfig, resolve_ai_provider
 from app.services.ai.planning import AIPlanningService
 from app.services.ai.planning_prompt import PLANNING_PROMPT_VERSION, PlanningPromptBuilder
+from app.agent_core.agent_models import AgentState, ToolSpec
 from app.services.ai.provider import MockAIProvider, NullAIProvider
 from app.services.ai.providers.deepseek import DeepSeekAIProvider, DeepSeekProviderError
 from app.services.ai.safety import AISafetyGate, AISafetyViolation
@@ -545,6 +546,62 @@ class TestAIPlanningService:
         provider = DeepSeekAIProvider(api_key="sk-test-key")
         assert provider.base_url == "https://api.deepseek.com"
         assert provider.model == "deepseek-chat"
+
+    @pytest.mark.asyncio
+    async def test_y_next_agent_step_parses_structured_json(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": json.dumps(
+                                    {
+                                        "kind": "TOOL_CALL",
+                                        "tool_calls": [
+                                            {
+                                                "tool_name": "get_issue",
+                                                "arguments": {"issue_key": "WSSS-1"},
+                                                "purpose": "inspect issue",
+                                            }
+                                        ],
+                                        "reasoning_trace": ["Need to inspect the issue first."],
+                                        "uncertainty_class": "KNOWN",
+                                    }
+                                ),
+                            }
+                        }
+                    ]
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        provider = DeepSeekAIProvider(api_key="sk-test", client=client)
+        state = AgentState(user_goal="Why is WSSS-1 blocked?", current_input="Why is WSSS-1 blocked?")
+        tools = {"get_issue": ToolSpec(name="get_issue", description="inspect issue", parameters_schema={"issue_key": "string"})}
+
+        step = await provider.next_agent_step("Why is WSSS-1 blocked?", "discord:1", state, tools)
+        assert step.kind == "TOOL_CALL"
+        assert step.next_tool_calls[0].tool_name == "get_issue"
+        assert step.next_tool_calls[0].arguments["issue_key"] == "WSSS-1"
+
+    @pytest.mark.asyncio
+    async def test_z_next_agent_step_rejects_malformed_json(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                status_code=200,
+                json={"choices": [{"message": {"role": "assistant", "content": "plain prose"}}]},
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        provider = DeepSeekAIProvider(api_key="sk-test", client=client)
+        state = AgentState(user_goal="goal", current_input="goal")
+        tools = {"get_issue": ToolSpec(name="get_issue", description="inspect issue", parameters_schema={"issue_key": "string"})}
+
+        with pytest.raises(DeepSeekProviderError):
+            await provider.next_agent_step("goal", "discord:1", state, tools)
 
     # Y: Bottleneck model serialization
     def test_y_bottleneck_model_serialization(self):
