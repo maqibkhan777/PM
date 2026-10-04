@@ -86,12 +86,14 @@ class AgentStep:
     - If next_tool_calls is non-empty, AgentCore should call those tools and iterate.
     - If final_answer is non-empty, AgentCore should return it to the user.
     - If ambiguity_question is non-null, AgentCore should ask clarification.
+    - If proposed_actions is non-empty, AgentCore should surface a proposal without executing it.
     """
 
     kind: str = "FINAL_ANSWER"  # TOOL_CALL | FINAL_ANSWER | CLARIFICATION | FAILURE
     next_tool_calls: List[ToolCall] = field(default_factory=list)
     final_answer: Optional[str] = None
     ambiguity_question: Optional[AmbiguityQuestion] = None
+    proposed_actions: List[Dict[str, Any]] = field(default_factory=list)
 
     # Audit/debug fields (no secrets).
     uncertainty_class: Optional[UncertaintyClass] = None
@@ -108,4 +110,8 @@ class AgentStep:
     @staticmethod
     def clarification(q: AmbiguityQuestion, uncertainty: Optional[UncertaintyClass] = None, trace: Optional[List[str]] = None) -> "AgentStep":
         return AgentStep(kind="CLARIFICATION", ambiguity_question=q, uncertainty_class=uncertainty, reasoning_trace=trace or [])
+
+    @staticmethod
+    def proposal(actions: List[Dict[str, Any]], uncertainty: Optional[UncertaintyClass] = None, trace: Optional[List[str]] = None) -> "AgentStep":
+        return AgentStep(kind="PROPOSE_ACTION", proposed_actions=actions, uncertainty_class=uncertainty, reasoning_trace=trace or [])
 

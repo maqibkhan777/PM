@@ -1133,6 +1133,28 @@ async def test_provider_exception_and_malformed_output_fail_closed():
 
 
 @pytest.mark.asyncio
+async def test_propose_action_is_returned_without_execution():
+    class ProposalProvider:
+        async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
+            return AgentStep.proposal(
+                [
+                    {
+                        "action_type": "ADD_COMMENT",
+                        "issue_key": "WSSS-326",
+                        "comment_body": "Please review this issue.",
+                        "rationale": "Need a human review before execution.",
+                    }
+                ]
+            )
+
+    core = AgentCore(provider=ProposalProvider(), tool_registry=ToolRegistry(), agent_provider=AgentProvider(ProposalProvider()))  # type: ignore[arg-type]
+    res = await core.run("Add a Jira comment", actor="u1")
+    assert res["status"] == "PROPOSED_ACTION"
+    assert res["proposed_actions"][0]["issue_key"] == "WSSS-326"
+    assert res["proposed_actions"][0]["comment_body"] == "Please review this issue."
+
+
+@pytest.mark.asyncio
 async def test_invalid_args_and_tool_exception_fail_closed():
     async def bad_args(args):
         if "required" not in args:

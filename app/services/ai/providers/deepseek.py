@@ -39,9 +39,17 @@ class DeepSeekAgentToolCall(BaseModel):
     purpose: str
 
 
+class DeepSeekAgentProposedAction(BaseModel):
+    action_type: str
+    issue_key: str
+    comment_body: str
+    rationale: str
+
+
 class DeepSeekAgentStepSchema(BaseModel):
-    kind: Literal["TOOL_CALL", "FINAL_ANSWER", "CLARIFICATION", "FAILURE"]
+    kind: Literal["TOOL_CALL", "FINAL_ANSWER", "CLARIFICATION", "PROPOSE_ACTION", "FAILURE"]
     tool_calls: List[DeepSeekAgentToolCall] = Field(default_factory=list)
+    proposed_actions: List[DeepSeekAgentProposedAction] = Field(default_factory=list)
     final_answer: Optional[str] = None
     clarification_question: Optional[str] = None
     uncertainty_class: Optional[str] = None
@@ -562,8 +570,9 @@ class DeepSeekAIProvider:
         }
 
         schema = {
-            "kind": "TOOL_CALL | FINAL_ANSWER | CLARIFICATION | FAILURE",
+            "kind": "TOOL_CALL | FINAL_ANSWER | CLARIFICATION | PROPOSE_ACTION | FAILURE",
             "tool_calls": [{"tool_name": "string", "arguments": {}, "purpose": "string"}],
+            "proposed_actions": [{"action_type": "ADD_COMMENT", "issue_key": "WSSS-326", "comment_body": "string", "rationale": "string"}],
             "final_answer": "string|null",
             "clarification_question": "string|null",
             "uncertainty_class": "KNOWN|INFERABLE|UNKNOWN|AMBIGUOUS|null",
@@ -577,6 +586,7 @@ class DeepSeekAIProvider:
             "When sprint or planning tools provide aggregate counts, use those counts directly and do not count raw issue lists yourself. "
             "If a project clarification has been resolved, call get_active_sprints with that project_key unless the state already contains a selected sprint. "
             "If clarification feedback says a prior clarification was rejected, respond by calling a tool or answering with grounded evidence. "
+            "If you need to propose a Jira comment write action, output PROPOSE_ACTION with proposed_actions containing ADD_COMMENT, issue_key, exact comment_body, and rationale; never execute writes directly. "
             "Return strict JSON only matching the response schema. "
             "If more information is needed, output CLARIFICATION with a narrow question and candidates. "
             "If tools are needed, output TOOL_CALL with one or more tool calls. "
@@ -668,6 +678,19 @@ class DeepSeekAIProvider:
             if not calls:
                 raise DeepSeekProviderError("Agent step TOOL_CALL returned no tool calls.")
             return AgentStep.tool_calls(calls, uncertainty=UncertaintyClass(step.uncertainty_class) if step.uncertainty_class else None, trace=step.reasoning_trace)
+        if step.kind == "PROPOSE_ACTION":
+            proposals = [
+                {
+                    "action_type": p.action_type,
+                    "issue_key": p.issue_key,
+                    "comment_body": p.comment_body,
+                    "rationale": p.rationale,
+                }
+                for p in step.proposed_actions
+            ]
+            if not proposals:
+                raise DeepSeekProviderError("Agent step PROPOSE_ACTION returned no proposed actions.")
+            return AgentStep.proposal(proposals, uncertainty=UncertaintyClass(step.uncertainty_class) if step.uncertainty_class else None, trace=step.reasoning_trace)
         if step.kind == "FINAL_ANSWER":
             if not step.final_answer:
                 raise DeepSeekProviderError("Agent step FINAL_ANSWER missing final_answer.")

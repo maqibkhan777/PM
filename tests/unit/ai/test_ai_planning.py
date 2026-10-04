@@ -588,6 +588,46 @@ class TestAIPlanningService:
         assert step.next_tool_calls[0].arguments["issue_key"] == "WSSS-1"
 
     @pytest.mark.asyncio
+    async def test_y1_next_agent_step_parses_proposed_action(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": json.dumps(
+                                    {
+                                        "kind": "PROPOSE_ACTION",
+                                        "proposed_actions": [
+                                            {
+                                                "action_type": "ADD_COMMENT",
+                                                "issue_key": "WSSS-326",
+                                                "comment_body": "Please review this issue.",
+                                                "rationale": "Need a human review before execution.",
+                                            }
+                                        ],
+                                        "reasoning_trace": ["Need a comment proposal, not execution."],
+                                    }
+                                ),
+                            }
+                        }
+                    ]
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        provider = DeepSeekAIProvider(api_key="sk-test", client=client)
+        state = AgentState(user_goal="Leave a comment", current_input="Leave a comment")
+        tools = {"get_issue": ToolSpec(name="get_issue", description="inspect issue", parameters_schema={"issue_key": "string"})}
+
+        step = await provider.next_agent_step("Leave a comment", "discord:1", state, tools)
+        assert step.kind == "PROPOSE_ACTION"
+        assert step.proposed_actions[0]["issue_key"] == "WSSS-326"
+        assert step.proposed_actions[0]["comment_body"] == "Please review this issue."
+
+    @pytest.mark.asyncio
     async def test_z_next_agent_step_rejects_malformed_json(self):
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(

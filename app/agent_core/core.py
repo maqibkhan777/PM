@@ -198,6 +198,15 @@ class AgentCore:
                 self._discard_session(session_id=session_id)
                 return {"status": "FAILURE", "error": step.final_answer or "Provider failure."}
 
+            if step.kind == "PROPOSE_ACTION":
+                self._discard_session(session_id=session_id)
+                return {
+                    "status": "PROPOSED_ACTION",
+                    "proposed_actions": step.proposed_actions,
+                    "uncertainty": step.uncertainty_class.value if step.uncertainty_class else None,
+                    "tools_called": state.last_tool_results.get("tools_called", []),
+                }
+
         self._discard_session(session_id=session_id)
         return {
             "status": "FAILED",

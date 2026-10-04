@@ -111,18 +111,22 @@ class NullAIProvider:
         scripted = (state.context or {}).get("scripted_agent_step") if state else None
         if isinstance(scripted, dict):
             return AgentStep(
+                kind=scripted.get("kind", "FINAL_ANSWER"),
                 next_tool_calls=scripted.get("next_tool_calls", []),
                 final_answer=scripted.get("final_answer"),
                 ambiguity_question=scripted.get("ambiguity_question"),
+                proposed_actions=scripted.get("proposed_actions", []),
                 uncertainty_class=scripted.get("uncertainty_class"),
                 reasoning_trace=scripted.get("reasoning_trace", []),
             )
 
         # Fail safely: do not guess when we don't have a tool-loop policy.
         return AgentStep(
+            kind="FAILURE",
             next_tool_calls=[],
             final_answer=None,
             ambiguity_question=None,
+            proposed_actions=[],
             uncertainty_class=None,
             reasoning_trace=["MockAIProvider has no scripted agent step; refusing to guess."],
         )
@@ -135,9 +139,11 @@ class NullAIProvider:
         tools: Dict[str, ToolSpec],
     ) -> AgentStep:
         return AgentStep(
+            kind="FAILURE",
             next_tool_calls=[],
             final_answer=None,
             ambiguity_question=None,
+            proposed_actions=[],
             uncertainty_class=None,
             reasoning_trace=["NullAIProvider cannot generate agent tool decisions."],
         )

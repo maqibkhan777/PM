@@ -27,6 +27,7 @@ class Settings(BaseSettings):
 
     # AI Foundation (Phase 1 Decision Support — Disabled by default)
     AI_ENABLED: bool = False
+    AI_WRITE_ACTIONS_ENABLED: bool = False
     AI_PROVIDER: str = "mock"  # Provider identifier: "mock", "null", or future provider names
     AI_MODEL: Optional[str] = None  # Optional model identifier (e.g. "default")
     AI_BASE_URL: Optional[str] = None  # Optional custom base URL for provider endpoint

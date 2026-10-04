@@ -242,7 +242,7 @@ class ActionEngine:
         # 2. Centrally Determine Approval Policy & Record REQUESTED
         # ----------------------------------------------------------------------
         classification = approval_engine.classify(action)
-        action.requires_approval = (classification == ApprovalClassification.APPROVAL_REQUIRED)
+        action.requires_approval = bool(action.requires_approval or classification == ApprovalClassification.APPROVAL_REQUIRED)
         action.status = ActionStatus.REQUESTED
 
         existing_by_id = self.action_repo.get_by_action_id(action.action_id)
@@ -507,6 +507,34 @@ class ActionEngine:
         connector = self.get_connector(target_system)
         try:
             result_data = await connector.execute_action(action)
+            verification_details: Dict[str, Any] = {}
+            if action.action_type == ActionType.ADD_COMMENT:
+                client = getattr(connector, "client", None)
+                comment_body = str(action.parameters.get("comment") or action.parameters.get("body") or "").strip()
+                if client and hasattr(client, "get_issue"):
+                    live_issue = await client.get_issue(target_id)
+                    if not live_issue:
+                        raise RuntimeError(f"Live Jira issue '{target_id}' could not be re-read after comment execution.")
+                    verification_details["live_issue_verified"] = True
+                if client and hasattr(client, "get_issue_comments"):
+                    comments = await client.get_issue_comments(target_id)
+                    if not isinstance(comments, list):
+                        raise RuntimeError(f"Live Jira comments for '{target_id}' could not be verified.")
+                    comment_id = str((result_data or {}).get("id") or (result_data or {}).get("comment_id") or "").strip()
+                    matched = False
+                    for comment in comments:
+                        if not isinstance(comment, dict):
+                            continue
+                        body = str(comment.get("body") or "").strip()
+                        cid = str(comment.get("id") or "").strip()
+                        if comment_body and body == comment_body and (not comment_id or cid == comment_id):
+                            matched = True
+                            verification_details["verified_comment_id"] = cid or comment_id
+                            break
+                    if not matched:
+                        raise RuntimeError(f"Verified comments on '{target_id}' did not contain the newly added comment body.")
+                if verification_details:
+                    result_data = {**(result_data or {}), **verification_details}
             action.status = ActionStatus.COMPLETED
             action.result_data = result_data
             self.action_repo.update_result(

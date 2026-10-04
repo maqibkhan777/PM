@@ -28,6 +28,8 @@ from app.database.repositories import (
     JiraIssueLinkRepository,
     ArtifactRepository,
 )
+from app.core.actions.base import BaseAction
+from app.core.models.enums import ActionStatus, ActionType
 from app.core.planning.dag import DependencyGraph
 from app.core.planning.artifacts import ArtifactEngine
 from app.core.planning.queue_composer import ResourceQueueComposer
@@ -52,6 +54,17 @@ logger = logging.getLogger(__name__)
 # Shared short-term conversation memory for Discord AI sessions.
 # Keyed by channel/user session_id and bounded by AgentCore TTL.
 AI_AGENT_SESSION_STORE: Dict[str, Dict[str, Any]] = {}
+# Separate pending-write store so approval state survives AgentCore session resets.
+AI_PENDING_WRITE_ACTIONS: Dict[str, Dict[str, Any]] = {}
+
+
+class _LazyActionEngineProxy:
+    def __getattr__(self, item: str) -> Any:
+        from app.core.actions.engine import action_engine as real_action_engine
+        return getattr(real_action_engine, item)
+
+
+action_engine = _LazyActionEngineProxy()
 
 
 class AIRequestIntent(str, Enum):
@@ -91,6 +104,23 @@ def _format_clarification_response(question: str, candidates: List[Dict[str, Any
     if rendered == 0 and len(candidates) > 0:
         lines.append(f"... and {len(candidates)} more")
     return "\n".join(lines)
+
+
+def _store_pending_write(session_id: str, pending: Dict[str, Any]) -> None:
+    AI_PENDING_WRITE_ACTIONS[session_id] = pending
+
+
+def _clear_pending_write(session_id: str) -> None:
+    AI_PENDING_WRITE_ACTIONS.pop(session_id, None)
+
+
+def _is_approval_reply(prompt: str) -> Optional[str]:
+    text = (prompt or "").strip().lower()
+    if text in {"approve", "approved", "yes", "confirm", "okay", "ok"}:
+        return "approve"
+    if text in {"reject", "rejected", "no", "decline"}:
+        return "reject"
+    return None
 
 
 class AIDiscordRouterService:
@@ -201,30 +231,129 @@ class AIDiscordRouterService:
                 res = "ℹ️ PM AI assistant is disabled in system configuration (`AI_ENABLED=false`)."
                 outcome = "COMPLETED"
             else:
-                from app.services.ai.config import resolve_ai_provider
-                ai_provider = resolve_ai_provider()
-                from app.services.ai.agent_provider import AgentProvider
-                from app.services.ai.pm_tools import build_tool_registry
-                tool_registry = build_tool_registry(manager=self.mgr)
-                agent_provider = AgentProvider(ai_provider)
-                from app.agent_core.core import AgentCore
-                core = AgentCore(provider=ai_provider, tool_registry=tool_registry, agent_provider=agent_provider, session_store=AI_AGENT_SESSION_STORE)  # type: ignore[arg-type]
-                agent_res = await core.run(user_goal=prompt, actor=actor, session_id=session_id or f"{channel_id}:{actor_id}")
-                if agent_res.get("status") == "NEEDS_CLARIFICATION":
-                    res = _format_clarification_response(agent_res["question"], agent_res.get("candidates", []))
+                session_key = session_id or f"{channel_id}:{actor_id}"
+                pending_write = AI_PENDING_WRITE_ACTIONS.get(session_key)
+                approval_cmd = _is_approval_reply(prompt)
+                if pending_write and approval_cmd in {"approve", "reject"}:
+                    if approval_cmd == "approve":
+                        action_id = str(pending_write.get("action_id") or "").strip()
+                        if not action_id:
+                            res = "❌ No pending approval action is available to approve."
+                        else:
+                            approval_res = await action_engine.approve_action(action_id=action_id, approved_by=actor)
+                            if approval_res.success:
+                                _clear_pending_write(session_key)
+                                res = (
+                                    f"✅ Approved and posted the Jira comment to {pending_write.get('issue_key')}. "
+                                    f"Action ID: {action_id}"
+                                )
+                            else:
+                                res = f"❌ Approval failed for action {action_id}.\nReason: {approval_res.error_message or 'Action failed'}"
+                    else:
+                        action_id = str(pending_write.get("action_id") or "").strip()
+                        if not action_id:
+                            res = "❌ No pending approval action is available to reject."
+                        else:
+                            reject_res = await action_engine.reject_action(action_id=action_id, rejected_by=actor, reason="Rejected in Discord")
+                            if reject_res.success:
+                                _clear_pending_write(session_key)
+                                res = f"✅ Rejected the pending Jira comment proposal for {pending_write.get('issue_key')}."
+                            else:
+                                res = f"❌ Rejection failed for action {action_id}.\nReason: {reject_res.error_message or 'Action failed'}"
                     outcome = "COMPLETED"
-                elif agent_res.get("status") == "CANCELLED":
-                    res = str(agent_res.get("answer") or "OK, cancelled.")
-                    outcome = "COMPLETED"
-                elif agent_res.get("status") == "COMPLETED" and agent_res.get("answer"):
-                    res = str(agent_res.get("answer"))
+                elif not getattr(settings, "AI_ENABLED", False):
+                    res = "ℹ️ PM AI assistant is disabled in system configuration (`AI_ENABLED=false`)."
                     outcome = "COMPLETED"
                 else:
-                    fallback_used = True
-                    logger.info("Using legacy compatibility fallback because AgentCore returned no answer/failure.")
-                    intent = self.classify_intent(prompt)
-                    res = await self._legacy_compatibility_fallback(prompt, actor=actor, thread_context=thread_context, intent=intent)
-                outcome = "COMPLETED"
+                    from app.services.ai.config import resolve_ai_provider
+                    ai_provider = resolve_ai_provider()
+                    from app.services.ai.agent_provider import AgentProvider
+                    from app.services.ai.pm_tools import build_tool_registry
+                    tool_registry = build_tool_registry(manager=self.mgr)
+                    agent_provider = AgentProvider(ai_provider)
+                    from app.agent_core.core import AgentCore
+                    core = AgentCore(provider=ai_provider, tool_registry=tool_registry, agent_provider=agent_provider, session_store=AI_AGENT_SESSION_STORE)  # type: ignore[arg-type]
+                    agent_res = await core.run(user_goal=prompt, actor=actor, session_id=session_id or f"{channel_id}:{actor_id}")
+                    if agent_res.get("status") == "NEEDS_CLARIFICATION":
+                        res = _format_clarification_response(agent_res["question"], agent_res.get("candidates", []))
+                        outcome = "COMPLETED"
+                    elif agent_res.get("status") == "CANCELLED":
+                        res = str(agent_res.get("answer") or "OK, cancelled.")
+                        outcome = "COMPLETED"
+                    elif agent_res.get("status") == "PROPOSED_ACTION":
+                        proposed_actions = agent_res.get("proposed_actions") or []
+                        if not getattr(settings, "AI_WRITE_ACTIONS_ENABLED", False):
+                            write_lines = [
+                                "📝 **Proposed Jira Comment**",
+                                "",
+                                "AI write actions are currently disabled in configuration (`AI_WRITE_ACTIONS_ENABLED=false`).",
+                            ]
+                            for idx, proposed in enumerate(proposed_actions, 1):
+                                if not isinstance(proposed, dict):
+                                    continue
+                                write_lines.extend([
+                                    f"• Proposal {idx}:",
+                                    f"  - Issue: {proposed.get('issue_key')}",
+                                    f"  - Comment: {proposed.get('comment_body')}",
+                                    f"  - Rationale: {proposed.get('rationale') or 'N/A'}",
+                                ])
+                            res = "\n".join(write_lines)
+                            outcome = "COMPLETED"
+                        else:
+                            proposed = proposed_actions[0] if proposed_actions and isinstance(proposed_actions[0], dict) else {}
+                            issue_key = str(proposed.get("issue_key") or "").strip().upper()
+                            comment_body = str(proposed.get("comment_body") or "").strip()
+                            rationale = str(proposed.get("rationale") or "").strip()
+                            if not issue_key or not comment_body:
+                                res = "❌ Proposed write action was malformed."
+                                outcome = "FAILED"
+                            else:
+                                action = BaseAction(
+                                    action_type=ActionType.ADD_COMMENT,
+                                    target_system="jira",
+                                    target_id=issue_key,
+                                    parameters={
+                                        "task_key": issue_key,
+                                        "comment": comment_body,
+                                        "body": comment_body,
+                                        "rationale": rationale,
+                                    },
+                                    requested_by=actor,
+                                    requires_approval=True,
+                                )
+                                pending_res = await action_engine.execute(action)
+                                if pending_res.status == ActionStatus.PENDING_APPROVAL:
+                                    _store_pending_write(
+                                        session_key,
+                                        {
+                                            "action_id": pending_res.action_id,
+                                            "issue_key": issue_key,
+                                            "comment_body": comment_body,
+                                            "rationale": rationale,
+                                            "created_at": utc_now_iso(),
+                                        },
+                                    )
+                                    res = (
+                                        "📝 **Pending Jira Comment Approval**\n"
+                                        f"Issue: {issue_key}\n"
+                                        f"Comment: {comment_body}\n"
+                                        f"Rationale: {rationale or 'N/A'}\n"
+                                        f"Approval ID: `{pending_res.action_id}`\n"
+                                        "Reply `approve` or `reject` in Discord to continue."
+                                    )
+                                    outcome = "COMPLETED"
+                                else:
+                                    res = f"❌ Could not stage comment approval.\nReason: {pending_res.error_message or 'Action failed'}"
+                                    outcome = "FAILED"
+                    elif agent_res.get("status") == "COMPLETED" and agent_res.get("answer"):
+                        res = str(agent_res.get("answer"))
+                        outcome = "COMPLETED"
+                    else:
+                        fallback_used = True
+                        logger.info("Using legacy compatibility fallback because AgentCore returned no answer/failure.")
+                        intent = self.classify_intent(prompt)
+                        res = await self._legacy_compatibility_fallback(prompt, actor=actor, thread_context=thread_context, intent=intent)
+                        outcome = "COMPLETED"
 
             duration_ms = round((time.monotonic() - t0) * 1000, 2)
             self.audit_service.log_action(
