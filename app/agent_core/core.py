@@ -82,6 +82,9 @@ class AgentCore:
             except Exception as e:
                 self._save_session(session_id=session_id, state=state)
                 return {"status": "FAILURE", "error": f"Provider failure: {e}"}
+            if not isinstance(step, AgentStep):
+                self._save_session(session_id=session_id, state=state)
+                return {"status": "FAILURE", "error": "Provider returned malformed agent step."}
 
             # Audit (token-efficient): only log tool names and outcomes; never dump raw payload.
             state.last_uncertainty = step.uncertainty_class
@@ -143,12 +146,18 @@ class AgentCore:
                 if verdict["status"] == ToolResultStatus.EMPTY:
                     self._save_session(session_id=session_id, state=state)
                     return {"status": "FAILURE", "error": verdict["message"]}
+                if verdict["status"] == ToolResultStatus.ERROR:
+                    self._save_session(session_id=session_id, state=state)
+                    return {"status": "FAILURE", "error": verdict["message"]}
                 if verdict["status"] == ToolResultStatus.NOT_AVAILABLE:
                     state.context.setdefault("unavailable_tools", {})[tool_name] = verdict["message"]
                 if verdict["status"] == ToolResultStatus.AVAILABLE:
                     state.known_facts[tool_name] = verdict["value"]
                 if verdict["status"] == ToolResultStatus.INFERABLE:
-                    state.inferable_facts[tool_name] = verdict["value"]
+                    state.inferable_facts[tool_name] = {
+                        "value": verdict["value"],
+                        "derivation": verdict.get("derivation", []),
+                    }
 
             if step.final_answer:
                 self._save_session(session_id=session_id, state=state)
@@ -214,8 +223,29 @@ class AgentCore:
             return {"status": ToolResultStatus.NOT_AVAILABLE, "message": reason}
         if status == ToolResultStatus.INSUFFICIENT_DATA:
             if result.get("derivation"):
-                return {"status": ToolResultStatus.INFERABLE, "value": result.get("value"), "derivation": result.get("derivation"), "message": str(result.get("reason") or "")}
-            return {"status": ToolResultStatus.AMBIGUOUS, "clarification_question": AmbiguityQuestion(question=str(result.get("reason") or "I need clarification."), candidates=[])}
+                return {
+                    "status": ToolResultStatus.INFERABLE,
+                    "value": result.get("value"),
+                    "derivation": result.get("derivation"),
+                    "message": str(result.get("reason") or ""),
+                }
+            return {
+                "status": ToolResultStatus.INSUFFICIENT_DATA,
+                "message": str(result.get("reason") or "Insufficient data to conclude."),
+            }
+        if status == ToolResultStatus.INFERABLE:
+            derivation = result.get("derivation")
+            if not derivation or not isinstance(derivation, list) or not any(str(item).strip() for item in derivation):
+                return {
+                    "status": ToolResultStatus.ERROR,
+                    "message": f"Tool '{tool_name}' marked inferable without supporting derivation.",
+                }
+            return {
+                "status": ToolResultStatus.INFERABLE,
+                "value": result.get("value"),
+                "derivation": derivation,
+                "message": str(result.get("reason") or ""),
+            }
         if status == ToolResultStatus.AVAILABLE:
             return {"status": ToolResultStatus.AVAILABLE, "value": result.get("value")}
         return {"status": ToolResultStatus.ERROR, "message": str(result.get("reason") or "Unknown tool result error.")}
