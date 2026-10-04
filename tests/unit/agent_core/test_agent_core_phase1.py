@@ -36,11 +36,11 @@ async def test_tool_selection_and_multi_tool_accumulation():
 
     steps = [
         AgentStep(
+            kind="TOOL_CALL",
             next_tool_calls=[ToolCall(tool_name="tool1", arguments={}), ToolCall(tool_name="tool2", arguments={"k": 7})],
-            final_answer="done",
-            ambiguity_question=None,
             uncertainty_class=UncertaintyClass.KNOWN,
             reasoning_trace=["scripted"],
+            final_answer="done",
         )
     ]
 
@@ -72,6 +72,7 @@ async def test_ambiguous_user_produces_clarification_question():
 
     steps = [
         AgentStep(
+            kind="CLARIFICATION",
             next_tool_calls=[ToolCall(tool_name="find_user", arguments={})],
             final_answer=None,
             ambiguity_question=aq,
@@ -101,6 +102,7 @@ async def test_single_sprint_without_asking_clarification():
 
     steps = [
         AgentStep(
+            kind="TOOL_CALL",
             next_tool_calls=[ToolCall(tool_name="get_active_sprints", arguments={})],
             final_answer="single sprint chosen",
             ambiguity_question=None,
@@ -128,6 +130,7 @@ async def test_write_tools_only_emit_proposed_actions():
 
     steps = [
         AgentStep(
+            kind="TOOL_CALL",
             next_tool_calls=[ToolCall(tool_name="plan_write", arguments={"issue": "WSSS-1"})],
             final_answer="proposal ready",
             ambiguity_question=None,

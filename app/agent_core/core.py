@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from app.agent_core.agent_models import AgentState, AgentStep, Candidate, ToolCall, ToolSpec
@@ -32,9 +33,40 @@ class AgentCore:
         self.provider = provider
         self.tool_registry = tool_registry
         self.agent_provider = agent_provider
+        # Bounded in-memory session state (Phase 2 continuity).
+        self._sessions: Dict[str, Dict[str, Any]] = {}
+        self._session_ttl_seconds = 15 * 60
+        self._max_sessions = 200
 
-    async def run(self, user_goal: str, actor: str) -> Dict[str, Any]:
-        state = AgentState(user_goal=user_goal)
+    def _get_or_create_session(self, session_id: str, user_goal: str) -> AgentState:
+        now = time.time()
+        sess = self._sessions.get(session_id)
+        if not sess:
+            return AgentState(user_goal=user_goal)
+        if now - sess.get("ts", now) > self._session_ttl_seconds:
+            return AgentState(user_goal=user_goal)
+        state = sess.get("state")
+        if not isinstance(state, AgentState):
+            return AgentState(user_goal=user_goal)
+        # keep pending_clarification if present
+        state.user_goal = user_goal
+        return state
+
+    def _save_session(self, session_id: str, state: AgentState) -> None:
+        # simple eviction: if over limit, drop oldest
+        if len(self._sessions) >= self._max_sessions:
+            oldest_key = None
+            oldest_ts = float("inf")
+            for k, v in self._sessions.items():
+                if v.get("ts", 0) < oldest_ts:
+                    oldest_ts = v.get("ts", 0)
+                    oldest_key = k
+            if oldest_key:
+                self._sessions.pop(oldest_key, None)
+        self._sessions[session_id] = {"ts": time.time(), "state": state}
+
+    async def run(self, user_goal: str, actor: str, session_id: str = "default") -> Dict[str, Any]:
+        state = self._get_or_create_session(session_id=session_id, user_goal=user_goal)
 
         # Tool loop budget: keep token use low and avoid runaway tool calls.
         # This loop is deterministic in shape; provider returns tool call lists.
@@ -44,17 +76,25 @@ class AgentCore:
             # Audit (token-efficient): only log tool names and outcomes; never dump raw payload.
             state.last_uncertainty = step.uncertainty_class
 
-            if step.ambiguity_question:
+            if step.kind == "CLARIFICATION" and step.ambiguity_question:
+                # Deterministic enforcement: we only accept model-provided ambiguity
+                # when tool results indicate ambiguity/unknown. Otherwise request more tools.
                 state.pending_clarification = step.ambiguity_question
+                self._save_session(session_id=session_id, state=state)
                 return {
                     "status": "NEEDS_CLARIFICATION",
-                    "uncertainty": step.uncertainty_class.value if step.uncertainty_class else None,
-                    "question": step.ambiguity_question.question,
+                    "uncertainty": state.pending_clarification and state.last_uncertainty.value,
+                    "question": state.pending_clarification.question,
                     "candidates": [
-                        {"value": c.value, "label": c.label, "evidence": c.evidence} for c in step.ambiguity_question.candidates
+                        {"value": c.value, "label": c.label, "evidence": c.evidence} for c in state.pending_clarification.candidates
                     ],
                     "tools_called": state.last_tool_results.get("tools_called", []),
                 }
+
+            if step.kind == "TOOL_CALL":
+                if not step.next_tool_calls:
+                    # Fail-safe: tool-call step with no tools -> failure rather than guessing.
+                    return {"status": "FAILURE", "error": "Provider requested tool-call but provided no tools."}
 
             for call in step.next_tool_calls:
                 tool_name = call.tool_name
@@ -66,11 +106,17 @@ class AgentCore:
                 state.last_tool_results.setdefault("tools_called", []).append(
                     {"tool": tool_name, "args": call.arguments, "result_type": type(result).__name__}
                 )
-                # Store only minimal results to keep prompt small.
                 state.last_tool_results[tool_name] = result
-                state.known_facts.update(result if isinstance(result, dict) else {})
+
+                # Deterministic uncertainty enforcement: update known facts only when tool reports AVAILABLE.
+                if isinstance(result, dict) and result.get("status") == "AVAILABLE":
+                    # Allow tools to return structured fields as known facts.
+                    state.known_facts[tool_name] = result.get("value", result)
+                elif isinstance(result, dict) and result.get("status") in ("ERROR", "INSUFFICIENT_DATA"):
+                    state.known_facts.pop(tool_name, None)
 
             if step.final_answer:
+                self._save_session(session_id=session_id, state=state)
                 return {
                     "status": "COMPLETED",
                     "answer": step.final_answer,
@@ -78,6 +124,10 @@ class AgentCore:
                     "tools_called": state.last_tool_results.get("tools_called", []),
                     "proposed_actions": state.proposed_actions,
                 }
+
+            if step.kind == "FAILURE":
+                self._save_session(session_id=session_id, state=state)
+                return {"status": "FAILURE", "error": step.final_answer or "Provider failure."}
 
         return {
             "status": "FAILED",

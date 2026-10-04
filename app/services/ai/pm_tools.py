@@ -30,9 +30,32 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None) -> ToolRegist
     async def get_issue(args: Dict[str, Any]) -> Dict[str, Any]:
         key = str(args.get("issue_key") or "").upper().strip()
         if not key:
-            return {"error": "issue_key_required"}
+            return {"status": "ERROR", "tool": "get_issue", "reason": "issue_key_required"}
         issue = issue_repo.get_by_key(key)
-        return issue or {}
+        if not issue:
+            return {"status": "NOT_AVAILABLE", "tool": "get_issue", "reason": "No projected issue for key."}
+        # Return only bounded metadata; no raw DB blob.
+        return {
+            "status": "AVAILABLE",
+            "tool": "get_issue",
+            "value": {
+                "key": issue.get("jira_issue_key"),
+                "summary": issue.get("summary"),
+                "status": issue.get("status"),
+                "priority": issue.get("priority"),
+                "assignee": issue.get("assignee"),
+                "reporter": issue.get("creator_id"),
+                "type": issue.get("issue_type"),
+                "project": issue.get("project_key"),
+                "sprint": None,
+                "due_date": issue.get("due_date"),
+                "labels": issue.get("labels"),
+                "links": [],  # keep lightweight in Phase 2
+                "updated_at": issue.get("updated_at"),
+                "last_activity_at": issue.get("last_activity_at"),
+                "workflow_metadata": {"team_group": issue.get("team_group")},
+            },
+        }
 
     registry.register(
         "get_issue",
@@ -43,7 +66,7 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None) -> ToolRegist
     async def search_issues(args: Dict[str, Any]) -> Dict[str, Any]:
         q = str(args.get("query") or "").strip().lower()
         if not q:
-            return {"issues": []}
+            return {"status": "ERROR", "tool": "search_issues", "reason": "query_required"}
         # Projection-only search (token-efficient): scan recent local issues and filter.
         all_issues = issue_repo.list_all(limit=200)
         matches: List[Dict[str, Any]] = []
@@ -52,7 +75,23 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None) -> ToolRegist
             summary = str(it.get("summary") or "").lower()
             if q in key.lower() or q in summary:
                 matches.append(it)
-        return {"issues": matches}
+        if not matches:
+            return {"status": "EMPTY", "tool": "search_issues", "value": []}
+        # Provide bounded match objects only.
+        bounded = []
+        for m in matches:
+            bounded.append(
+                {
+                    "key": m.get("jira_issue_key"),
+                    "summary": m.get("summary"),
+                    "status": m.get("status"),
+                    "priority": m.get("priority"),
+                    "assignee": m.get("assignee"),
+                    "project": m.get("project_key"),
+                    "due_date": m.get("due_date"),
+                }
+            )
+        return {"status": "AVAILABLE", "tool": "search_issues", "value": bounded}
 
     registry.register(
         "search_issues",
@@ -100,9 +139,33 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None) -> ToolRegist
     )
 
     async def find_user(args: Dict[str, Any]) -> Dict[str, Any]:
-        # Minimal: users are inferred later; return empty now to force clarification behavior.
+        from app.database.repositories import EmployeeRoleRepository
+
+        repo = EmployeeRoleRepository(mgr)
         query = str(args.get("query") or "").strip()
-        return {"users": [] if query else []}
+        if not query:
+            return {"status": "ERROR", "tool": "find_user", "reason": "query_required"}
+
+        # Deterministic mapping by display name substring (projection only).
+        matches = []
+        for rec in repo.list_assignments():
+            dn = str(rec.get("display_name") or "").strip()
+            if query.lower() in dn.lower():
+                matches.append(
+                    {
+                        "account_id": rec.get("account_id"),
+                        "display_name": dn,
+                        "role": rec.get("role"),
+                        "designation": rec.get("designation"),
+                        "role_category": rec.get("role_category"),
+                    }
+                )
+
+        if not matches:
+            return {"status": "NOT_AVAILABLE", "tool": "find_user", "reason": "No projection match."}
+        if len(matches) == 1:
+            return {"status": "AVAILABLE", "tool": "find_user", "value": matches[0]}
+        return {"status": "INSUFFICIENT_DATA", "tool": "find_user", "reason": "Multiple matches.", "candidates": matches}
 
     registry.register(
         "find_user",
