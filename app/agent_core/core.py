@@ -448,6 +448,13 @@ class AgentCore:
 
     def _goal_requires_sprint_resolution(self, state: AgentState) -> bool:
         text = f"{state.user_goal} {state.current_input}".lower()
+        if self._looks_like_issue_key(text):
+            return False
+        if state.selected_issue:
+            return False
+        for call in state.last_tool_results.get("tools_called", []):
+            if isinstance(call, dict) and call.get("tool") in {"get_issue", "search_issues"}:
+                return False
         return bool(
             re.search(r"\bsprint\b", text)
             or "on track" in text
@@ -467,7 +474,7 @@ class AgentCore:
         return False
 
     def _looks_like_issue_key(self, text: str) -> bool:
-        return bool(re.search(r"\b[A-Z][A-Z0-9]+-\d+\b", text))
+        return bool(re.search(r"\b[A-Z][A-Z0-9]+-\d+\b", text, re.IGNORECASE))
 
     def _infer_clarification_kind(self, tool_name: str) -> str:
         if tool_name == "get_active_sprints":

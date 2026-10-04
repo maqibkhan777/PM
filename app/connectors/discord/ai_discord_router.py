@@ -213,6 +213,9 @@ class AIDiscordRouterService:
                 if agent_res.get("status") == "NEEDS_CLARIFICATION":
                     res = _format_clarification_response(agent_res["question"], agent_res.get("candidates", []))
                     outcome = "COMPLETED"
+                elif agent_res.get("status") == "CANCELLED":
+                    res = str(agent_res.get("answer") or "OK, cancelled.")
+                    outcome = "COMPLETED"
                 elif agent_res.get("status") == "COMPLETED" and agent_res.get("answer"):
                     res = str(agent_res.get("answer"))
                     outcome = "COMPLETED"

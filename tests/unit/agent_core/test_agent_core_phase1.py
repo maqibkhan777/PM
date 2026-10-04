@@ -393,6 +393,20 @@ async def test_sprint_goal_forces_active_sprint_lookup_before_final_answer():
 
 
 @pytest.mark.asyncio
+async def test_issue_key_goal_skips_sprint_gate_and_allows_final_answer():
+    class IssueAwareProvider:
+        async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
+            return AgentStep.final("Issue answer grounded.")
+
+    provider = IssueAwareProvider()
+    core = AgentCore(provider=provider, tool_registry=ToolRegistry(), agent_provider=AgentProvider(provider))  # type: ignore[arg-type]
+
+    res = await core.run("Is WSSS-326 on track?", actor="u1", session_id="issue-gate")
+    assert res["status"] == "COMPLETED"
+    assert res["answer"] == "Issue answer grounded."
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("reply", ["cancel", "nevermind", "stop"])
 async def test_pending_clarification_can_be_cancelled_without_model_call(reply):
     class NoCallProvider:

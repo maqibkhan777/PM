@@ -652,6 +652,34 @@ async def test_follow_up_discord_reply_resumes_pending_clarification(mention_han
 
 
 @pytest.mark.asyncio
+async def test_cancelled_agent_response_returns_directly_without_fallback(mention_handler, monkeypatch):
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_ENABLED", True)
+    monkeypatch.setattr(settings, "DISCORD_AI_BOT_TOKEN", "mock_ai_token")
+    monkeypatch.setattr(settings, "DISCORD_AI_APPLICATION_ID", AI_BOT_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_CHANNEL_IDS", TEST_CHANNEL_ID)
+    monkeypatch.setattr(settings, "DISCORD_AI_ALLOWED_USER_IDS", AUTHORIZED_USER_ID)
+    monkeypatch.setattr(settings, "AI_ENABLED", True)
+
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    with patch("app.agent_core.core.AgentCore.run", new=AsyncMock(return_value={"status": "CANCELLED", "answer": "OK, cancelled."})):
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=MagicMock(status_code=200))
+        message_payload = {
+            "id": "msg_cancelled",
+            "channel_id": TEST_CHANNEL_ID,
+            "content": f"<@{AI_BOT_ID}> cancel",
+            "author": {"id": AUTHORIZED_USER_ID, "bot": False},
+            "mentions": [{"id": AI_BOT_ID}],
+        }
+        res = await mention_handler.handle_message_create(message_payload, http_client=mock_client)
+
+    assert res["status"] == "processed"
+    assert res["response"] == "OK, cancelled."
+    assert "PM AI Insight" not in str(res["response"])
+
+
+@pytest.mark.asyncio
 async def test_sequential_questions_same_channel_user_start_new_goal_after_completion(mention_handler, monkeypatch):
     monkeypatch.setattr(settings, "DISCORD_AI_BOT_ENABLED", True)
     monkeypatch.setattr(settings, "DISCORD_AI_BOT_TOKEN", "mock_ai_token")
