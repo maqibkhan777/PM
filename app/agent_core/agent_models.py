@@ -28,6 +28,7 @@ class Candidate:
     value: str
     label: str
     evidence: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class AmbiguityQuestion:
 
     question: str
     candidates: List[Candidate]
+    kind: str = "issue"
 
 
 @dataclass

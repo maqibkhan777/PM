@@ -82,7 +82,37 @@ class AgentCore:
             # If the previous turn ended in a clarification and the user replied with a narrow answer,
             # capture that reply and resume the original goal.
             if state.pending_clarification:
-                self._apply_clarification_response(state)
+                clarification_resolution = self._apply_clarification_response(state)
+                if clarification_resolution == "NO_MATCH":
+                    note = "I didn't recognise that."
+                    question = state.pending_clarification.question
+                    if not question.lower().startswith(note.lower()):
+                        question = f"{note} {question}"
+                    self._save_session(session_id=session_id, state=state)
+                    return {
+                        "status": "NEEDS_CLARIFICATION",
+                        "uncertainty": state.last_uncertainty.value if state.last_uncertainty else None,
+                        "question": question,
+                        "clarification_kind": state.pending_clarification.kind,
+                        "candidates": [
+                            {
+                                "value": c.value,
+                                "label": c.label,
+                                "evidence": c.evidence,
+                                **(c.metadata or {}),
+                            }
+                            for c in state.pending_clarification.candidates
+                        ],
+                        "tools_called": state.last_tool_results.get("tools_called", []),
+                    }
+                if clarification_resolution == "MATCHED_PROJECT":
+                    project_key = state.selected_project
+                    if project_key:
+                        try:
+                            if await self._process_tool_call(state, ToolCall(tool_name="get_active_sprints", arguments={"project_key": project_key}), session_id=session_id):
+                                return await self._handle_tool_outcome(state, session_id)
+                        except RuntimeError as exc:
+                            return {"status": "FAILURE", "error": str(exc)}
 
             try:
                 step: AgentStep = await self._provider_next_step(state=state, actor=actor)
@@ -104,8 +134,9 @@ class AgentCore:
                         "status": "NEEDS_CLARIFICATION",
                         "uncertainty": state.pending_clarification and state.last_uncertainty.value,
                         "question": state.pending_clarification.question,
+                        "clarification_kind": state.pending_clarification.kind,
                         "candidates": [
-                            {"value": c.value, "label": c.label, "evidence": c.evidence} for c in state.pending_clarification.candidates
+                            {"value": c.value, "label": c.label, "evidence": c.evidence, **(c.metadata or {})} for c in state.pending_clarification.candidates
                         ],
                         "tools_called": state.last_tool_results.get("tools_called", []),
                     }
@@ -128,54 +159,12 @@ class AgentCore:
                     return {"status": "FAILURE", "error": "Provider requested tool-call but provided no tools."}
 
             for call in step.next_tool_calls:
-                tool_name = call.tool_name
-                registered = self.tool_registry.get(tool_name)
-                if not registered:
-                    self._discard_session(session_id=session_id)
-                    return {"status": "FAILURE", "error": f"Unknown tool requested by provider: {tool_name}"}
-                if not registered.spec.read_only or registered.spec.mutates_external_system or registered.spec.requires_approval:
-                    self._discard_session(session_id=session_id)
-                    return {"status": "FAILURE", "error": f"Tool '{tool_name}' is not permitted in read-only phase."}
-
                 try:
-                    result = await registered.fn(call.arguments)
-                except Exception as e:
-                    self._discard_session(session_id=session_id)
-                    return {"status": "FAILURE", "error": f"Tool '{tool_name}' failed: {e}"}
-                state.last_tool_results.setdefault("tools_called", []).append(
-                    {"tool": tool_name, "args": call.arguments, "result_type": type(result).__name__}
-                )
-                state.last_tool_results[tool_name] = result
-
-                verdict = self._normalize_tool_result(tool_name, result)
-                if verdict["status"] == ToolResultStatus.AMBIGUOUS:
-                    q = verdict["clarification_question"]
-                    state.pending_clarification = q
-                    self._save_session(session_id=session_id, state=state)
-                    return {
-                        "status": "NEEDS_CLARIFICATION",
-                        "uncertainty": ToolResultStatus.AMBIGUOUS.value,
-                        "question": q.question,
-                        "candidates": [
-                            {"value": c.value, "label": c.label, "evidence": c.evidence} for c in q.candidates
-                        ],
-                        "tools_called": state.last_tool_results.get("tools_called", []),
-                    }
-                if verdict["status"] == ToolResultStatus.EMPTY:
-                    self._discard_session(session_id=session_id)
-                    return {"status": "FAILURE", "error": verdict["message"]}
-                if verdict["status"] == ToolResultStatus.ERROR:
-                    self._discard_session(session_id=session_id)
-                    return {"status": "FAILURE", "error": verdict["message"]}
-                if verdict["status"] == ToolResultStatus.NOT_AVAILABLE:
-                    state.context.setdefault("unavailable_tools", {})[tool_name] = verdict["message"]
-                if verdict["status"] == ToolResultStatus.AVAILABLE:
-                    state.known_facts[tool_name] = verdict["value"]
-                if verdict["status"] == ToolResultStatus.INFERABLE:
-                    state.inferable_facts[tool_name] = {
-                        "value": verdict["value"],
-                        "derivation": verdict.get("derivation", []),
-                    }
+                    outcome = await self._process_tool_call(state, call, session_id=session_id)
+                except RuntimeError as exc:
+                    return {"status": "FAILURE", "error": str(exc)}
+                if outcome:
+                    return await self._handle_tool_outcome(state, session_id)
 
             if step.final_answer:
                 self._discard_session(session_id=session_id)
@@ -211,6 +200,66 @@ class AgentCore:
         # Fallback: if provider doesn't support tool calling, force completion error.
         raise RuntimeError("No AgentProvider configured for tool-calling")
 
+    async def _process_tool_call(self, state: AgentState, call: ToolCall, session_id: str) -> bool:
+        tool_name = call.tool_name
+        registered = self.tool_registry.get(tool_name)
+        if not registered:
+            self._discard_session(session_id=session_id)
+            raise RuntimeError(f"Unknown tool requested by provider: {tool_name}")
+        if not registered.spec.read_only or registered.spec.mutates_external_system or registered.spec.requires_approval:
+            self._discard_session(session_id=session_id)
+            raise RuntimeError(f"Tool '{tool_name}' is not permitted in read-only phase.")
+
+        try:
+            result = await registered.fn(call.arguments)
+        except Exception as e:
+            self._discard_session(session_id=session_id)
+            raise RuntimeError(f"Tool '{tool_name}' failed: {e}")
+        state.last_tool_results.setdefault("tools_called", []).append(
+            {"tool": tool_name, "args": call.arguments, "result_type": type(result).__name__}
+        )
+        state.last_tool_results[tool_name] = result
+
+        verdict = self._normalize_tool_result(tool_name, result)
+        state.context["last_tool_verdict"] = {"tool": tool_name, **verdict}
+        if verdict["status"] == ToolResultStatus.AMBIGUOUS:
+            q = verdict["clarification_question"]
+            state.pending_clarification = q
+            self._save_session(session_id=session_id, state=state)
+            return True
+        if verdict["status"] == ToolResultStatus.EMPTY:
+            self._discard_session(session_id=session_id)
+            raise RuntimeError(verdict["message"])
+        if verdict["status"] == ToolResultStatus.ERROR:
+            self._discard_session(session_id=session_id)
+            raise RuntimeError(verdict["message"])
+        if verdict["status"] == ToolResultStatus.NOT_AVAILABLE:
+            state.context.setdefault("unavailable_tools", {})[tool_name] = verdict["message"]
+        if verdict["status"] == ToolResultStatus.AVAILABLE:
+            state.known_facts[tool_name] = verdict["value"]
+        if verdict["status"] == ToolResultStatus.INFERABLE:
+            state.inferable_facts[tool_name] = {
+                "value": verdict["value"],
+                "derivation": verdict.get("derivation", []),
+            }
+        return False
+
+    async def _handle_tool_outcome(self, state: AgentState, session_id: str) -> Dict[str, Any]:
+        if state.pending_clarification:
+            q = state.pending_clarification
+            return {
+                "status": "NEEDS_CLARIFICATION",
+                "uncertainty": ToolResultStatus.AMBIGUOUS.value,
+                "question": q.question,
+                "clarification_kind": q.kind,
+                "candidates": [
+                    {"value": c.value, "label": c.label, "evidence": c.evidence, **(c.metadata or {})}
+                    for c in q.candidates
+                ],
+                "tools_called": state.last_tool_results.get("tools_called", []),
+            }
+        return {"status": "FAILURE", "error": "Tool outcome did not produce a clarification."}
+
     def _normalize_tool_result(self, tool_name: str, result: Any) -> Dict[str, Any]:
         if not isinstance(result, dict):
             return {"status": ToolResultStatus.ERROR, "message": f"Tool '{tool_name}' returned non-dict result."}
@@ -225,15 +274,20 @@ class AgentCore:
             candidates: List[Candidate] = []
             for c in cands:
                 if isinstance(c, dict):
+                    metadata = {k: v for k, v in c.items() if k not in {"value", "account_id", "key", "id", "label", "display_name", "summary", "name", "evidence"}}
                     candidates.append(
                         Candidate(
                             value=str(c.get("value") or c.get("account_id") or c.get("key") or c.get("id") or ""),
                             label=str(c.get("label") or c.get("display_name") or c.get("summary") or c.get("name") or ""),
                             evidence=list(c.get("evidence") or []),
+                            metadata=metadata,
                         )
                     )
             question = result.get("question") or f"I found multiple matches for {tool_name}. Which one do you mean?"
-            return {"status": ToolResultStatus.AMBIGUOUS, "clarification_question": AmbiguityQuestion(question=question, candidates=candidates)}
+            kind = str(result.get("clarification_kind") or result.get("kind") or self._infer_clarification_kind(tool_name)).lower()
+            if kind not in {"project", "sprint", "issue", "user"}:
+                kind = "issue"
+            return {"status": ToolResultStatus.AMBIGUOUS, "clarification_question": AmbiguityQuestion(question=question, candidates=candidates, kind=kind)}
 
         if status == ToolResultStatus.EMPTY:
             return {"status": ToolResultStatus.EMPTY, "message": f"I couldn't verify that from the available Jira data."}
@@ -269,39 +323,81 @@ class AgentCore:
             return {"status": ToolResultStatus.AVAILABLE, "value": result.get("value")}
         return {"status": ToolResultStatus.ERROR, "message": str(result.get("reason") or "Unknown tool result error.")}
 
-    def _apply_clarification_response(self, state: AgentState) -> None:
+    def _apply_clarification_response(self, state: AgentState) -> str:
         response = (state.current_input or "").strip()
         if not response or not state.pending_clarification:
-            return
+            return "NONE"
         candidates = state.pending_clarification.candidates
         if not candidates:
-            return
+            return "NONE"
         low = response.lower()
-        response_tokens = {tok for tok in re.split(r"[^a-z0-9]+", low) if tok}
+        clarification_kind = state.pending_clarification.kind
+
+        def _candidate_names(candidate: Candidate) -> List[str]:
+            metadata = candidate.metadata or {}
+            if clarification_kind == "project":
+                return [
+                    candidate.value,
+                    str(metadata.get("project_key") or ""),
+                    str(metadata.get("project_name") or candidate.label or ""),
+                ]
+            if clarification_kind == "sprint":
+                return [
+                    candidate.value,
+                    str(metadata.get("sprint_name") or candidate.label or ""),
+                ]
+            if clarification_kind == "user":
+                return [
+                    candidate.value,
+                    str(metadata.get("user_name") or metadata.get("name") or candidate.label or ""),
+                ]
+            return [candidate.value, candidate.label]
 
         def _candidate_matches(candidate: Candidate) -> bool:
-            value_low = candidate.value.lower()
-            label_low = candidate.label.lower()
-            if low == value_low or low == label_low:
+            names = [str(name).strip() for name in _candidate_names(candidate) if str(name).strip()]
+            name_norms = {name.lower(): name for name in names}
+            if low in name_norms:
                 return True
-            candidate_tokens = {tok for tok in re.split(r"[^a-z0-9]+", f"{candidate.value} {candidate.label}".lower()) if tok}
-            return bool(response_tokens) and response_tokens.issubset(candidate_tokens)
+            if names:
+                canonical_name = names[-1].lower()
+                if canonical_name.startswith(low) or canonical_name.endswith(low) or low in canonical_name:
+                    # unique prefix/contains on the real entity name only
+                    matching = 0
+                    for other in candidates:
+                        other_names = [str(name).strip().lower() for name in _candidate_names(other) if str(name).strip()]
+                        if any(oname.startswith(low) or oname.endswith(low) or low in oname for oname in other_names[-1:]):
+                            matching += 1
+                    if matching == 1:
+                        return True
+            return False
 
         matched = [c for c in candidates if _candidate_matches(c)]
         if len(matched) == 1:
             chosen = matched[0]
-            qtxt = state.pending_clarification.question.lower()
-            if "project" in qtxt or "team" in qtxt:
+            qkind = state.pending_clarification.kind
+            if qkind == "project":
                 state.selected_project = chosen.value
-            if "sprint" in qtxt:
+            elif qkind == "sprint":
                 state.selected_sprint = chosen.value
-            elif "user" in qtxt or "person" in qtxt or "assignee" in qtxt:
+            elif qkind == "user":
                 state.selected_user = chosen.value
             else:
                 state.selected_issue = chosen.value
             state.context["clarification_response"] = response
             state.context["clarification_resolved"] = chosen.value
+            state.context["clarification_kind"] = qkind
             state.pending_clarification = None
+            return f"MATCHED_{qkind.upper()}"
+        return "NO_MATCH"
+
+    def _infer_clarification_kind(self, tool_name: str) -> str:
+        if tool_name == "get_active_sprints":
+            return "project"
+        if tool_name in {"find_user", "get_users"}:
+            return "user"
+        if tool_name in {"get_issue", "search_issues", "get_linked_issues"}:
+            return "issue"
+        return "issue"
 
     def _clarification_is_supported(self, state: AgentState) -> bool:
         tools_called = state.last_tool_results.get("tools_called", [])

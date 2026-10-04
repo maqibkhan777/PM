@@ -247,6 +247,7 @@ async def test_clarification_continuity_resumes_original_goal():
         return {
             "status": ToolResultStatus.AMBIGUOUS.value,
             "tool": "get_active_sprints",
+            "clarification_kind": "sprint",
             "candidates": [
                 {"value": "Sprint A", "label": "Sprint A", "evidence": ["active sprint"]},
                 {"value": "Sprint B", "label": "Sprint B", "evidence": ["active sprint"]},
@@ -612,9 +613,9 @@ async def test_get_active_sprints_multiple_projects_prompts_for_project(temp_db)
     assert tool is not None
     result = await tool.fn({})
     assert result["status"] == "AMBIGUOUS"
-    labels = [c["label"] for c in result["candidates"]]
-    assert any("SPR" in label for label in labels)
-    assert any("TST" in label for label in labels)
+    assert result["clarification_kind"] == "project"
+    assert {candidate["project_key"] for candidate in result["candidates"]} == {"SPR", "TST"}
+    assert {candidate["label"] for candidate in result["candidates"]} == {"Sprint Project", "Test Project"}
     assert any("active_sprint_count" in str(candidate["evidence"][0]).lower() for candidate in result["candidates"])
 
 
@@ -633,8 +634,9 @@ async def test_get_active_sprints_named_project_skips_project_question(temp_db):
     assert tool is not None
     result = await tool.fn({"project_key": "SPR"})
     assert result["status"] == "AMBIGUOUS"
-    assert all("SPR" in candidate["label"] for candidate in result["candidates"])
-    assert all("project" not in result.get("question", "").lower() for _ in [0])
+    assert result["clarification_kind"] == "sprint"
+    assert all(candidate["project_key"] == "SPR" for candidate in result["candidates"])
+    assert all(candidate["label"].startswith("SPR Sprint") for candidate in result["candidates"])
 
 
 @pytest.mark.asyncio
@@ -669,9 +671,6 @@ async def test_get_active_sprints_two_stage_resume_project_then_sprint(temp_db):
         async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
             if state.selected_sprint:
                 return AgentStep.final(f"Project {state.selected_project} sprint {state.selected_sprint} selected.")
-            project_choice = state.selected_project or (state.current_input.strip().upper() if state.current_input.strip() else None)
-            if project_choice and project_choice in {"SPR", "SPRINT PROJECT"}:
-                return AgentStep.tool_calls([ToolCall(tool_name="get_active_sprints", arguments={"project_key": "SPR"})], uncertainty=UncertaintyClass.AMBIGUOUS)
             return AgentStep.tool_calls([ToolCall(tool_name="get_active_sprints", arguments={})], uncertainty=UncertaintyClass.AMBIGUOUS)
 
     registry = build_tool_registry(manager=temp_db)
@@ -690,6 +689,83 @@ async def test_get_active_sprints_two_stage_resume_project_then_sprint(temp_db):
     third = await core.run("SPR Sprint 2", actor="u1", session_id=session_id)
     assert third["status"] == "COMPLETED"
     assert "Project SPR sprint" in third["answer"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply", ["2", "banana"])
+async def test_project_clarification_reasks_on_unrecognised_reply(temp_db, reply):
+    registry = ToolRegistry()
+
+    class NoOpProvider:
+        async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
+            raise AssertionError("Provider should not be called when clarification cannot be matched.")
+
+    core = AgentCore(provider=NoOpProvider(), tool_registry=registry, agent_provider=AgentProvider(NoOpProvider()))  # type: ignore[arg-type]
+    session_id = "project-no-match"
+    core._sessions[session_id] = {
+        "ts": time.time(),
+        "state": AgentState(
+            user_goal="Which sprint?",
+            current_input=reply,
+            pending_clarification=AmbiguityQuestion(
+                question="Which project do you mean?",
+                kind="project",
+                candidates=[
+                    Candidate(value="TREN", label="Tren Project", evidence=["active_sprint_count=1"]),
+                    Candidate(value="TEST", label="Test Project", evidence=["active_sprint_count=1"]),
+                ],
+            ),
+            last_uncertainty=UncertaintyClass.AMBIGUOUS,
+        ),
+    }
+
+    result = await core.run(reply, actor="u1", session_id=session_id)
+    assert result["status"] == "NEEDS_CLARIFICATION"
+    assert "didn't recognise" in result["question"].lower()
+    assert result["clarification_kind"] == "project"
+
+
+@pytest.mark.asyncio
+async def test_project_clarification_lowercase_key_matches_without_setting_issue(temp_db):
+    _seed_active_sprint_issues(
+        temp_db,
+        [
+            {"key": "TREN-1", "summary": "A", "status": "In Progress", "project_key": "TREN", "project_name": "Tren Project", "sprint_id": 301, "sprint_name": "Tren Sprint 1"},
+            {"key": "TEST-1", "summary": "B", "status": "In Progress", "project_key": "TEST", "project_name": "Test Project", "sprint_id": 401, "sprint_name": "Test Sprint 1"},
+        ],
+    )
+
+    class LowercaseProjectProvider:
+        async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools):
+            if state.selected_project:
+                return AgentStep.final(f"project={state.selected_project}; issue={state.selected_issue}; sprint={state.selected_sprint}")
+            return AgentStep.tool_calls([ToolCall(tool_name="get_active_sprints", arguments={})], uncertainty=UncertaintyClass.AMBIGUOUS)
+
+    registry = build_tool_registry(manager=temp_db)
+    provider = LowercaseProjectProvider()
+    core = AgentCore(provider=provider, tool_registry=registry, agent_provider=AgentProvider(provider))  # type: ignore[arg-type]
+    session_id = "project-lowercase"
+    core._sessions[session_id] = {
+        "ts": time.time(),
+        "state": AgentState(
+            user_goal="Which sprint?",
+            current_input="tren",
+            pending_clarification=AmbiguityQuestion(
+                question="Which project do you mean?",
+                kind="project",
+                candidates=[
+                    Candidate(value="TREN", label="Tren Project", evidence=["active_sprint_count=1"], metadata={"project_key": "TREN", "project_name": "Tren Project"}),
+                    Candidate(value="TEST", label="Test Project", evidence=["active_sprint_count=1"], metadata={"project_key": "TEST", "project_name": "Test Project"}),
+                ],
+            ),
+            last_uncertainty=UncertaintyClass.AMBIGUOUS,
+        ),
+    }
+
+    result = await core.run("tren", actor="u1", session_id=session_id)
+    assert result["status"] == "COMPLETED"
+    assert "project=TREN" in result["answer"]
+    assert "issue=None" in result["answer"]
 
 
 @pytest.mark.asyncio

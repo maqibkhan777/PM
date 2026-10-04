@@ -415,7 +415,7 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
             return [
                 {
                     "value": entry["project_key"],
-                    "label": f"{entry['project_key']} - {entry['project_name']} ({len(entry['sprints'])} active sprints)",
+                    "label": entry["project_name"],
                     "evidence": [f"active_sprint_count={len(entry['sprints'])}"],
                     "project_key": entry["project_key"],
                     "project_name": entry["project_name"],
@@ -436,6 +436,7 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
                     "status": "AMBIGUOUS",
                     "tool": "get_active_sprints",
                     "candidates": _project_candidates(),
+                    "clarification_kind": "project",
                     "question": "I found multiple matching projects. Which project do you mean?",
                 }
             if len(matches) == 1:
@@ -451,6 +452,7 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
                         "status": "AMBIGUOUS",
                         "tool": "get_active_sprints",
                         "candidates": candidates,
+                    "clarification_kind": "project",
                         "question": "I found multiple active projects. Which project do you mean?",
                         "truncated": page_truncated,
                         "derivation": [f"partial_total={len(candidates)}", f"project_count={len(projects_with_sprints)}"],
@@ -459,6 +461,7 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
                     "status": "AMBIGUOUS",
                     "tool": "get_active_sprints",
                     "candidates": candidates,
+                    "clarification_kind": "project",
                     "question": "I found multiple active projects. Which project do you mean?",
                 }
             if projects_with_sprints:
@@ -468,7 +471,16 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
             return _as_empty("get_active_sprints", "No active sprints found.")
 
         sprint_list = sorted(selected_project["sprints"].values(), key=lambda s: str(s.get("name") or s.get("id") or ""))
-        sprint_candidates = [{"value": s["id"], "label": s["name"], "evidence": s["evidence"]} for s in sprint_list]
+        sprint_candidates = [
+            {
+                "value": s["id"],
+                "label": s["name"],
+                "evidence": s["evidence"],
+                "project_key": selected_project["project_key"],
+                "project_name": selected_project["project_name"],
+            }
+            for s in sprint_list
+        ]
         if page_error:
             if sprint_list:
                 return {
@@ -491,6 +503,7 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
                 "status": "AMBIGUOUS",
                 "tool": "get_active_sprints",
                 "candidates": sprint_candidates,
+                    "clarification_kind": "sprint",
                 "question": f"I found multiple active sprints for {selected_project['project_key']}. Which sprint do you mean?",
                 "truncated": True,
                 "derivation": [f"partial_total={len(sprint_list)}", "truncated=true"],
@@ -523,11 +536,21 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
                     "candidates": sprint_candidates,
                 },
             )
-        return _as_ambiguous("get_active_sprints", sprint_candidates, question=f"I found multiple active sprints for {selected_project['project_key']}. Which sprint do you mean?")
+        return {
+            "status": "AMBIGUOUS",
+            "tool": "get_active_sprints",
+            "candidates": sprint_candidates,
+            "clarification_kind": "sprint",
+            "question": f"I found multiple active sprints for {selected_project['project_key']}. Which sprint do you mean?",
+        }
 
     registry.register(
         "get_active_sprints",
-        ToolSpec(name="get_active_sprints", description="Return active sprint candidates from projections.", parameters_schema={"team_group": "string"}),
+        ToolSpec(
+            name="get_active_sprints",
+            description="Return active sprint candidates for a project_key from projections.",
+            parameters_schema={"project_key": {"type": "string", "description": "Optional project key or project name to scope active sprint lookup."}},
+        ),
         get_active_sprints,
     )
 

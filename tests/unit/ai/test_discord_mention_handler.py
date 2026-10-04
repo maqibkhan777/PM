@@ -605,6 +605,7 @@ async def test_follow_up_discord_reply_resumes_pending_clarification(mention_han
         return {
             "status": ToolResultStatus.AMBIGUOUS.value,
             "tool": "get_active_sprints",
+            "clarification_kind": "sprint",
             "candidates": [
                 {"value": "Sprint A", "label": "Sprint A", "evidence": ["active sprint"]},
                 {"value": "Sprint B", "label": "Sprint B", "evidence": ["active sprint"]},

@@ -543,6 +543,7 @@ class DeepSeekAIProvider:
                 "selected_user": state.selected_user,
             },
             "clarification_state": {
+                "kind": state.pending_clarification.kind if state.pending_clarification else None,
                 "pending_question": state.pending_clarification.question if state.pending_clarification else None,
                 "candidates": [
                     {"value": c.value, "label": c.label, "evidence": c.evidence}
@@ -573,6 +574,7 @@ class DeepSeekAIProvider:
             "Use only the provided tools. "
             "Never invent Jira facts. "
             "When sprint or planning tools provide aggregate counts, use those counts directly and do not count raw issue lists yourself. "
+            "If a project clarification has been resolved, call get_active_sprints with that project_key unless the state already contains a selected sprint. "
             "If clarification feedback says a prior clarification was rejected, respond by calling a tool or answering with grounded evidence. "
             "Return strict JSON only matching the response schema. "
             "If more information is needed, output CLARIFICATION with a narrow question and candidates. "
