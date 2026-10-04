@@ -16,7 +16,9 @@ class MattermostClient:
         token: Optional[str] = None,
         timeout: Optional[float] = None
     ):
-        self.base_url = (base_url or settings.MATTERMOST_URL).rstrip("/")
+        configured_base_url = base_url or settings.MATTERMOST_URL
+        self._disabled = not bool(configured_base_url)
+        self.base_url = (configured_base_url or "").rstrip("/")
         self.token = token or settings.MATTERMOST_TOKEN
         self.timeout = timeout or settings.REQUEST_TIMEOUT_SECONDS
         self._client: Optional[httpx.AsyncClient] = None
@@ -34,6 +36,8 @@ class MattermostClient:
         return self._client
 
     async def close(self) -> None:
+        if self._disabled:
+            return
         if self._client and not self._client.is_closed:
             await self._client.aclose()
             self._client = None
@@ -46,6 +50,8 @@ class MattermostClient:
         params: Optional[Dict[str, Any]] = None
     ) -> Any:
         """Execute an HTTP request against Mattermost v4 REST API."""
+        if self._disabled:
+            return {}
         client = self._get_client()
         url = f"{self.base_url}/api/v4{path}"
         max_retries = settings.MAX_RETRIES
@@ -95,6 +101,8 @@ class MattermostClient:
 
     async def get_me(self) -> Dict[str, Any]:
         """Fetch bot user profile."""
+        if self._disabled:
+            return {}
         data = await self._request("GET", "/users/me")
         if isinstance(data, dict) and data.get("id"):
             self._bot_user_id = data.get("id")
@@ -102,6 +110,8 @@ class MattermostClient:
 
     async def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
         """Find a Mattermost user by username."""
+        if self._disabled:
+            return None
         try:
             return await self._request("GET", f"/users/username/{username}")
         except Exception as e:
@@ -110,6 +120,8 @@ class MattermostClient:
 
     async def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """Find a Mattermost user by email."""
+        if self._disabled:
+            return None
         try:
             return await self._request("GET", f"/users/email/{email}")
         except Exception as e:
@@ -118,11 +130,15 @@ class MattermostClient:
 
     async def create_direct_channel(self, user_id_1: str, user_id_2: str) -> Dict[str, Any]:
         """Create or get a 1-on-1 direct channel between two users."""
+        if self._disabled:
+            return {}
         payload = [user_id_1, user_id_2]
         return await self._request("POST", "/channels/direct", json_data=payload)
 
     async def create_post(self, channel_id: str, message: str, props: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Send a message to a channel."""
+        if self._disabled:
+            return {}
         payload = {
             "channel_id": channel_id,
             "message": message,
@@ -132,6 +148,8 @@ class MattermostClient:
 
     async def send_direct_message(self, target_user_id: str, message: str) -> Dict[str, Any]:
         """Send a direct message to a specific user ID."""
+        if self._disabled:
+            return {}
         if not self._bot_user_id:
             me = await self.get_me()
             self._bot_user_id = me.get("id")

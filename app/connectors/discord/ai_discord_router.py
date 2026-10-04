@@ -28,6 +28,7 @@ from app.database.repositories import (
     JiraIssueLinkRepository,
     ArtifactRepository,
 )
+from app.core.models.enums import ActionStatus
 from app.core.planning.dag import DependencyGraph
 from app.core.planning.artifacts import ArtifactEngine
 from app.core.planning.queue_composer import ResourceQueueComposer
@@ -38,7 +39,10 @@ from app.services.ai.models import (
     AIDecisionType,
     AIDecision,
     PMAttentionAnalysis,
+    AIRecommendationType,
+    ProposedAction,
 )
+from app.services.ai.safety import AISafetyGate, AISafetyViolation
 from app.core.models.planning import (
     PlanningContext,
     PlanningProposal,
@@ -48,6 +52,22 @@ from app.services.audit_service import AuditService
 from app.utils.time import utc_now_iso
 
 logger = logging.getLogger(__name__)
+
+# Shared short-term conversation memory for Discord AI sessions.
+# Keyed by channel/user session_id and bounded by AgentCore TTL.
+AI_AGENT_SESSION_STORE: Dict[str, Dict[str, Any]] = {}
+# Separate pending-write store so approval state survives AgentCore session resets.
+# Keyed by channel id, then by approval id.
+AI_PENDING_WRITE_ACTIONS: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+
+class _LazyActionEngineProxy:
+    def __getattr__(self, item: str) -> Any:
+        from app.core.actions.engine import action_engine as real_action_engine
+        return getattr(real_action_engine, item)
+
+
+action_engine = _LazyActionEngineProxy()
 
 
 class AIRequestIntent(str, Enum):
@@ -70,6 +90,74 @@ AI_HELP_MESSAGE = (
     "   *Example:* `@PM AI what is the status and priority of WSSS-326?`\n\n"
     "🔒 *Note: I operate strictly in read-only advisory mode. I do not execute Jira mutations, schedule changes, or approvals.*"
 )
+
+
+def _format_clarification_response(question: str, candidates: List[Dict[str, Any]], max_len: int = 1900) -> str:
+    lines = [f"❓ {question}"]
+    rendered = 0
+    for idx, candidate in enumerate(candidates):
+        line = f"- {candidate.get('label')} ({candidate.get('value')})"
+        next_text = "\n".join(lines + [line])
+        if len(next_text) > max_len:
+            remaining = len(candidates) - idx
+            lines.append(f"... and {remaining} more")
+            break
+        lines.append(line)
+        rendered += 1
+    if rendered == 0 and len(candidates) > 0:
+        lines.append(f"... and {len(candidates)} more")
+    return "\n".join(lines)
+
+
+def _store_pending_write(channel_id: str, pending: Dict[str, Any]) -> None:
+    action_id = str(pending.get("action_id") or "").strip()
+    if not action_id:
+        return
+    channel_store = AI_PENDING_WRITE_ACTIONS.setdefault(channel_id, {})
+    channel_store[action_id] = pending
+    channel_store[action_id]["status"] = pending.get("status") or "PENDING"
+    channel_store[action_id]["channel_id"] = channel_id
+
+
+def _clear_pending_write(channel_id: str, action_id: str) -> None:
+    channel_store = AI_PENDING_WRITE_ACTIONS.get(channel_id)
+    if not channel_store:
+        return
+    channel_store.pop(action_id, None)
+    if not channel_store:
+        AI_PENDING_WRITE_ACTIONS.pop(channel_id, None)
+
+
+def _channel_pending_writes(channel_id: str) -> Dict[str, Dict[str, Any]]:
+    return AI_PENDING_WRITE_ACTIONS.setdefault(channel_id, {})
+
+
+def _list_pending_ids(channel_id: str) -> List[str]:
+    channel_store = AI_PENDING_WRITE_ACTIONS.get(channel_id, {})
+    return sorted(
+        [aid for aid, rec in channel_store.items() if str(rec.get("status") or "PENDING").upper() == "PENDING"]
+    )
+
+
+def _find_pending_write(channel_id: str, approval_prefix: str) -> Tuple[Optional[str], List[str]]:
+    channel_store = AI_PENDING_WRITE_ACTIONS.get(channel_id, {})
+    low = (approval_prefix or "").strip().lower()
+    matches = [
+        aid
+        for aid, rec in channel_store.items()
+        if str(rec.get("status") or "PENDING").upper() == "PENDING" and aid.lower().startswith(low)
+    ]
+    if len(matches) == 1:
+        return matches[0], matches
+    return None, matches
+
+
+def _parse_approval_command(prompt: str) -> Tuple[Optional[str], Optional[str]]:
+    text = (prompt or "").strip()
+    match = re.fullmatch(r"(approve|reject)(?:\s+([A-Za-z0-9_-]{6,}))?", text, re.IGNORECASE)
+    if not match:
+        return None, None
+    return match.group(1).lower(), (match.group(2) or "").strip()
 
 
 class AIDiscordRouterService:
@@ -134,6 +222,26 @@ class AIDiscordRouterService:
         # 4. General PM / Ticket Query
         return AIRequestIntent.GENERAL_QA
 
+    def _is_literal_help_request(self, prompt: str) -> bool:
+        if not prompt:
+            return False
+        p = prompt.strip().lower()
+        return p in ("help", "commands", "what can you do", "capabilities", "features", "?", "--help", "-h")
+
+    async def _legacy_compatibility_fallback(
+        self,
+        prompt: str,
+        actor: str,
+        thread_context: Optional[List[str]],
+        intent: AIRequestIntent,
+    ) -> Union[str, Dict[str, Any]]:
+        logger.info("Using legacy compatibility fallback path.")
+        if intent == AIRequestIntent.ATTENTION_ANALYSIS:
+            return await self._handle_attention_request(prompt, actor=actor)
+        if intent == AIRequestIntent.PLANNING_PROPOSAL:
+            return await self._handle_planning_request(prompt, actor=actor)
+        return await self._handle_general_qa(prompt, actor=actor, thread_context=thread_context)
+
     async def route_request(
         self,
         prompt: str,
@@ -141,52 +249,276 @@ class AIDiscordRouterService:
         channel_id: str,
         message_id: str,
         thread_context: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
     ) -> Union[str, Dict[str, Any]]:
         """Route a user request to the appropriate read-only AI service and return formatted response."""
         t0 = time.monotonic()
-        intent = self.classify_intent(prompt)
         provider_name = getattr(settings, "AI_PROVIDER", "mock")
         model_name = getattr(settings, "AI_MODEL", None)
         provider_id = f"{provider_name}:{model_name}" if model_name else provider_name
         actor = f"discord:{actor_id}"
-
-        # If AI is globally disabled
-        if not getattr(settings, "AI_ENABLED", False):
-            self.audit_service.log_action(
-                actor=actor,
-                action="AI_DISCORD_REQUEST",
-                target=channel_id,
-                result="AI_DISABLED",
-                details={
-                    "message_id": message_id,
-                    "channel_id": channel_id,
-                    "intent": intent.value,
-                    "prompt_length": len(prompt),
-                    "error_category": "AI_DISABLED",
-                    "duration_ms": round((time.monotonic() - t0) * 1000, 2),
-                },
-            )
-            return (
-                "ℹ️ PM AI assistant is currently disabled (`AI_ENABLED=false`). "
-                "Contact an administrator to enable AI capabilities."
-            )
+        intent = AIRequestIntent.HELP if self._is_literal_help_request(prompt) else AIRequestIntent.UNKNOWN
+        fallback_used = False
 
         try:
             if intent == AIRequestIntent.HELP:
                 res = AI_HELP_MESSAGE
                 outcome = "COMPLETED"
-
-            elif intent == AIRequestIntent.ATTENTION_ANALYSIS:
-                res = await self._handle_attention_request(prompt, actor=actor)
+            elif not getattr(settings, "AI_ENABLED", False):
+                res = "ℹ️ PM AI assistant is disabled in system configuration (`AI_ENABLED=false`)."
                 outcome = "COMPLETED"
-
-            elif intent == AIRequestIntent.PLANNING_PROPOSAL:
-                res = await self._handle_planning_request(prompt, actor=actor)
-                outcome = "COMPLETED"
-
-            else:  # GENERAL_QA
-                res = await self._handle_general_qa(prompt, actor=actor, thread_context=thread_context)
-                outcome = "COMPLETED"
+            else:
+                session_key = session_id or f"{channel_id}:{actor_id}"
+                approval_cmd, approval_prefix = _parse_approval_command(prompt)
+                if approval_cmd in {"approve", "reject"}:
+                    pending_ids = _list_pending_ids(channel_id)
+                    if not approval_prefix:
+                        if pending_ids:
+                            pending_blob = ", ".join(f"`{pid}`" for pid in pending_ids)
+                            res = f"⏳ Pending approval ids in this channel: {pending_blob}. Reply `approve <id-prefix>` or `reject <id-prefix>`."
+                        else:
+                            res = "❌ No pending approval actions are available in this channel."
+                        outcome = "COMPLETED"
+                    elif len(approval_prefix) < 6:
+                        res = "❌ Approval commands must include at least 6 characters of the approval id."
+                        outcome = "COMPLETED"
+                    else:
+                        action_id, matches = _find_pending_write(channel_id, approval_prefix)
+                        if len(matches) > 1:
+                            res = f"❌ Approval id prefix `{approval_prefix}` is ambiguous in this channel."
+                            outcome = "COMPLETED"
+                        elif not action_id:
+                            res = f"❌ No pending approval matches prefix `{approval_prefix}` in this channel."
+                            outcome = "COMPLETED"
+                        else:
+                            pending_write = _channel_pending_writes(channel_id).get(action_id) or {}
+                            current_status = str(pending_write.get("status") or "PENDING").upper()
+                            if current_status == "EXPIRED":
+                                _clear_pending_write(channel_id, action_id)
+                                res = f"❌ Approval `{action_id}` has expired."
+                                outcome = "COMPLETED"
+                            elif current_status != "PENDING":
+                                _clear_pending_write(channel_id, action_id)
+                                res = f"❌ Approval `{action_id}` is already {current_status.lower()}."
+                                outcome = "COMPLETED"
+                            elif approval_cmd == "approve":
+                                approval_res = await action_engine.approve_action(action_id=action_id, approved_by=actor_id)
+                                if approval_res.success:
+                                    approval_status = getattr(approval_res, "status", None)
+                                    approval_status_value = approval_status.value if approval_status is not None and hasattr(approval_status, "value") else "COMPLETED"
+                                    pending_write.update(
+                                        {
+                                            "status": "APPROVED",
+                                            "approved_by": actor_id,
+                                            "approved_at": utc_now_iso(),
+                                            "result_status": approval_status_value,
+                                        }
+                                    )
+                                    _clear_pending_write(channel_id, action_id)
+                                    if approval_status_value == ActionStatus.DRY_RUN_SIMULATED.value:
+                                        res = (
+                                            "✅ Approved — simulated (dry run), nothing was posted to Jira. "
+                                            f"Issue: {pending_write.get('issue_key')}. Action ID: {action_id}"
+                                        )
+                                    else:
+                                        res = (
+                                            f"✅ Approved and posted the Jira comment to {pending_write.get('issue_key')}. "
+                                            f"Action ID: {action_id}"
+                                        )
+                                else:
+                                    approval_status = getattr(approval_res, "status", None)
+                                    new_status = approval_status.value if approval_status is not None and hasattr(approval_status, "value") else "FAILED"
+                                    refusal_text = str(approval_res.error_message or "").lower()
+                                    clear_after_failure = not (
+                                        "not authorized" in refusal_text
+                                        or "disabled by configuration" in refusal_text
+                                        or "approvals are disabled" in refusal_text
+                                        or "approval is disabled" in refusal_text
+                                    )
+                                    if clear_after_failure:
+                                        pending_write.update(
+                                            {
+                                                "status": "EXPIRED" if new_status == "EXPIRED" else "FAILED",
+                                                "failure_reason": approval_res.error_message or "Action failed",
+                                                "resolved_at": utc_now_iso(),
+                                            }
+                                        )
+                                        _clear_pending_write(channel_id, action_id)
+                                    else:
+                                        pending_write["last_refusal_reason"] = approval_res.error_message or "Action failed"
+                                        pending_write["last_refusal_at"] = utc_now_iso()
+                                    if new_status == "EXPIRED":
+                                        res = f"❌ Approval `{action_id}` has expired."
+                                    elif not clear_after_failure:
+                                        res = f"❌ Approval failed for action {action_id}.\nReason: {approval_res.error_message or 'Action failed'}"
+                                    else:
+                                        res = f"❌ Approval failed for action {action_id}.\nReason: {approval_res.error_message or 'Action failed'}"
+                                outcome = "COMPLETED"
+                            else:
+                                allowlist = action_engine._ai_approver_allowlist()
+                                requester_id = str(pending_write.get("requester_id") or "").strip()
+                                if actor_id != requester_id and actor_id not in allowlist:
+                                    action_engine.audit_service.log_action(
+                                        actor=f"discord:{actor_id}",
+                                        action="AI_APPROVAL_REJECT",
+                                        target=action_id,
+                                        result="Forbidden",
+                                        details={
+                                            "reason": "reject_not_authorized",
+                                            "channel_id": channel_id,
+                                            "requester_id": requester_id,
+                                            "actor_id": actor_id,
+                                        },
+                                    )
+                                    res = "❌ You are not authorized to reject this approval."
+                                    outcome = "COMPLETED"
+                                else:
+                                    reject_res = await action_engine.reject_action(action_id=action_id, rejected_by=actor_id, reason="Rejected in Discord")
+                                    if reject_res.success:
+                                        pending_write.update(
+                                            {
+                                                "status": "REJECTED",
+                                                "rejected_by": actor_id,
+                                                "rejected_at": utc_now_iso(),
+                                                "resolved_at": utc_now_iso(),
+                                            }
+                                        )
+                                        _clear_pending_write(channel_id, action_id)
+                                        res = f"✅ Rejected the pending Jira comment proposal for {pending_write.get('issue_key')}."
+                                    elif current_status == "EXPIRED":
+                                        _clear_pending_write(channel_id, action_id)
+                                        res = f"❌ Approval `{action_id}` has expired."
+                                    else:
+                                        pending_write.update(
+                                            {
+                                                "status": "FAILED",
+                                                "failure_reason": reject_res.error_message or "Action failed",
+                                                "resolved_at": utc_now_iso(),
+                                            }
+                                        )
+                                        _clear_pending_write(channel_id, action_id)
+                                        res = f"❌ Rejection failed for action {action_id}.\nReason: {reject_res.error_message or 'Action failed'}"
+                                    outcome = "COMPLETED"
+                elif not getattr(settings, "AI_ENABLED", False):
+                    res = "ℹ️ PM AI assistant is disabled in system configuration (`AI_ENABLED=false`)."
+                    outcome = "COMPLETED"
+                else:
+                    from app.services.ai.config import resolve_ai_provider
+                    ai_provider = resolve_ai_provider()
+                    from app.services.ai.agent_provider import AgentProvider
+                    from app.services.ai.pm_tools import build_tool_registry
+                    tool_registry = build_tool_registry(manager=self.mgr)
+                    agent_provider = AgentProvider(ai_provider)
+                    from app.agent_core.core import AgentCore
+                    known_project_keys = []
+                    try:
+                        known_project_keys = self.issue_repo.get_distinct_project_keys()
+                    except Exception:
+                        known_project_keys = []
+                    core = AgentCore(
+                        provider=ai_provider,
+                        tool_registry=tool_registry,
+                        agent_provider=agent_provider,
+                        session_store=AI_AGENT_SESSION_STORE,
+                        known_project_keys=set(known_project_keys),
+                    )  # type: ignore[arg-type]
+                    agent_res = await core.run(user_goal=prompt, actor=actor, session_id=session_id or f"{channel_id}:{actor_id}")
+                    if agent_res.get("status") == "NEEDS_CLARIFICATION":
+                        res = _format_clarification_response(agent_res["question"], agent_res.get("candidates", []))
+                        outcome = "COMPLETED"
+                    elif agent_res.get("status") == "CANCELLED":
+                        res = str(agent_res.get("answer") or "OK, cancelled.")
+                        outcome = "COMPLETED"
+                    elif agent_res.get("status") == "PROPOSED_ACTION":
+                        proposed_actions = agent_res.get("proposed_actions") or []
+                        if not getattr(settings, "AI_WRITE_ACTIONS_ENABLED", False):
+                            write_lines = [
+                                "📝 **Proposed Jira Comment**",
+                                "",
+                                "AI write actions are currently disabled in configuration (`AI_WRITE_ACTIONS_ENABLED=false`).",
+                            ]
+                            for idx, proposed in enumerate(proposed_actions, 1):
+                                if not isinstance(proposed, dict):
+                                    continue
+                                write_lines.extend([
+                                    f"• Proposal {idx}:",
+                                    f"  - Issue: {proposed.get('issue_key')}",
+                                    f"  - Comment: {proposed.get('comment_body')}",
+                                    f"  - Rationale: {proposed.get('rationale') or 'N/A'}",
+                                ])
+                            res = "\n".join(write_lines)
+                            outcome = "COMPLETED"
+                        else:
+                            proposed = proposed_actions[0] if proposed_actions and isinstance(proposed_actions[0], dict) else {}
+                            issue_key = str(proposed.get("issue_key") or "").strip().upper()
+                            comment_body = str(proposed.get("comment_body") or "").strip()
+                            rationale = str(proposed.get("rationale") or "").strip()
+                            if not issue_key or not comment_body:
+                                res = "❌ Proposed write action was malformed."
+                                outcome = "FAILED"
+                            else:
+                                decision = AIDecision(
+                                    decision_type=AIDecisionType.GENERAL_ANALYSIS,
+                                    recommendation=AIRecommendationType.PROPOSE_COMMENT,
+                                    confidence=1.0,
+                                    evidence=[f"AI proposal for Jira comment on {issue_key}"],
+                                    explanation="AI-generated write proposal staged through the safety gate.",
+                                    proposed_action=ProposedAction(
+                                        action_type="ADD_COMMENT",
+                                        target_system="jira",
+                                        target_id=issue_key,
+                                        parameters={
+                                            "task_key": issue_key,
+                                            "comment": comment_body,
+                                            "body": comment_body,
+                                            "rationale": rationale,
+                                        },
+                                        rationale=rationale,
+                                    ),
+                                    requires_approval=True,
+                                )
+                                try:
+                                    action = AISafetyGate.to_staged_action(decision, requested_by=actor)
+                                except AISafetyViolation as exc:
+                                    res = f"❌ Proposed write action was rejected by safety gate.\nReason: {exc}"
+                                    outcome = "FAILED"
+                                    action = None
+                                if action is not None:
+                                    pending_res = await action_engine.execute(action)
+                                    if pending_res.status == ActionStatus.PENDING_APPROVAL:
+                                        _store_pending_write(
+                                            channel_id,
+                                            {
+                                                "action_id": pending_res.action_id,
+                                                "issue_key": issue_key,
+                                                "comment_body": comment_body,
+                                                "rationale": rationale,
+                                                "created_at": utc_now_iso(),
+                                                "requester_id": actor_id,
+                                                "status": "PENDING",
+                                            },
+                                        )
+                                        res = (
+                                            "📝 **Pending Jira Comment Approval**\n"
+                                            f"Issue: {issue_key}\n"
+                                            f"Comment: {comment_body}\n"
+                                            f"Rationale: {rationale or 'N/A'}\n"
+                                            f"Approval ID: `{pending_res.action_id}`\n"
+                                            f"Reply `approve {pending_res.action_id[:6]}` or `reject {pending_res.action_id[:6]}` to continue."
+                                        )
+                                        outcome = "COMPLETED"
+                                    else:
+                                        res = f"❌ Could not stage comment approval.\nReason: {pending_res.error_message or 'Action failed'}"
+                                        outcome = "FAILED"
+                    elif agent_res.get("status") == "COMPLETED" and agent_res.get("answer"):
+                        res = str(agent_res.get("answer"))
+                        outcome = "COMPLETED"
+                    else:
+                        fallback_used = True
+                        logger.info("Using legacy compatibility fallback because AgentCore returned no answer/failure.")
+                        intent = self.classify_intent(prompt)
+                        res = await self._legacy_compatibility_fallback(prompt, actor=actor, thread_context=thread_context, intent=intent)
+                        outcome = "COMPLETED"
 
             duration_ms = round((time.monotonic() - t0) * 1000, 2)
             self.audit_service.log_action(
@@ -202,6 +534,7 @@ class AIDiscordRouterService:
                     "prompt_length": len(prompt),
                     "duration_ms": duration_ms,
                     "outcome": outcome,
+                    "fallback_used": fallback_used,
                 },
             )
             return res
@@ -220,7 +553,7 @@ class AIDiscordRouterService:
                     details={
                         "message_id": message_id,
                         "channel_id": channel_id,
-                        "intent": intent.value,
+                    "intent": intent.value,
                         "provider": provider_id,
                         "error_category": "SAFETY_VIOLATION",
                         "violation": str(sv),

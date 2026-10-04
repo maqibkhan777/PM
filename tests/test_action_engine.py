@@ -36,6 +36,7 @@ class MockJiraClient:
         self.transition_calls: List[tuple] = []
         self.assign_calls: List[tuple] = []
         self.comment_calls: List[tuple] = []
+        self.comment_records: Dict[str, List[Dict[str, Any]]] = {}
         self.update_field_calls: List[tuple] = []
         self.create_issue_calls: List[tuple] = []
         self.update_priority_calls: List[tuple] = []
@@ -53,7 +54,25 @@ class MockJiraClient:
 
     async def add_comment(self, issue_key: str, body: str) -> Dict[str, Any]:
         self.comment_calls.append((issue_key, body))
-        return {"id": "comment-101", "body": body}
+        adf_body = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": body}],
+                }
+            ],
+        }
+        comment = {"id": "comment-101", "body": adf_body, "author": {"displayName": "PM Bot"}}
+        self.comment_records.setdefault(issue_key, []).append(comment)
+        return comment
+
+    async def get_issue(self, issue_key: str) -> Dict[str, Any]:
+        return {"key": issue_key, "fields": {"summary": "Mock issue"}}
+
+    async def get_issue_comments(self, issue_key: str) -> List[Dict[str, Any]]:
+        return list(self.comment_records.get(issue_key, []))
 
     async def update_fields(self, issue_key: str, fields: Dict[str, Any]) -> Dict[str, Any]:
         self.update_field_calls.append((issue_key, fields))
@@ -513,6 +532,27 @@ async def test_add_comment_execution(test_setup):
     assert res.status == ActionStatus.COMPLETED
     assert len(mock_jira.comment_calls) == 1
     assert mock_jira.comment_calls[0] == ("WSSS-326", "Fixed root cause in auth middleware.")
+
+
+@pytest.mark.asyncio
+async def test_add_comment_verifies_returned_adf_comment_body(test_setup):
+    """Verify add-comment execution re-reads Jira by comment id and accepts Jira ADF bodies."""
+    engine, mock_jira, _, _ = test_setup
+    settings.DRY_RUN = False
+
+    action = create_add_comment_action(
+        target_system="jira",
+        task_key="WSSS-326",
+        comment_body="Verified via ADF payload.",
+        requested_by="PM",
+    )
+
+    res = await engine.execute(action, approved=True)
+    assert res.success is True
+    assert res.status == ActionStatus.COMPLETED
+    assert res.result_data["verified_comment_id"] == "comment-101"
+    assert res.result_data["verified_comment_text"] == "Verified via ADF payload."
+    assert len(mock_jira.comment_calls) == 1
 
 
 # ==============================================================================

@@ -59,6 +59,7 @@ from app.core.models.planning import (
 from app.services.ai.config import AIConfigurationError, AIProviderConfig, resolve_ai_provider
 from app.services.ai.planning import AIPlanningService
 from app.services.ai.planning_prompt import PLANNING_PROMPT_VERSION, PlanningPromptBuilder
+from app.agent_core.agent_models import AgentState, ToolSpec
 from app.services.ai.provider import MockAIProvider, NullAIProvider
 from app.services.ai.providers.deepseek import DeepSeekAIProvider, DeepSeekProviderError
 from app.services.ai.safety import AISafetyGate, AISafetyViolation
@@ -545,6 +546,148 @@ class TestAIPlanningService:
         provider = DeepSeekAIProvider(api_key="sk-test-key")
         assert provider.base_url == "https://api.deepseek.com"
         assert provider.model == "deepseek-chat"
+
+    @pytest.mark.asyncio
+    async def test_y_next_agent_step_parses_structured_json(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": json.dumps(
+                                    {
+                                        "kind": "TOOL_CALL",
+                                        "tool_calls": [
+                                            {
+                                                "tool_name": "get_issue",
+                                                "arguments": {"issue_key": "WSSS-1"},
+                                                "purpose": "inspect issue",
+                                            }
+                                        ],
+                                        "reasoning_trace": ["Need to inspect the issue first."],
+                                        "uncertainty_class": "KNOWN",
+                                    }
+                                ),
+                            }
+                        }
+                    ]
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        provider = DeepSeekAIProvider(api_key="sk-test", client=client)
+        state = AgentState(user_goal="Why is WSSS-1 blocked?", current_input="Why is WSSS-1 blocked?")
+        tools = {"get_issue": ToolSpec(name="get_issue", description="inspect issue", parameters_schema={"issue_key": "string"})}
+
+        step = await provider.next_agent_step("Why is WSSS-1 blocked?", "discord:1", state, tools)
+        assert step.kind == "TOOL_CALL"
+        assert step.next_tool_calls[0].tool_name == "get_issue"
+        assert step.next_tool_calls[0].arguments["issue_key"] == "WSSS-1"
+
+    @pytest.mark.asyncio
+    async def test_y1_next_agent_step_parses_proposed_action(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": json.dumps(
+                                    {
+                                        "kind": "PROPOSE_ACTION",
+                                        "proposed_actions": [
+                                            {
+                                                "action_type": "ADD_COMMENT",
+                                                "issue_key": "WSSS-326",
+                                                "comment_body": "Please review this issue.",
+                                                "rationale": "Need a human review before execution.",
+                                            }
+                                        ],
+                                        "reasoning_trace": ["Need a comment proposal, not execution."],
+                                    }
+                                ),
+                            }
+                        }
+                    ]
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        provider = DeepSeekAIProvider(api_key="sk-test", client=client)
+        state = AgentState(user_goal="Leave a comment", current_input="Leave a comment")
+        tools = {"get_issue": ToolSpec(name="get_issue", description="inspect issue", parameters_schema={"issue_key": "string"})}
+
+        step = await provider.next_agent_step("Leave a comment", "discord:1", state, tools)
+        assert step.kind == "PROPOSE_ACTION"
+        assert step.proposed_actions[0]["issue_key"] == "WSSS-326"
+        assert step.proposed_actions[0]["comment_body"] == "Please review this issue."
+
+    @pytest.mark.asyncio
+    async def test_z_next_agent_step_rejects_malformed_json(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                status_code=200,
+                json={"choices": [{"message": {"role": "assistant", "content": "plain prose"}}]},
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        provider = DeepSeekAIProvider(api_key="sk-test", client=client)
+        state = AgentState(user_goal="goal", current_input="goal")
+        tools = {"get_issue": ToolSpec(name="get_issue", description="inspect issue", parameters_schema={"issue_key": "string"})}
+
+        with pytest.raises(DeepSeekProviderError):
+            await provider.next_agent_step("goal", "discord:1", state, tools)
+
+    @pytest.mark.asyncio
+    async def test_aa_next_agent_step_includes_clarification_rejection_feedback(self):
+        captured: Dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["request"] = json.loads(request.content)
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": json.dumps(
+                                    {
+                                        "kind": "FINAL_ANSWER",
+                                        "final_answer": "done",
+                                    }
+                                ),
+                            }
+                        }
+                    ]
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        provider = DeepSeekAIProvider(api_key="sk-test", client=client)
+        state = AgentState(user_goal="Why is WSSS-1 blocked?", current_input="Why is WSSS-1 blocked?")
+        state.context["clarification_rejections"] = [
+            {
+                "question": "Which sprint?",
+                "reason": "clarification_not_supported_by_tool_history",
+                "tools_called": [{"tool": "get_active_sprints"}],
+            }
+        ]
+        tools = {"get_issue": ToolSpec(name="get_issue", description="inspect issue", parameters_schema={"issue_key": "string"})}
+
+        step = await provider.next_agent_step("Why is WSSS-1 blocked?", "discord:1", state, tools)
+        assert step.kind == "FINAL_ANSWER"
+        user_payload = json.loads(captured["request"]["messages"][1]["content"])
+        assert any(
+            "Your clarification was rejected because" in msg
+            for msg in user_payload["state"]["clarification_feedback"]
+        )
+        assert user_payload["state"]["clarification_rejections"][0]["reason"] == "clarification_not_supported_by_tool_history"
 
     # Y: Bottleneck model serialization
     def test_y_bottleneck_model_serialization(self):

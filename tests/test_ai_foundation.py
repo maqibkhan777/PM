@@ -253,7 +253,8 @@ def test_safety_gate_creates_staged_base_action():
     assert staged_action.action_type == ActionType.ADD_COMMENT
     assert staged_action.target_system == "jira"
     assert staged_action.target_id == "CF7-100"
-    assert staged_action.parameters == {"comment": "Please provide an update on this task."}
+    assert staged_action.parameters == {"comment": "Please provide an update on this task.", "source": "ai"}
+    assert staged_action.source == "ai"
     assert staged_action.requires_approval is True
     assert staged_action.status == ActionStatus.REQUESTED
     assert staged_action.idempotency_key is not None

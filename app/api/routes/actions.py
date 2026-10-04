@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from app.core.actions.engine import action_engine
 from app.core.actions.base import BaseAction
 from app.core.models.enums import ActionType, ActionStatus
+from app.config.settings import settings
 from app.database.repositories import ActionRepository
 
 router = APIRouter(tags=["Actions"])
@@ -103,6 +104,20 @@ async def approve_action(action_id: str, req: Optional[ActionApproveRequest] = N
         )
 
     approved_by = req.approved_by if req and req.approved_by else "PM"
+    parameters = action_rec.get("parameters") or {}
+    is_ai_originated = str(parameters.get("source") or parameters.get("origin") or "").strip().lower() == "ai"
+    if is_ai_originated:
+        action_engine.audit_service.log_action(
+            actor=approved_by,
+            action=action_rec["action_type"],
+            target=action_rec["target_id"],
+            result="Forbidden",
+            details={"reason": "ai_approval_discord_only", "approved_by": approved_by},
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="AI-originated actions can only be approved in Discord.",
+        )
     result = await action_engine.approve_action(action_id=action_id, approved_by=approved_by)
 
     return {
@@ -150,20 +165,25 @@ async def execute_action_endpoint(action_id: str):
         raise HTTPException(status_code=404, detail=f"Action '{action_id}' not found")
 
     current_status = action_rec.get("status")
-    if current_status == ActionStatus.PENDING_APPROVAL.value:
+    parameters = action_rec.get("parameters") or {}
+    is_ai_originated = str(parameters.get("source") or parameters.get("origin") or "").strip().lower() == "ai"
+    if is_ai_originated:
+        action_engine.audit_service.log_action(
+            actor="REST",
+            action=action_rec["action_type"],
+            target=action_rec["target_id"],
+            result="Forbidden",
+            details={"reason": "ai_execute_discord_only", "action_id": action_id},
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="AI-originated actions can only be executed after Discord approval.",
+        )
+    if current_status != ActionStatus.APPROVED.value:
         raise HTTPException(
             status_code=400,
-            detail=f"Action '{action_id}' is PENDING_APPROVAL and must be approved before execution."
+            detail=f"Action '{action_id}' has status '{current_status}'. Only APPROVED actions can be executed."
         )
-    if current_status in (ActionStatus.COMPLETED.value, ActionStatus.DRY_RUN_SIMULATED.value):
-        # Return idempotent result
-        return {
-            "action_id": action_id,
-            "status": current_status,
-            "success": True,
-            "details": action_rec.get("result_data"),
-            "idempotent": True
-        }
 
     # Reconstruct BaseAction
     act = BaseAction(

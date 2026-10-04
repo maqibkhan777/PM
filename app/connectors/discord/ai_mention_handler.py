@@ -211,6 +211,7 @@ class AIDiscordMentionHandler:
             ref_content = ref.get("content", "")
             if ref_content:
                 thread_context.append(f"{ref_author}: {ref_content[:300]}")
+        session_id = f"{channel_id}:{user_id}"
 
         # 7. Route request to AI router service
         response_payload = await self.router.route_request(
@@ -219,6 +220,7 @@ class AIDiscordMentionHandler:
             channel_id=channel_id,
             message_id=message_id,
             thread_context=thread_context,
+            session_id=session_id,
         )
 
         # 8. Send reply back to Discord channel

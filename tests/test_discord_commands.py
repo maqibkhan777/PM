@@ -66,6 +66,7 @@ class MockJiraClientForDiscord:
         self.transition_calls = []
         self.assign_calls = []
         self.comment_calls = []
+        self.comment_records: Dict[str, List[Dict[str, Any]]] = {}
         self.create_issue_calls = []
         self.update_field_calls = []
 
@@ -87,7 +88,22 @@ class MockJiraClientForDiscord:
 
     async def add_comment(self, issue_key: str, body: str) -> Dict[str, Any]:
         self.comment_calls.append((issue_key, body))
-        return {"id": "comment-101", "body": body}
+        adf_body = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": body}],
+                }
+            ],
+        }
+        comment = {"id": "comment-101", "body": adf_body, "author": {"displayName": "PM Bot"}}
+        self.comment_records.setdefault(issue_key, []).append(comment)
+        return comment
+
+    async def get_issue_comments(self, issue_key: str) -> List[Dict[str, Any]]:
+        return list(self.comment_records.get(issue_key, []))
 
     async def create_issue(
         self,
@@ -126,8 +142,12 @@ from app.connectors.discord import DiscordWebhookConnector
 
 
 @pytest.fixture
-def slash_setup(temp_db):
+def slash_setup(temp_db, monkeypatch):
     """Setup ActionEngine and DiscordSlashCommandHandler for isolated testing."""
+    monkeypatch.setattr(settings, "JIRA_BASE_URL", "https://example.atlassian.net")
+    monkeypatch.setattr(settings, "JIRA_EMAIL", "pm-agent@example.com")
+    monkeypatch.setattr(settings, "JIRA_API_TOKEN", "dummy_token")
+    monkeypatch.setattr(settings, "JIRA_TEAM_GROUP", "Mursaleen Cluster")
     engine = ActionEngine(manager=temp_db)
     mock_jira_client = MockJiraClientForDiscord()
     jira_conn = JiraConnector(client=mock_jira_client)
@@ -173,9 +193,9 @@ def slash_setup(temp_db):
     handler.execute_subcommand = _test_execute_subcommand
 
     # Setup allowed user and test channel
-    settings.DISCORD_PM_ALLOWED_USERS = "123456789,987654321"
-    settings.DISCORD_PM_CHANNEL_ID = "1547090800771604482"
-    settings.DRY_RUN = False
+    monkeypatch.setattr(settings, "DISCORD_PM_ALLOWED_USERS", "123456789,987654321")
+    monkeypatch.setattr(settings, "DISCORD_PM_CHANNEL_ID", "1547090800771604482")
+    monkeypatch.setattr(settings, "DRY_RUN", False)
 
     return handler, bot, mock_jira_client, engine, temp_db
 
@@ -1596,6 +1616,7 @@ async def test_create_with_comment_success(slash_setup):
     target_key, comment_body = mock_jira_client.comment_calls[0]
     assert target_key == "WSSS-100"
     assert comment_body == "Please verify this after deployment"
+    assert mock_jira_client.comment_records["WSSS-100"][0]["body"]["type"] == "doc"
 
 
 @pytest.mark.asyncio
@@ -1624,6 +1645,7 @@ async def test_create_with_all_options(slash_setup):
     assert desc == "Users cannot log in after password reset"
     assert assignee == "712020:8bc58bcd-fe17-4f1b-9825-c5251cb6b1de"
     assert mock_jira_client.comment_calls[0] == ("WSSS-100", "Please verify this after deployment")
+    assert mock_jira_client.comment_records["WSSS-100"][0]["body"]["content"][0]["content"][0]["text"] == "Please verify this after deployment"
 
 
 @pytest.mark.asyncio

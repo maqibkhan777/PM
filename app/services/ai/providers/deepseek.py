@@ -9,9 +9,9 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 import httpx
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from app.services.ai.models import (
     AIContext,
@@ -22,6 +22,7 @@ from app.services.ai.models import (
     PMAttentionAnalysis,
     ProposedAction,
 )
+from app.agent_core.agent_models import AgentState, AgentStep, AmbiguityQuestion, Candidate, ToolCall, ToolSpec, UncertaintyClass
 from app.utils.logger import redact_text, sanitize_dict
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,29 @@ logger = logging.getLogger(__name__)
 class DeepSeekProviderError(Exception):
     """Raised when DeepSeek API interaction fails, with guarantees that secrets are redacted."""
     pass
+
+
+class DeepSeekAgentToolCall(BaseModel):
+    tool_name: str
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+    purpose: str
+
+
+class DeepSeekAgentProposedAction(BaseModel):
+    action_type: str
+    issue_key: str
+    comment_body: str
+    rationale: str
+
+
+class DeepSeekAgentStepSchema(BaseModel):
+    kind: Literal["TOOL_CALL", "FINAL_ANSWER", "CLARIFICATION", "PROPOSE_ACTION", "FAILURE"]
+    tool_calls: List[DeepSeekAgentToolCall] = Field(default_factory=list)
+    proposed_actions: List[DeepSeekAgentProposedAction] = Field(default_factory=list)
+    final_answer: Optional[str] = None
+    clarification_question: Optional[str] = None
+    uncertainty_class: Optional[str] = None
+    reasoning_trace: List[str] = Field(default_factory=list)
 
 
 AI_PROMPT_VERSION = "attention-v1"
@@ -490,6 +514,97 @@ class DeepSeekAIProvider:
 
         return normalized
 
+    def _build_agent_step_messages(
+        self,
+        user_goal: str,
+        actor: str,
+        state: AgentState,
+        tools: Dict[str, ToolSpec],
+    ) -> List[Dict[str, str]]:
+        tool_specs = []
+        for name, spec in sorted(tools.items()):
+            tool_specs.append(
+                {
+                    "name": name,
+                    "purpose": spec.description,
+                    "read_only": spec.read_only,
+                    "requires_approval": spec.requires_approval,
+                    "mutates_external_system": spec.mutates_external_system,
+                    "param_schema": spec.parameters_schema,
+                    "result_contract": {
+                        "status": ["AVAILABLE", "EMPTY", "AMBIGUOUS", "NOT_AVAILABLE", "INSUFFICIENT_DATA", "ERROR"],
+                        "required_keys": ["status", "tool"],
+                    },
+                }
+            )
+
+        state_payload = {
+            "current_goal": state.user_goal,
+            "current_input": state.current_input,
+            "known_facts": state.known_facts,
+            "inferable_facts": state.inferable_facts,
+            "previous_tool_results": state.last_tool_results.get("tools_called", [])[-6:],
+            "unresolved_entities": {
+                "selected_project": getattr(state, "selected_project", None),
+                "selected_issue": state.selected_issue,
+                "selected_sprint": state.selected_sprint,
+                "selected_sprint_name": getattr(state, "selected_sprint_name", None),
+                "selected_user": state.selected_user,
+            },
+            "clarification_state": {
+                "kind": state.pending_clarification.kind if state.pending_clarification else None,
+                "pending_question": state.pending_clarification.question if state.pending_clarification else None,
+                "candidates": [
+                    {"value": c.value, "label": c.label, "evidence": c.evidence}
+                    for c in (state.pending_clarification.candidates if state.pending_clarification else [])
+                ],
+            },
+            "clarification_rejections": state.context.get("clarification_rejections", [])[-3:],
+            "clarification_feedback": [
+                "Your clarification was rejected because no tool evidence supports it; call a tool or answer."
+                if not isinstance(item, dict) or not str(item.get("reason") or "").strip()
+                else f"Your clarification was rejected because {str(item.get('reason')).replace('_', ' ')}; call a tool or answer."
+                for item in state.context.get("clarification_rejections", [])[-3:]
+            ],
+            "recent_tool_results": {k: v for k, v in state.last_tool_results.items() if k != "tools_called"},
+        }
+
+        schema = {
+            "kind": "TOOL_CALL | FINAL_ANSWER | CLARIFICATION | PROPOSE_ACTION | FAILURE",
+            "tool_calls": [{"tool_name": "string", "arguments": {}, "purpose": "string"}],
+            "proposed_actions": [{"action_type": "ADD_COMMENT", "issue_key": "WSSS-326", "comment_body": "string", "rationale": "string"}],
+            "final_answer": "string|null",
+            "clarification_question": "string|null",
+            "uncertainty_class": "KNOWN|INFERABLE|UNKNOWN|AMBIGUOUS|null",
+            "reasoning_trace": ["string"],
+        }
+
+        system_prompt = (
+            "You are a deterministic PM agent orchestrator. "
+            "Use only the provided tools. "
+            "Never invent Jira facts. "
+            "When sprint or planning tools provide aggregate counts, use those counts directly and do not count raw issue lists yourself. "
+            "If a project clarification has been resolved, call get_active_sprints with that project_key unless the state already contains a selected sprint. "
+            "If clarification feedback says a prior clarification was rejected, respond by calling a tool or answering with grounded evidence. "
+            "If you need to propose a Jira comment write action, output PROPOSE_ACTION with proposed_actions containing ADD_COMMENT, issue_key, exact comment_body, and rationale; never execute writes directly. "
+            "Return strict JSON only matching the response schema. "
+            "If more information is needed, output CLARIFICATION with a narrow question and candidates. "
+            "If tools are needed, output TOOL_CALL with one or more tool calls. "
+            "If a tool result is ambiguous or unavailable, do not guess."
+        )
+
+        user_payload = {
+            "goal": user_goal,
+            "actor": actor,
+            "state": state_payload,
+            "tools": tool_specs,
+            "response_schema": schema,
+        }
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+        ]
+
     async def analyze_planning(self, context: Any) -> Any:
         """Analyze planning context using DeepSeek and return a typed PlanningProposal."""
         from app.core.models.planning import PlanningProposal
@@ -540,5 +655,51 @@ class DeepSeekAIProvider:
             raise DeepSeekProviderError(
                 f"DeepSeek response failed PlanningProposal schema validation: {sanitized_err}"
             )
+
+    async def next_agent_step(self, user_goal: str, actor: str, state: AgentState, tools: Dict[str, ToolSpec]) -> AgentStep:
+        messages = self._build_agent_step_messages(user_goal=user_goal, actor=actor, state=state, tools=tools)
+        raw_response = await self._post_chat_completion(messages)
+
+        try:
+            content_dict = self._extract_content_json(raw_response)
+        except DeepSeekProviderError as e:
+            raise DeepSeekProviderError(f"Agent step output invalid: {e}")
+
+        try:
+            step = DeepSeekAgentStepSchema.model_validate(content_dict)
+        except ValidationError as ve:
+            raise DeepSeekProviderError(f"Agent step schema validation failed: {self._sanitize_error_message(str(ve))}")
+
+        if step.kind == "TOOL_CALL":
+            calls = [
+                ToolCall(tool_name=c.tool_name, arguments=c.arguments)
+                for c in step.tool_calls
+            ]
+            if not calls:
+                raise DeepSeekProviderError("Agent step TOOL_CALL returned no tool calls.")
+            return AgentStep.tool_calls(calls, uncertainty=UncertaintyClass(step.uncertainty_class) if step.uncertainty_class else None, trace=step.reasoning_trace)
+        if step.kind == "PROPOSE_ACTION":
+            proposals = [
+                {
+                    "action_type": p.action_type,
+                    "issue_key": p.issue_key,
+                    "comment_body": p.comment_body,
+                    "rationale": p.rationale,
+                }
+                for p in step.proposed_actions
+            ]
+            if not proposals:
+                raise DeepSeekProviderError("Agent step PROPOSE_ACTION returned no proposed actions.")
+            return AgentStep.proposal(proposals, uncertainty=UncertaintyClass(step.uncertainty_class) if step.uncertainty_class else None, trace=step.reasoning_trace)
+        if step.kind == "FINAL_ANSWER":
+            if not step.final_answer:
+                raise DeepSeekProviderError("Agent step FINAL_ANSWER missing final_answer.")
+            return AgentStep.final(step.final_answer, uncertainty=UncertaintyClass(step.uncertainty_class) if step.uncertainty_class else None, trace=step.reasoning_trace)
+        if step.kind == "CLARIFICATION":
+            question = step.clarification_question or "I need one clarification to continue."
+            q = AmbiguityQuestion(question=question, candidates=[])
+            return AgentStep.clarification(q, uncertainty=UncertaintyClass(step.uncertainty_class) if step.uncertainty_class else UncertaintyClass.AMBIGUOUS, trace=step.reasoning_trace)
+        return AgentStep(kind="FAILURE", final_answer=step.final_answer or "Provider failure.", uncertainty_class=UncertaintyClass(step.uncertainty_class) if step.uncertainty_class else None, reasoning_trace=step.reasoning_trace)
+
 
 

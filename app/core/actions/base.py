@@ -18,6 +18,7 @@ class BaseAction(BaseModel):
     target_system: str  # "jira", "mattermost", "discord", etc.
     target_id: str      # Task key, Channel ID, or User ID
     parameters: Dict[str, Any] = Field(default_factory=dict)
+    source: Optional[str] = None
     requested_by: str = "RulesEngine"
     requires_approval: bool = False
     dry_run: bool = False
