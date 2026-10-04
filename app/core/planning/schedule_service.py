@@ -338,7 +338,9 @@ class AdvisoryScheduleService:
                                 f"Projected completion ({tentative_comp_str}) extends beyond 10-day planning horizon ({horizon_end_str})."
                             )
 
+                act_id = f"act-{proposal_id}-{t.issue_key}-duedate"
                 task_proposal = ScheduledTaskProposal(
+                    action_id=act_id,
                     issue_key=t.issue_key,
                     project_key=t.project_key,
                     summary=t.summary,
@@ -420,6 +422,7 @@ class AdvisoryScheduleService:
 
         return AdvisoryScheduleProposal(
             proposal_id=proposal_id,
+            proposal_version=1,
             generated_at=now_iso,
             anchor_date=anchor_d.strftime("%Y-%m-%d"),
             planning_horizon_working_days=horizon_working_days,

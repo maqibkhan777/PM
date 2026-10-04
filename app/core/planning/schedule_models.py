@@ -28,6 +28,7 @@ class ScheduleFeasibilityStatus(str, Enum):
 
 class ScheduledTaskProposal(BaseModel):
     """Advisory schedule proposal for an individual active Jira issue."""
+    action_id: Optional[str] = None         # Deterministic execution action ID
     issue_key: str
     project_key: str
     summary: str
@@ -102,6 +103,7 @@ class ResourceScheduleAudit(BaseModel):
 class AdvisoryScheduleProposal(BaseModel):
     """Root data model for an explainable, advisory schedule proposal across projects."""
     proposal_id: str
+    proposal_version: int = 1
     generated_at: str
     anchor_date: str
     planning_horizon_working_days: int = 10
