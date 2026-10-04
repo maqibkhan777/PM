@@ -147,6 +147,59 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
             "derivation": derivation,
         }
 
+    async def _paged_search_issues(
+        jql: str,
+        fields: List[str],
+        page_size: int = 100,
+        cap: int = 1000,
+    ) -> Dict[str, Any]:
+        collected: List[Dict[str, Any]] = []
+        next_page_token: Optional[str] = None
+        reported_total: Optional[int] = None
+        truncated = False
+
+        while True:
+            raw = await client.search_issues(
+                jql=jql,
+                next_page_token=next_page_token,
+                max_results=page_size,
+                expand=None,
+                fields=fields,
+            )
+            page_issues = raw.get("issues", []) if isinstance(raw, dict) else []
+            if not isinstance(page_issues, list):
+                page_issues = []
+            collected.extend([item for item in page_issues if isinstance(item, dict)])
+
+            if isinstance(raw, dict) and raw.get("total") is not None:
+                try:
+                    reported_total = int(raw.get("total"))
+                except Exception:
+                    pass
+
+            if len(collected) >= cap:
+                truncated = True
+                collected = collected[:cap]
+                break
+
+            if reported_total is not None and len(collected) >= reported_total:
+                break
+
+            next_page_token = str(raw.get("nextPageToken") or raw.get("next_page_token") or "").strip() if isinstance(raw, dict) else ""
+            is_last = bool(raw.get("isLast")) if isinstance(raw, dict) and "isLast" in raw else False
+            if is_last or not next_page_token:
+                if reported_total is not None and len(collected) < reported_total:
+                    truncated = True
+                break
+
+        if reported_total is not None and len(collected) < reported_total:
+            truncated = True
+        return {
+            "issues": collected,
+            "truncated": truncated,
+            "total": reported_total,
+        }
+
     def _extract_sprint_names(fields: Any) -> List[str]:
         names: List[str] = []
         if not isinstance(fields, dict):
@@ -252,17 +305,27 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
     async def get_active_sprints(args: Dict[str, Any]) -> Dict[str, Any]:
         team_group = args.get("team_group")
         sprint_names = set()
-        if client and settings.is_jira_configured():
+        if client:
             try:
                 jql = "sprint in openSprints() ORDER BY updated DESC"
-                raw = await client.search_issues(jql=jql, max_results=25, fields=["summary", "status", "priority", "assignee", "reporter", "issuetype", "sprint", "customfield_10020"])
-                for item in raw.get("issues", []) if isinstance(raw, dict) else []:
+                page = await _paged_search_issues(jql, ["sprint", "customfield_10020"], page_size=100, cap=1000)
+                for item in page["issues"]:
                     fields = item.get("fields", {}) if isinstance(item, dict) else {}
                     sprint_names.update(_extract_sprint_names(fields))
+                if page.get("truncated"):
+                    sprint_names = {s for s in sprint_names if s}
+                    sprints = sorted(sprint_names)
+                    return {
+                        "status": "INSUFFICIENT_DATA",
+                        "tool": "get_active_sprints",
+                        "value": {"candidates": sprints, "truncated": True},
+                        "reason": "Active sprint search hit the 1000-result cap.",
+                        "truncated": True,
+                    }
             except Exception:
                 pass
         if not sprint_names:
-            all_issues = issue_repo.list_all(limit=500)
+            all_issues = issue_repo.list_all(limit=1000)
             for it in all_issues:
                 if team_group and it.get("team_group") != team_group:
                     continue
@@ -273,6 +336,15 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
                     raw_obj = raw
                 fields = raw_obj.get("fields", {}) if isinstance(raw_obj, dict) else {}
                 sprint_names.update(_extract_sprint_names(fields))
+            if len(all_issues) >= 1000:
+                sprints = sorted({s for s in sprint_names if s})
+                return {
+                    "status": "INSUFFICIENT_DATA",
+                    "tool": "get_active_sprints",
+                    "value": {"candidates": sprints, "truncated": True},
+                    "reason": "Active sprint search hit the 1000-result cap.",
+                    "truncated": True,
+                }
         sprint_names = {s for s in sprint_names if s}
         if not sprint_names:
             return _as_empty("get_active_sprints", "No active sprints found.")
@@ -323,10 +395,15 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
             return {"status": "ERROR", "tool": "get_sprint_issues", "reason": "sprint_name_required"}
         issues: List[Dict[str, Any]] = []
         matched_records: List[Dict[str, Any]] = []
-        if client and settings.is_jira_configured():
+        if client:
             try:
-                raw = await client.search_issues(jql=f'sprint = "{sprint}" ORDER BY rank ASC', max_results=100, fields=["summary", "status", "priority", "assignee", "reporter", "issuetype", "sprint", "duedate", "labels", "issuelinks"])
-                for item in raw.get("issues", []) if isinstance(raw, dict) else []:
+                page = await _paged_search_issues(
+                    jql=f'sprint = "{sprint}" ORDER BY rank ASC',
+                    fields=["summary", "status", "priority", "assignee", "reporter", "issuetype", "sprint", "project", "duedate", "labels", "issuelinks"],
+                    page_size=100,
+                    cap=1000,
+                )
+                for item in page["issues"]:
                     fields = item.get("fields", {}) if isinstance(item, dict) else {}
                     issues.append({
                         "key": item.get("key"),
@@ -343,10 +420,26 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
                         "assignee": ((fields.get("assignee") or {}).get("displayName") or (fields.get("assignee") or {}).get("accountId")),
                         "raw_reference": item,
                     })
+                if page.get("truncated"):
+                    summary = _summarize_issues(matched_records)
+                    return {
+                        "status": "INSUFFICIENT_DATA",
+                        "tool": "get_sprint_issues",
+                        "value": {
+                            "sprint_name": sprint,
+                            "total": summary["total"],
+                            "status_counts": summary["status_counts"],
+                            "assignee_counts": summary["assignee_counts"],
+                            "issues": issues,
+                            "truncated": True,
+                        },
+                        "truncated": True,
+                        "reason": "Sprint search hit the 1000-result cap.",
+                    }
             except Exception:
                 pass
         if not issues:
-            all_issues = issue_repo.list_all(limit=500)
+            all_issues = issue_repo.list_all(limit=1000)
             for it in all_issues:
                 raw = it.get("raw_reference")
                 try:
@@ -360,6 +453,22 @@ def build_tool_registry(manager: Optional[DatabaseManager] = None, jira_client: 
                     matched_records.append(it)
         if not issues:
             return _as_empty("get_sprint_issues", "No issues found for sprint.")
+        if len(issues) >= 1000:
+            summary = _summarize_issues(matched_records)
+            return {
+                "status": "INSUFFICIENT_DATA",
+                "tool": "get_sprint_issues",
+                "value": {
+                    "sprint_name": sprint,
+                    "total": summary["total"],
+                    "status_counts": summary["status_counts"],
+                    "assignee_counts": summary["assignee_counts"],
+                    "issues": issues[:1000],
+                    "truncated": True,
+                },
+                "truncated": True,
+                "reason": "Sprint search hit the 1000-result cap.",
+            }
         summary = _summarize_issues(matched_records)
         return _as_available(
             "get_sprint_issues",

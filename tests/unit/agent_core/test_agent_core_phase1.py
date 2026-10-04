@@ -458,6 +458,120 @@ async def test_get_sprint_issues_returns_deterministic_aggregates(temp_db):
 
 
 @pytest.mark.asyncio
+async def test_get_sprint_issues_pages_through_results_and_populates_project(temp_db):
+    class FakeJiraClient:
+        def __init__(self):
+            self.calls = []
+
+        async def search_issues(self, jql, next_page_token=None, max_results=100, expand=None, fields=None):
+            self.calls.append(
+                {
+                    "jql": jql,
+                    "next_page_token": next_page_token,
+                    "max_results": max_results,
+                    "expand": expand,
+                    "fields": list(fields or []),
+                }
+            )
+            assert "project" in (fields or [])
+            assert expand is None
+            if next_page_token is None:
+                return {
+                    "issues": [
+                        {
+                            "key": "SPR-1",
+                            "fields": {
+                                "summary": "First page issue",
+                                "status": {"name": "Done", "statusCategory": {"key": "done"}},
+                                "priority": {"name": "High"},
+                                "assignee": {"accountId": "acc-a", "displayName": "Alice"},
+                                "project": {"key": "SPR"},
+                                "duedate": "2026-10-01",
+                            },
+                        }
+                    ],
+                    "nextPageToken": "page-2",
+                    "isLast": False,
+                    "total": 2,
+                }
+            assert next_page_token == "page-2"
+            return {
+                "issues": [
+                    {
+                        "key": "SPR-2",
+                        "fields": {
+                            "summary": "Second page issue",
+                            "status": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}},
+                            "priority": {"name": "Medium"},
+                            "assignee": {"accountId": "acc-b", "displayName": "Bob"},
+                            "project": {"key": "SPR"},
+                            "duedate": "2026-10-02",
+                        },
+                    }
+                ],
+                "isLast": True,
+                "total": 2,
+            }
+
+    registry = build_tool_registry(manager=temp_db, jira_client=FakeJiraClient())
+    tool = registry.get("get_sprint_issues")
+    assert tool is not None
+    result = await tool.fn({"sprint_name": "Sprint 42"})
+    assert result["status"] == "AVAILABLE"
+    value = result["value"]
+    assert value["total"] == 2
+    assert value["issues"][0]["project"] == "SPR"
+    assert value["issues"][1]["project"] == "SPR"
+    assert value["status_counts"] == {"Done": 1, "In Progress": 1, "To Do": 0, "cancelled": 0, "unknown": 0}
+
+
+@pytest.mark.asyncio
+async def test_get_sprint_issues_marks_truncation_when_cap_hit(temp_db):
+    class FakeJiraClient:
+        def __init__(self):
+            self.pages = []
+            for page_idx in range(11):
+                page = []
+                for item_idx in range(100):
+                    global_idx = page_idx * 100 + item_idx
+                    if global_idx >= 1001:
+                        break
+                    page.append(
+                        {
+                            "key": f"SPR-{global_idx + 1}",
+                            "fields": {
+                                "summary": f"Issue {global_idx + 1}",
+                                "status": {"name": "To Do", "statusCategory": {"key": "new"}},
+                                "priority": {"name": "Low"},
+                                "assignee": {"accountId": f"acc-{global_idx % 3}"},
+                                "project": {"key": "SPR"},
+                                "duedate": "2026-10-03",
+                            },
+                        }
+                    )
+                self.pages.append(page)
+
+        async def search_issues(self, jql, next_page_token=None, max_results=100, expand=None, fields=None):
+            page_idx = int(next_page_token or 0)
+            page = self.pages[page_idx]
+            return {
+                "issues": page,
+                "nextPageToken": str(page_idx + 1) if page_idx + 1 < len(self.pages) else None,
+                "isLast": page_idx + 1 >= len(self.pages),
+                "total": 1001,
+            }
+
+    registry = build_tool_registry(manager=temp_db, jira_client=FakeJiraClient())
+    tool = registry.get("get_sprint_issues")
+    assert tool is not None
+    result = await tool.fn({"sprint_name": "Sprint 42"})
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["truncated"] is True
+    assert result["value"]["truncated"] is True
+    assert result["value"]["total"] == 1000
+
+
+@pytest.mark.asyncio
 async def test_inferable_requires_evidence_and_retains_derivation():
     captured = []
 
