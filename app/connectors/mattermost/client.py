@@ -123,15 +123,19 @@ class MattermostClient:
 
     async def create_post(self, channel_id: str, message: str, props: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Send a message to a channel."""
-        payload = {
-            "channel_id": channel_id,
-            "message": message,
-            "props": props or {}
-        }
-        return await self._request("POST", "/posts", json_data=payload)
+        # Safeguard: Block channel messages during local testing workflow
+        raise PermissionError(
+            f"Mattermost channel messaging is blocked under the self-only testing restriction (channel: {channel_id})."
+        )
 
     async def send_direct_message(self, target_user_id: str, message: str) -> Dict[str, Any]:
         """Send a direct message to a specific user ID."""
+        if not settings.is_mattermost_recipient_allowed(target_user_id):
+            raise PermissionError(
+                f"Mattermost direct message to user '{target_user_id}' is blocked. "
+                f"Only verified self account '{settings.MATTERMOST_SELF_ONLY_USER_ID}' is permitted."
+            )
+
         if not self._bot_user_id:
             me = await self.get_me()
             self._bot_user_id = me.get("id")
@@ -141,4 +145,11 @@ class MattermostClient:
         if not channel_id:
             raise ValueError(f"Could not establish DM channel with user {target_user_id}")
 
-        return await self.create_post(channel_id=channel_id, message=message)
+        # Post directly to the established 1-on-1 direct channel payload
+        payload = {
+            "channel_id": channel_id,
+            "message": message,
+            "props": {}
+        }
+        return await self._request("POST", "/posts", json_data=payload)
+

@@ -101,8 +101,16 @@ class MattermostConnector(BaseConnector):
         channel_id = params.get("channel_id") or params.get("channel")
 
         if channel_id and channel_id != "direct":
-            return await self.client.create_post(channel_id=channel_id, message=text)
+            raise PermissionError(
+                f"Mattermost channel messaging is blocked under the self-only testing restriction (channel: {channel_id})."
+            )
         elif recipient_id:
+            if not settings.is_mattermost_recipient_allowed(recipient_id):
+                raise PermissionError(
+                    f"Mattermost direct message to user '{recipient_id}' is blocked. "
+                    f"Only verified self account '{settings.MATTERMOST_SELF_ONLY_USER_ID}' is permitted."
+                )
             return await self.client.send_direct_message(target_user_id=recipient_id, message=text)
         else:
             raise ValueError("Mattermost SendMessage requires either channel_id or recipient_id")
+

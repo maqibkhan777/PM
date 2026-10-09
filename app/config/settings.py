@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     MATTERMOST_URL: Optional[str] = None
     MATTERMOST_TOKEN: Optional[str] = None
     MATTERMOST_TEAM_NAME: Optional[str] = None
+    # Self-only Mattermost messaging restriction for local testing workflow
+    MATTERMOST_SELF_ONLY_USER_ID: str = "yp7quu37tf8p5enxr9rr8gsqay"
 
     # Jira Polling Settings
     JIRA_POLLING_ENABLED: bool = True
@@ -80,7 +82,7 @@ class Settings(BaseSettings):
 
     # Rules & Notification Policies
     STALE_TASK_HOURS: int = 24
-    STALE_TASK_NOTIFY_ASSIGNEE: bool = True
+    STALE_TASK_NOTIFY_ASSIGNEE: bool = False  # Disabled: prevent legacy automatic Mattermost DMs to assignees
     STALE_TASK_NOTIFY_PM: bool = False  # Stale detection kept, Discord notification muted
     OVERDUE_NOTIFY_PM: bool = False      # Overdue detection kept, Discord notification muted
     WORKFLOW_VIOLATION_NOTIFY_PM: bool = True
@@ -276,6 +278,17 @@ class Settings(BaseSettings):
             and self.MATTERMOST_TOKEN.strip()
             and self.MATTERMOST_TOKEN != "placeholder_mm_token"
         )
+
+    def is_mattermost_recipient_allowed(self, recipient_id: Optional[str]) -> bool:
+        """Check if a Mattermost recipient user ID is permitted under self-only testing restriction."""
+        if not recipient_id or not str(recipient_id).strip():
+            return False
+        clean_recipient = str(recipient_id).strip()
+        allowed_id = (self.MATTERMOST_SELF_ONLY_USER_ID or "").strip()
+        if not allowed_id:
+            # Fail-closed if no allowed self user ID is configured
+            return False
+        return clean_recipient == allowed_id
 
     def is_gdrive_configured(self) -> bool:
         """Check if Google Drive backup integration is configured and enabled."""

@@ -15,7 +15,7 @@ from app.core.models.enums import (
     SecurityLevel,
 )
 from app.core.approvals.engine import approval_engine
-from app.services.user_mapping_service import user_mapping_service
+from app.services.user_mapping_service import UserMappingService, user_mapping_service
 from app.services.audit_service import AuditService, audit_service
 from app.database.repositories import ActionRepository
 from app.database.connection import db_manager, DatabaseManager
@@ -57,6 +57,7 @@ class ActionEngine:
         self.mgr = manager or db_manager
         self.action_repo = ActionRepository(self.mgr)
         self.audit_service = AuditService(self.mgr)
+        self.user_mapping_service = UserMappingService(self.mgr)
         self._connectors: Dict[str, BaseConnector] = {}
 
 
@@ -365,9 +366,12 @@ class ActionEngine:
                 jira_user_id = action.parameters.get("jira_user_id") or recipient_id
                 display_name = action.parameters.get("display_name") or action.parameters.get("recipient_name")
 
-                resolved_mm_id, method = user_mapping_service.resolve_jira_to_mattermost(
+                email = action.parameters.get("email") or action.parameters.get("emailAddress")
+
+                resolved_mm_id, method = self.user_mapping_service.resolve_jira_to_mattermost(
                     jira_user_id=jira_user_id,
-                    display_name=display_name
+                    display_name=display_name,
+                    email=email
                 )
 
                 if not resolved_mm_id:
@@ -397,6 +401,36 @@ class ActionEngine:
                 else:
                     action.parameters["recipient_id"] = resolved_mm_id
                     action.parameters["resolved_via"] = method
+
+                    # Fail-closed self-only recipient restriction for local testing workflow
+                    if not settings.is_mattermost_recipient_allowed(resolved_mm_id):
+                        err_msg = (
+                            f"Mattermost direct message to recipient '{resolved_mm_id}' is blocked. "
+                            f"Only verified self account '{settings.MATTERMOST_SELF_ONLY_USER_ID}' is permitted."
+                        )
+                        logger.warning(err_msg)
+                        action.status = ActionStatus.REJECTED
+                        self.action_repo.update_status(
+                            action_id=action.action_id,
+                            status=ActionStatus.REJECTED.value,
+                            last_error=err_msg
+                        )
+                        self.audit_service.log_action(
+                            actor=action.requested_by,
+                            action=action.action_type.value,
+                            target=f"mattermost:{resolved_mm_id}",
+                            result="Rejected - Non-Self Recipient Blocked",
+                            details={"recipient_id": resolved_mm_id, "reason": err_msg}
+                        )
+                        return ActionResult(
+                            success=False,
+                            action_id=action.action_id,
+                            status=ActionStatus.REJECTED,
+                            target_system=target_system,
+                            target_id=target_id,
+                            error_message=err_msg
+                        )
+
 
         # ----------------------------------------------------------------------
         # 5. Security & Classification Gate

@@ -7,6 +7,7 @@ from app.connectors.discord import DiscordWebhookConnector, DiscordBotConnector,
 from app.connectors.mattermost import MattermostConnector, MattermostClient
 from app.core.actions.base import BaseAction
 from app.core.models.enums import ActionType, Capability, SecurityLevel
+from app.config.settings import settings
 
 
 @pytest.mark.asyncio
@@ -66,20 +67,22 @@ async def test_mattermost_connector_mock_dm():
     mock_client.send_direct_message = AsyncMock(return_value={"id": "post-999", "message": "hello"})
 
     connector = MattermostConnector(client=mock_client)
+    self_id = settings.MATTERMOST_SELF_ONLY_USER_ID
 
     action = BaseAction(
         action_type=ActionType.SEND_MESSAGE,
         target_system="mattermost",
-        target_id="mm-user-123",
-        parameters={"text": "Hey Ahsan, update your task please.", "recipient_id": "mm-user-123"}
+        target_id=self_id,
+        parameters={"text": "Hey Ahsan, update your task please.", "recipient_id": self_id}
     )
 
     res = await connector.execute_action(action)
     assert res == {"id": "post-999", "message": "hello"}
     mock_client.send_direct_message.assert_called_once_with(
-        target_user_id="mm-user-123",
+        target_user_id=self_id,
         message="Hey Ahsan, update your task please."
     )
+
 
 
 def test_capabilities_and_security_levels():
