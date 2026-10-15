@@ -1923,3 +1923,77 @@ class DiscordFormatter:
         lines.append("")
         lines.append("──────────────────────────────────────────────────\n*PM Operations Agent — Mubashir Automation*")
         return "\n".join(lines)
+
+    @classmethod
+    def format_event1_approval_request(
+        cls,
+        approval_id: str,
+        display_name: str,
+        jira_account_id: str,
+        mattermost_user_id: str,
+        target_date: str,
+        worklog_minutes: int,
+        has_activity: bool,
+    ) -> Dict[str, Any]:
+        """Format an Event 1 Leave Verification & Dispatch Approval Request with buttons."""
+        activity_str = "Detected (Active on Jira tickets)" if has_activity else "None (Zero Jira worklogs/events)"
+        hours = worklog_minutes / 60.0
+        time_str = f"{worklog_minutes} min ({hours:.2f} hrs)" if worklog_minutes > 0 else "0 min (0.00 hrs)"
+
+        description = (
+            "Please verify whether this employee is on approved leave for the target date. "
+            "If the employee is **NOT** on approved leave and the reminder is appropriate, "
+            "react with 👍 to authorize sending the Mattermost reminder. "
+            "React with 👎 to reject it. No response means no message will be sent."
+        )
+
+        warning_text = (
+            "⚠️ **Approved-Leave Status Warning:**\n"
+            "The employee's approved-leave status has **not** been independently verified by an HR/leave integration. "
+            "Explicit PM administrator confirmation is required before any reminder can be sent."
+        )
+
+        embed = {
+            "title": "Daily Mursaleen Cluster Worklog Reminder — Leave Verification Approval",
+            "description": f"{description}\n\n{warning_text}",
+            "color": COLOR_ATTENTION,
+            "fields": [
+                {"name": "Employee Name", "value": display_name, "inline": True},
+                {"name": "Jira Account Identifier", "value": f"`{jira_account_id}`", "inline": True},
+                {"name": "Target Date (PKT)", "value": f"`{target_date}`", "inline": True},
+                {"name": "Mattermost User Identifier", "value": f"`{mattermost_user_id}`", "inline": True},
+                {"name": "Logged Work", "value": time_str, "inline": True},
+                {"name": "Jira Activity Detected", "value": activity_str, "inline": True},
+                {"name": "Approval Request ID", "value": f"`{approval_id}`", "inline": False},
+            ],
+            "footer": {"text": "Approval window closes at 21:00 PKT (Asia/Karachi). Unresolved requests expire automatically."},
+            "timestamp": utc_now_iso(),
+        }
+
+        # Message components: Action Row (type 1) with 2 Buttons (type 2)
+        # Style 3 = SUCCESS (Green), Style 4 = DANGER (Red)
+        components = [
+            {
+                "type": 1,
+                "components": [
+                    {
+                        "type": 2,
+                        "style": 3,
+                        "label": "👍 Approve & Send",
+                        "custom_id": f"event1:approve:{approval_id}",
+                    },
+                    {
+                        "type": 2,
+                        "style": 4,
+                        "label": "👎 Reject & Do Not Send",
+                        "custom_id": f"event1:reject:{approval_id}",
+                    },
+                ],
+            }
+        ]
+
+        return {
+            "embeds": [embed],
+            "components": components,
+        }
+

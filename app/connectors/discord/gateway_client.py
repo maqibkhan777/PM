@@ -324,6 +324,45 @@ def build_pm_slash_command_schema() -> Dict[str, Any]:
                     },
                 ],
             },
+            {
+                "name": "event1",
+                "description": "Event 1 (Mursaleen Worklog Reminder) management and date suppression",
+                "type": 2,  # SUB_COMMAND_GROUP
+                "options": [
+                    {
+                        "name": "skip-date",
+                        "description": "Manually suppress Event 1 reminders for a specific date (e.g. company/local holiday)",
+                        "type": 1,  # SUB_COMMAND
+                        "options": [
+                            {
+                                "name": "date",
+                                "description": "Target date to suppress in YYYY-MM-DD format",
+                                "type": 3,
+                                "required": True,
+                            },
+                            {
+                                "name": "reason",
+                                "description": "Reason for suppression (e.g. 'Company holiday', 'Team offsite')",
+                                "type": 3,
+                                "required": True,
+                            },
+                        ],
+                    },
+                    {
+                        "name": "status",
+                        "description": "Inspect Event 1 holiday and suppression status for a date",
+                        "type": 1,  # SUB_COMMAND
+                        "options": [
+                            {
+                                "name": "date",
+                                "description": "Target date to inspect in YYYY-MM-DD format",
+                                "type": 3,
+                                "required": False,
+                            },
+                        ],
+                    },
+                ],
+            },
         ],
     }
 
@@ -688,13 +727,16 @@ class DiscordGatewayClient:
         elif event_type == "INTERACTION_CREATE":
             asyncio.create_task(self._process_interaction_create(data))
 
+        elif event_type == "MESSAGE_REACTION_ADD":
+            asyncio.create_task(self._process_reaction_add(data))
+
     async def _process_interaction_create(self, interaction_data: Dict[str, Any]) -> None:
-        """Process an incoming slash command interaction with deferred acknowledgment."""
+        """Process incoming Discord interactions (slash commands and button message components)."""
         interaction_id = str(interaction_data.get("id", ""))
         interaction_token = str(interaction_data.get("token", ""))
         int_type = interaction_data.get("type")
 
-        # Handle Type 2: APPLICATION_COMMAND
+        # Handle Type 2: APPLICATION_COMMAND (Slash commands)
         if int_type == 2:
             data = interaction_data.get("data", {})
             cmd_name = data.get("name", "").lower()
@@ -726,6 +768,74 @@ class DiscordGatewayClient:
             # 3. Patch the deferred original message with the final result
             await self.update_deferred_response(interaction_token, response_data)
 
+        # Handle Type 3: MESSAGE_COMPONENT (Buttons)
+        elif int_type == 3:
+            data = interaction_data.get("data", {})
+            custom_id = str(data.get("custom_id", ""))
+
+            # Handle Event 1 approval buttons: event1:approve:<id> or event1:reject:<id>
+            if custom_id.startswith("event1:approve:") or custom_id.startswith("event1:reject:"):
+                parts = custom_id.split(":")
+                action_kind = parts[1].upper()  # APPROVE or REJECT
+                approval_id = parts[2] if len(parts) > 2 else ""
+
+                user_info = interaction_data.get("member", {}).get("user") or interaction_data.get("user", {})
+                discord_user_id = str(user_info.get("id", ""))
+
+                # Immediately defer with ephemeral update
+                await self.send_deferred_acknowledgement(interaction_id, interaction_token)
+
+                response_data = ""
+                try:
+                    from app.services.worklog_reminder_service import worklog_reminder_service
+                    res = await worklog_reminder_service.handle_approval_decision(
+                        approval_id=approval_id,
+                        decision=action_kind,
+                        decided_by=f"discord:{discord_user_id}",
+                    )
+                    response_data = res.get("message", "Decision processed.")
+                except Exception as e:
+                    logger.error(f"Error handling Event 1 button interaction: {e}", exc_info=True)
+                    response_data = f"❌ An unexpected error occurred: {e}"
+
+                await self.update_deferred_response(interaction_token, response_data)
+
+    async def _process_reaction_add(self, reaction_data: Dict[str, Any]) -> None:
+        """Process incoming MESSAGE_REACTION_ADD gateway event for 👍 and 👎 approvals."""
+        user_id = str(reaction_data.get("user_id", ""))
+        bot_id = str(self._bot_user.get("id", "")) if self._bot_user else ""
+        if user_id == bot_id:
+            # Ignore bot's own reactions
+            return
+
+        emoji_name = reaction_data.get("emoji", {}).get("name", "")
+        if emoji_name not in ("👍", "👎"):
+            return
+
+        message_id = str(reaction_data.get("message_id", ""))
+        from app.database.connection import db_manager
+        with db_manager.session() as conn:
+            cur = conn.execute(
+                "SELECT id FROM event1_approval_requests WHERE discord_message_id = ? AND status = 'PENDING' LIMIT 1",
+                (message_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                return
+            approval_id = str(row["id"])
+
+        decision = "APPROVE" if emoji_name == "👍" else "REJECT"
+        try:
+            from app.services.worklog_reminder_service import worklog_reminder_service
+            await worklog_reminder_service.handle_approval_decision(
+                approval_id=approval_id,
+                decision=decision,
+                decided_by=f"discord:{user_id}",
+            )
+        except Exception as e:
+            logger.error(f"Error processing reaction {emoji_name} for approval {approval_id}: {e}", exc_info=True)
+
 
 # Global singleton Gateway client
 discord_gateway_client = DiscordGatewayClient()
+

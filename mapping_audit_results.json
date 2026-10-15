@@ -1,0 +1,182 @@
+[
+  {
+    "jira_display_name": "Azain Hassan",
+    "jira_account_id": "712020:1ddac8e3-e006-48e7-b4c9-ee941efc8e6e",
+    "status": "UNMAPPED",
+    "mm_username": "",
+    "mm_user_id": "",
+    "evidence": "No explicit mapping record in local database; email is private/hidden in Jira Cloud API.",
+    "action": "OBTAIN_ID",
+    "jira_email": "azain.hassan@objects.email"
+  },
+  {
+    "jira_display_name": "Talha Bukhari",
+    "jira_account_id": "712020:bb2e5830-7156-4852-bba8-75fa773fc55d",
+    "status": "UNMAPPED",
+    "mm_username": "",
+    "mm_user_id": "",
+    "evidence": "No explicit mapping record in local database; email is private/hidden in Jira Cloud API.",
+    "action": "OBTAIN_ID",
+    "jira_email": null
+  },
+  {
+    "jira_display_name": "Syed ali",
+    "jira_account_id": "61ee41431c42100069344a09",
+    "status": "UNMAPPED",
+    "mm_username": "",
+    "mm_user_id": "",
+    "evidence": "No explicit mapping record in local database; email is private/hidden in Jira Cloud API.",
+    "action": "OBTAIN_ID",
+    "jira_email": "syedali@objects.email"
+  },
+  {
+    "jira_display_name": "Muhammad Bilal Khan",
+    "jira_account_id": "712020:12e1da4b-147f-4f91-9d2d-965b66e19b61",
+    "status": "UNMAPPED",
+    "mm_username": "",
+    "mm_user_id": "",
+    "evidence": "No explicit mapping record in local database; email is private/hidden in Jira Cloud API.",
+    "action": "OBTAIN_ID",
+    "jira_email": "bilal.khan@objects.email"
+  },
+  {
+    "jira_display_name": "Ahsan Iftikhar",
+    "jira_account_id": "63da2ba4f1475ad42c584247",
+    "status": "UNMAPPED",
+    "mm_username": "",
+    "mm_user_id": "",
+    "evidence": "No explicit mapping record in local database; email is private/hidden in Jira Cloud API.",
+    "action": "OBTAIN_ID",
+    "jira_email": "ahsaniftikhar@objects.email"
+  },
+  {
+    "jira_display_name": "Muhammad Hamza",
+    "jira_account_id": "5fb3d908facfd6007697c25a",
+    "status": "UNMAPPED",
+    "mm_username": "",
+    "mm_user_id": "",
+    "evidence": "No explicit mapping record in local database; email is private/hidden in Jira Cloud API.",
+    "action": "OBTAIN_ID",
+    "jira_email": "mirza.hamza@objects.email"
+  },
+  {
+    "jira_display_name": "Muhammad Sufiyan",
+    "jira_account_id": "712020:c12d2371-1e5b-4797-a888-369c0c9c5a65",
+    "status": "UNMAPPED",
+    "mm_username": "",
+    "mm_user_id": "",
+    "evidence": "No explicit mapping record in local database; email is private/hidden in Jira Cloud API.",
+    "action": "OBTAIN_ID",
+    "jira_email": "muhammad.sufiyan@objects.email"
+  },
+  {
+    "jira_display_name": "Muhammad Usama Azad",
+    "jira_account_id": "712020:fb8608cb-6393-48a7-a3ab-1ad744a2b7f6",
+    "status": "UNMAPPED",
+    "mm_username": "",
+    "mm_user_id": "",
+    "evidence": "No explicit mapping record in local database; email is private/hidden in Jira Cloud API.",
+    "action": "OBTAIN_ID",
+    "jira_email": "usama.azad@objects.email"
+  },
+  {
+    "jira_display_name": "Hamza Hanif",
+    "jira_account_id": "638490c75fce844d606a16ef",
+    "status": "UNMAPPED",
+    "mm_username": "",
+    "mm_user_id": "",
+    "evidence": "No explicit mapping record in local database; email is private/hidden in Jira Cloud API.",
+    "action": "OBTAIN_ID",
+    "jira_email": "hamza.hanif@objects.email"
+  },
+  {
+    "jira_display_name": "Muneeb Jalal",
+    "jira_account_id": "606570150a6b3f00698f9430",
+    "status": "UNMAPPED",
+    "mm_username": "",
+    "mm_user_id": "",
+    "evidence": "No explicit mapping record in local database; email is private/hidden in Jira Cloud API.",
+    "action": "OBTAIN_ID",
+    "jira_email": "muneeb@objects.email"
+  },
+  {
+    "jira_display_name": "Mubashir Butt",
+    "jira_account_id": "712020:e268bcd8-d981-4b4d-992d-d5694745df8b",
+    "status": "UNMAPPED",
+    "mm_username": "",
+    "mm_user_id": "",
+    "evidence": "No explicit mapping record in local database; email is private/hidden in Jira Cloud API.",
+    "action": "OBTAIN_ID",
+    "jira_email": "mubashir@objects.email"
+  },
+  {
+    "jira_display_name": "Muhammad Shahmeer Khan",
+    "jira_account_id": "712020:a6d04898-c6d8-4a39-a521-103e4b8bfe7c",
+    "status": "UNMAPPED",
+    "mm_username": "",
+    "mm_user_id": "",
+    "evidence": "No explicit mapping record in local database; email is private/hidden in Jira Cloud API.",
+    "action": "OBTAIN_ID",
+    "jira_email": "shahmeer.khan@objects.email"
+  },
+  {
+    "jira_display_name": "Nauman Sadiq",
+    "jira_account_id": "712020:0eca0fb9-4f12-4532-a435-4c178f2d90e8",
+    "status": "UNMAPPED",
+    "mm_username": "",
+    "mm_user_id": "",
+    "evidence": "No explicit mapping record in local database; email is private/hidden in Jira Cloud API.",
+    "action": "OBTAIN_ID",
+    "jira_email": "nauman.sadiq@objects.email"
+  },
+  {
+    "jira_display_name": "Muhammad Ali Siddiqui",
+    "jira_account_id": "712020:2783ea21-c611-402d-9adb-0529f5b7066d",
+    "status": "UNMAPPED",
+    "mm_username": "",
+    "mm_user_id": "",
+    "evidence": "No explicit mapping record in local database; email is private/hidden in Jira Cloud API.",
+    "action": "OBTAIN_ID",
+    "jira_email": null
+  },
+  {
+    "jira_display_name": "Daniyal Raza",
+    "jira_account_id": "63e362bd790148a180977179",
+    "status": "UNMAPPED",
+    "mm_username": "",
+    "mm_user_id": "",
+    "evidence": "No explicit mapping record in local database; email is private/hidden in Jira Cloud API.",
+    "action": "OBTAIN_ID",
+    "jira_email": "daniyal@objects.email"
+  },
+  {
+    "jira_display_name": "shoaib hassan askari",
+    "jira_account_id": "712020:32e5be05-80c9-4ece-ac19-301da7c9487d",
+    "status": "UNMAPPED",
+    "mm_username": "",
+    "mm_user_id": "",
+    "evidence": "No explicit mapping record in local database; email is private/hidden in Jira Cloud API.",
+    "action": "OBTAIN_ID",
+    "jira_email": "shoaib.hassan@objects.email"
+  },
+  {
+    "jira_display_name": "Tahir Ali",
+    "jira_account_id": "638855b85fce844d606bb422",
+    "status": "UNMAPPED",
+    "mm_username": "",
+    "mm_user_id": "",
+    "evidence": "No explicit mapping record in local database; email is private/hidden in Jira Cloud API.",
+    "action": "OBTAIN_ID",
+    "jira_email": "tahir@objects.email"
+  },
+  {
+    "jira_display_name": "Ahsan Amin",
+    "jira_account_id": "712020:8bc58bcd-fe17-4f1b-9825-c5251cb6b1de",
+    "status": "UNMAPPED",
+    "mm_username": "",
+    "mm_user_id": "",
+    "evidence": "No explicit mapping record in local database; email is private/hidden in Jira Cloud API.",
+    "action": "OBTAIN_ID",
+    "jira_email": "ahsan.amin@objects.email"
+  }
+]

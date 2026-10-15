@@ -118,6 +118,12 @@ class Settings(BaseSettings):
         "5f83e3937d9637006ffd0436"
     )
 
+    # Event 1 Mursaleen Cluster Worklog Reminder Settings
+    EVENT1_ENABLED: bool = False
+    EVENT1_SCHEDULED_TIME: str = "18:20"  # 6:20 PM PKT
+    EVENT1_SCHEDULED_TIMEZONE: str = "Asia/Karachi"
+    EVENT1_TEAM_GROUP: str = "Mursaleen Cluster"
+
     # Daily Overdue Digest Settings
     OVERDUE_DIGEST_ENABLED: bool = False
     OVERDUE_DIGEST_TIME: str = "08:40"  # HH:MM format

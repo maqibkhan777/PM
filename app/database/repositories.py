@@ -2858,3 +2858,405 @@ class PluginBoardRepository:
             )
             return [row[0] for row in cursor.fetchall() if row[0]]
 
+
+class HolidayRepository:
+    """Repository for official Pakistani federal public holidays and calendar closures."""
+
+    def __init__(self, manager: Optional[DatabaseManager] = None):
+        self.mgr = manager or db_manager
+
+    def upsert_holiday(
+        self,
+        holiday_date: str,
+        name: str,
+        category: str = "PUBLIC_HOLIDAY",
+        source_type: str = "OFFICIAL_GAZETTE",
+        source_url: Optional[str] = None,
+        source_reference: Optional[str] = None,
+        status: str = "VERIFIED",
+        created_by: str = "system",
+    ) -> str:
+        """Idempotently insert or update a holiday record."""
+        clean_date = holiday_date.strip()
+        rec_id = f"holiday:{clean_date}:{category.strip()}"
+        now_iso = utc_now_iso()
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO holiday_calendar (
+                    id, holiday_date, name, category, source_type, source_url,
+                    source_reference, status, created_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(holiday_date, category) DO UPDATE SET
+                    name = excluded.name,
+                    source_type = excluded.source_type,
+                    source_url = excluded.source_url,
+                    source_reference = excluded.source_reference,
+                    status = excluded.status,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    rec_id,
+                    clean_date,
+                    name.strip(),
+                    category.strip(),
+                    source_type.strip(),
+                    source_url,
+                    source_reference,
+                    status.strip(),
+                    created_by.strip(),
+                    now_iso,
+                    now_iso,
+                ),
+            )
+        return rec_id
+
+    def get_by_date(self, holiday_date: str, category: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Get holiday record for a specific date (YYYY-MM-DD)."""
+        clean_date = holiday_date.strip()
+        with self.mgr.session() as conn:
+            if category:
+                cur = conn.execute(
+                    "SELECT * FROM holiday_calendar WHERE holiday_date = ? AND category = ? LIMIT 1",
+                    (clean_date, category.strip()),
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT * FROM holiday_calendar WHERE holiday_date = ? LIMIT 1",
+                    (clean_date,),
+                )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def is_official_public_holiday(self, holiday_date: str) -> bool:
+        """Check if date is an official verified Pakistani federal public holiday."""
+        clean_date = holiday_date.strip()
+        with self.mgr.session() as conn:
+            cur = conn.execute(
+                """
+                SELECT 1 FROM holiday_calendar
+                WHERE holiday_date = ?
+                  AND category = 'PUBLIC_HOLIDAY'
+                  AND status = 'VERIFIED'
+                LIMIT 1
+                """,
+                (clean_date,),
+            )
+            return cur.fetchone() is not None
+
+    def list_holidays(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """List all registered holidays ordered by date."""
+        with self.mgr.session() as conn:
+            cur = conn.execute(
+                "SELECT * FROM holiday_calendar ORDER BY holiday_date ASC LIMIT ?",
+                (limit,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+class SuppressionRepository:
+    """Repository for manual administrator date suppressions (e.g. via Discord slash command)."""
+
+    def __init__(self, manager: Optional[DatabaseManager] = None):
+        self.mgr = manager or db_manager
+
+    def set_suppression(
+        self,
+        event_type: str,
+        target_date: str,
+        reason: str,
+        created_by: str,
+        source: str = "MANUAL_DISCORD",
+    ) -> str:
+        """Idempotently persist or update a manual date suppression."""
+        clean_type = event_type.strip().upper()
+        clean_date = target_date.strip()
+        rec_id = f"suppression:{clean_type}:{clean_date}"
+        now_iso = utc_now_iso()
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO event_date_suppressions (
+                    id, event_type, target_date, reason, created_by, source, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_type, target_date) DO UPDATE SET
+                    reason = excluded.reason,
+                    created_by = excluded.created_by,
+                    source = excluded.source,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    rec_id,
+                    clean_type,
+                    clean_date,
+                    reason.strip(),
+                    created_by.strip(),
+                    source.strip(),
+                    now_iso,
+                    now_iso,
+                ),
+            )
+        return rec_id
+
+    def get_suppression(self, event_type: str, target_date: str) -> Optional[Dict[str, Any]]:
+        """Fetch suppression record for a specific event and target date."""
+        clean_type = event_type.strip().upper()
+        clean_date = target_date.strip()
+        with self.mgr.session() as conn:
+            cur = conn.execute(
+                """
+                SELECT * FROM event_date_suppressions
+                WHERE (event_type = ? OR event_type = 'ALL')
+                  AND target_date = ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (clean_type, clean_date),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def is_date_suppressed(self, event_type: str, target_date: str) -> bool:
+        """Check whether Event 1 / specified event is suppressed for target date."""
+        return self.get_suppression(event_type, target_date) is not None
+
+    def list_suppressions(self, event_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List suppressions ordered by date."""
+        with self.mgr.session() as conn:
+            if event_type:
+                cur = conn.execute(
+                    "SELECT * FROM event_date_suppressions WHERE event_type = ? ORDER BY target_date ASC",
+                    (event_type.strip().upper(),),
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT * FROM event_date_suppressions ORDER BY target_date ASC"
+                )
+            return [dict(r) for r in cur.fetchall()]
+
+
+class Event1ApprovalRepository:
+    """Repository for persisting and transitioning Event 1 Discord approval gates."""
+
+    def __init__(self, manager: Optional[DatabaseManager] = None):
+        self.mgr = manager or db_manager
+
+    def create_pending_approval(
+        self,
+        approval_id: str,
+        jira_account_id: str,
+        mattermost_user_id: str,
+        display_name: str,
+        target_date: str,
+        worklog_minutes: int,
+        has_activity: bool,
+        idempotency_key: str,
+        expires_at: str,
+        discord_message_id: Optional[str] = None,
+        discord_channel_id: Optional[str] = None,
+        event_scope: str = "MURSALEEN_WORKLOG_REMINDER",
+    ) -> str:
+        """Create a new pending approval record. If already exists for this (jira_account_id, target_date), returns existing ID."""
+        now_iso = utc_now_iso()
+        with self.mgr.session() as conn:
+            # Check existing
+            cur = conn.execute(
+                "SELECT id FROM event1_approval_requests WHERE jira_account_id = ? AND target_date = ?",
+                (jira_account_id, target_date),
+            )
+            row = cur.fetchone()
+            if row:
+                return str(row["id"])
+
+            conn.execute(
+                """
+                INSERT INTO event1_approval_requests (
+                    id, event_scope, jira_account_id, mattermost_user_id, display_name,
+                    target_date, worklog_minutes, has_activity, idempotency_key,
+                    discord_message_id, discord_channel_id, status, expires_at,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)
+                """,
+                (
+                    approval_id,
+                    event_scope,
+                    jira_account_id,
+                    mattermost_user_id,
+                    display_name,
+                    target_date,
+                    worklog_minutes,
+                    1 if has_activity else 0,
+                    idempotency_key,
+                    discord_message_id,
+                    discord_channel_id,
+                    expires_at,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+        return approval_id
+
+    def get_by_id(self, approval_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve approval record by primary key."""
+        with self.mgr.session() as conn:
+            cur = conn.execute(
+                "SELECT * FROM event1_approval_requests WHERE id = ?",
+                (approval_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def get_by_employee_and_date(self, jira_account_id: str, target_date: str) -> Optional[Dict[str, Any]]:
+        """Retrieve approval record by Jira account ID and target date."""
+        with self.mgr.session() as conn:
+            cur = conn.execute(
+                "SELECT * FROM event1_approval_requests WHERE jira_account_id = ? AND target_date = ?",
+                (jira_account_id, target_date),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def get_by_idempotency_key(self, idempotency_key: str) -> Optional[Dict[str, Any]]:
+        """Retrieve approval record by idempotency key."""
+        with self.mgr.session() as conn:
+            cur = conn.execute(
+                "SELECT * FROM event1_approval_requests WHERE idempotency_key = ?",
+                (idempotency_key,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def update_discord_message_info(
+        self,
+        approval_id: str,
+        discord_message_id: str,
+        discord_channel_id: Optional[str] = None,
+    ) -> None:
+        """Associate Discord message Snowflake ID with pending approval."""
+        now_iso = utc_now_iso()
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                UPDATE event1_approval_requests
+                SET discord_message_id = ?,
+                    discord_channel_id = COALESCE(?, discord_channel_id),
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (discord_message_id, discord_channel_id, now_iso, approval_id),
+            )
+
+    def transition_status(
+        self,
+        approval_id: str,
+        target_status: str,
+        decided_by: Optional[str] = None,
+        decision_reason: Optional[str] = None,
+        expected_status: str = "PENDING",
+    ) -> bool:
+        """Atomically transition approval status from expected_status to target_status.
+        
+        Returns True if transition succeeded (exactly 1 row updated), False if state changed or row doesn't exist.
+        """
+        now_iso = utc_now_iso()
+        with self.mgr.session() as conn:
+            cur = conn.execute(
+                """
+                UPDATE event1_approval_requests
+                SET status = ?,
+                    decided_by = COALESCE(?, decided_by),
+                    decided_at = CASE WHEN ? IN ('APPROVED', 'REJECTED') THEN ? ELSE decided_at END,
+                    decision_reason = COALESCE(?, decision_reason),
+                    updated_at = ?
+                WHERE id = ? AND status = ?
+                """,
+                (
+                    target_status,
+                    decided_by,
+                    target_status,
+                    now_iso,
+                    decision_reason,
+                    now_iso,
+                    approval_id,
+                    expected_status,
+                ),
+            )
+            return cur.rowcount == 1
+
+    def mark_sent(
+        self,
+        approval_id: str,
+        dispatch_result: Optional[str] = None,
+    ) -> bool:
+        """Atomically mark an APPROVED record as SENT."""
+        now_iso = utc_now_iso()
+        with self.mgr.session() as conn:
+            cur = conn.execute(
+                """
+                UPDATE event1_approval_requests
+                SET status = 'SENT',
+                    dispatch_result = ?,
+                    updated_at = ?
+                WHERE id = ? AND status = 'APPROVED'
+                """,
+                (dispatch_result, now_iso, approval_id),
+            )
+            return cur.rowcount == 1
+
+    def record_error(
+        self,
+        approval_id: str,
+        error_details: str,
+    ) -> None:
+        """Record error details for an approval record."""
+        now_iso = utc_now_iso()
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                UPDATE event1_approval_requests
+                SET error_details = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (error_details, now_iso, approval_id),
+            )
+
+    def expire_stale_approvals(self, cutoff_iso: Optional[str] = None) -> int:
+        """Expire any unresolved PENDING approvals that have passed their expires_at timestamp."""
+        now_iso = cutoff_iso or utc_now_iso()
+        with self.mgr.session() as conn:
+            cur = conn.execute(
+                """
+                UPDATE event1_approval_requests
+                SET status = 'EXPIRED',
+                    decision_reason = 'Approval window expired (passed 21:00 PKT cutoff)',
+                    updated_at = ?
+                WHERE status = 'PENDING' AND expires_at <= ?
+                """,
+                (now_iso, now_iso),
+            )
+            return cur.rowcount
+
+    def list_approvals(
+        self,
+        target_date: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """List approvals with optional filters."""
+        query = "SELECT * FROM event1_approval_requests WHERE 1=1"
+        params: List[Any] = []
+        if target_date:
+            query += " AND target_date = ?"
+            params.append(target_date)
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        with self.mgr.session() as conn:
+            cur = conn.execute(query, tuple(params))
+            return [dict(r) for r in cur.fetchall()]
+
+
+

@@ -1,0 +1,182 @@
+[
+  {
+    "jira_display_name": "Azain Hassan",
+    "jira_account_id": "712020:1ddac8e3-e006-48e7-b4c9-ee941efc8e6e",
+    "jira_email": "azain.hassan@objects.email",
+    "mm_username": "azain.hassan",
+    "mm_user_id": "zhth9yx8yprpbds1nyc4h7tich",
+    "evidence": "Found Mattermost account @azain.hassan (ID: zhth9yx8yprpbds1nyc4h7tich, Email: azain.hassan@objects.email, Name: ) via EMAIL_LOOKUP (azain.hassan@objects.email).",
+    "status": "CANDIDATE_REQUIRES_CONFIRMATION",
+    "follow_up": "Operator review & explicit confirmation required before seeding into user_mappings."
+  },
+  {
+    "jira_display_name": "Talha Bukhari",
+    "jira_account_id": "712020:bb2e5830-7156-4852-bba8-75fa773fc55d",
+    "jira_email": "",
+    "mm_username": "talhabukhari",
+    "mm_user_id": "b3zeoe6h538wtrk6qfhiz7szcr",
+    "evidence": "Found Mattermost account @talhabukhari (ID: b3zeoe6h538wtrk6qfhiz7szcr, Email: talha.bukhari@objects.email, Name: ) via USERNAME_LOOKUP (talhabukhari).",
+    "status": "CANDIDATE_REQUIRES_CONFIRMATION",
+    "follow_up": "Operator review & explicit confirmation required before seeding into user_mappings."
+  },
+  {
+    "jira_display_name": "Syed ali",
+    "jira_account_id": "61ee41431c42100069344a09",
+    "jira_email": "syedali@objects.email",
+    "mm_username": "syedali",
+    "mm_user_id": "ywpkqpdd3jb7bq8t3piz1ur3ic",
+    "evidence": "Found Mattermost account @syedali (ID: ywpkqpdd3jb7bq8t3piz1ur3ic, Email: syedali@objects.email, Name: Syed Ali Ahmed) via EMAIL_LOOKUP (syedali@objects.email).",
+    "status": "CANDIDATE_REQUIRES_CONFIRMATION",
+    "follow_up": "Operator review & explicit confirmation required before seeding into user_mappings."
+  },
+  {
+    "jira_display_name": "Muhammad Bilal Khan",
+    "jira_account_id": "712020:12e1da4b-147f-4f91-9d2d-965b66e19b61",
+    "jira_email": "bilal.khan@objects.email",
+    "mm_username": "bilal.khan",
+    "mm_user_id": "7ytz6ec89pnc5xti9pnqcstgso",
+    "evidence": "Found Mattermost account @bilal.khan (ID: 7ytz6ec89pnc5xti9pnqcstgso, Email: bilal.khan@objects.email, Name: ) via EMAIL_LOOKUP (bilal.khan@objects.email).",
+    "status": "CANDIDATE_REQUIRES_CONFIRMATION",
+    "follow_up": "Operator review & explicit confirmation required before seeding into user_mappings."
+  },
+  {
+    "jira_display_name": "Ahsan Iftikhar",
+    "jira_account_id": "63da2ba4f1475ad42c584247",
+    "jira_email": "ahsaniftikhar@objects.email",
+    "mm_username": "ahsan",
+    "mm_user_id": "fpf9jhpde3na5b1bj971199p1h",
+    "evidence": "Found Mattermost account @ahsan (ID: fpf9jhpde3na5b1bj971199p1h, Email: ahsaniftikhar@objects.email, Name: ) via EMAIL_LOOKUP (ahsaniftikhar@objects.email).",
+    "status": "CANDIDATE_REQUIRES_CONFIRMATION",
+    "follow_up": "Operator review & explicit confirmation required before seeding into user_mappings."
+  },
+  {
+    "jira_display_name": "Muhammad Hamza",
+    "jira_account_id": "5fb3d908facfd6007697c25a",
+    "jira_email": "mirza.hamza@objects.email",
+    "mm_username": "mirzahamza",
+    "mm_user_id": "rx11z31933n59bnakwaadbcf5y",
+    "evidence": "Found Mattermost account @mirzahamza (ID: rx11z31933n59bnakwaadbcf5y, Email: mirza.hamza@objects.email, Name: Mirza Hamza) via EMAIL_LOOKUP (mirza.hamza@objects.email).",
+    "status": "CANDIDATE_REQUIRES_CONFIRMATION",
+    "follow_up": "Operator review & explicit confirmation required before seeding into user_mappings."
+  },
+  {
+    "jira_display_name": "Muhammad Sufiyan",
+    "jira_account_id": "712020:c12d2371-1e5b-4797-a888-369c0c9c5a65",
+    "jira_email": "muhammad.sufiyan@objects.email",
+    "mm_username": "muhammad.sufiyan",
+    "mm_user_id": "eb1i9dapp3fkzd6k4qauf89haa",
+    "evidence": "Found Mattermost account @muhammad.sufiyan (ID: eb1i9dapp3fkzd6k4qauf89haa, Email: muhammad.sufiyan@objects.email, Name: Muhammad Sufiyan) via EMAIL_LOOKUP (muhammad.sufiyan@objects.email).",
+    "status": "CANDIDATE_REQUIRES_CONFIRMATION",
+    "follow_up": "Operator review & explicit confirmation required before seeding into user_mappings."
+  },
+  {
+    "jira_display_name": "Muhammad Usama Azad",
+    "jira_account_id": "712020:fb8608cb-6393-48a7-a3ab-1ad744a2b7f6",
+    "jira_email": "usama.azad@objects.email",
+    "mm_username": "usama.azad",
+    "mm_user_id": "7j347ruqitnotr8mrgibjkrdbw",
+    "evidence": "Found Mattermost account @usama.azad (ID: 7j347ruqitnotr8mrgibjkrdbw, Email: usama.azad@objects.email, Name: Muhammad Usama Azad) via EMAIL_LOOKUP (usama.azad@objects.email).",
+    "status": "CANDIDATE_REQUIRES_CONFIRMATION",
+    "follow_up": "Operator review & explicit confirmation required before seeding into user_mappings."
+  },
+  {
+    "jira_display_name": "Hamza Hanif",
+    "jira_account_id": "638490c75fce844d606a16ef",
+    "jira_email": "hamza.hanif@objects.email",
+    "mm_username": "hamzahanif",
+    "mm_user_id": "a61ssoxtijy7ddtuxmx47csdme",
+    "evidence": "Found Mattermost account @hamzahanif (ID: a61ssoxtijy7ddtuxmx47csdme, Email: hamza.hanif@objects.email, Name: ) via EMAIL_LOOKUP (hamza.hanif@objects.email).",
+    "status": "CANDIDATE_REQUIRES_CONFIRMATION",
+    "follow_up": "Operator review & explicit confirmation required before seeding into user_mappings."
+  },
+  {
+    "jira_display_name": "Muneeb Jalal",
+    "jira_account_id": "606570150a6b3f00698f9430",
+    "jira_email": "muneeb@objects.email",
+    "mm_username": "muneeb",
+    "mm_user_id": "pjzc8k68ytf5txhh1jperrqeyy",
+    "evidence": "Found Mattermost account @muneeb (ID: pjzc8k68ytf5txhh1jperrqeyy, Email: muneeb@objects.email, Name: Muneeb Jalal) via EMAIL_LOOKUP (muneeb@objects.email).",
+    "status": "CANDIDATE_REQUIRES_CONFIRMATION",
+    "follow_up": "Operator review & explicit confirmation required before seeding into user_mappings."
+  },
+  {
+    "jira_display_name": "Mubashir Butt",
+    "jira_account_id": "712020:e268bcd8-d981-4b4d-992d-d5694745df8b",
+    "jira_email": "mubashir@objects.email",
+    "mm_username": "mubashir.butt",
+    "mm_user_id": "e956k4q3tpbfteu4t7sanb914r",
+    "evidence": "Found Mattermost account @mubashir.butt (ID: e956k4q3tpbfteu4t7sanb914r, Email: mubashir@objects.email, Name: ) via EMAIL_LOOKUP (mubashir@objects.email).",
+    "status": "CANDIDATE_REQUIRES_CONFIRMATION",
+    "follow_up": "Operator review & explicit confirmation required before seeding into user_mappings."
+  },
+  {
+    "jira_display_name": "Muhammad Shahmeer Khan",
+    "jira_account_id": "712020:a6d04898-c6d8-4a39-a521-103e4b8bfe7c",
+    "jira_email": "shahmeer.khan@objects.email",
+    "mm_username": "shahmeer.khan",
+    "mm_user_id": "o7qamzdy138k5qmbuam4tuhhze",
+    "evidence": "Found Mattermost account @shahmeer.khan (ID: o7qamzdy138k5qmbuam4tuhhze, Email: shahmeer.khan@objects.email, Name: Muhammad Shahmeer Khan) via EMAIL_LOOKUP (shahmeer.khan@objects.email).",
+    "status": "CANDIDATE_REQUIRES_CONFIRMATION",
+    "follow_up": "Operator review & explicit confirmation required before seeding into user_mappings."
+  },
+  {
+    "jira_display_name": "Nauman Sadiq",
+    "jira_account_id": "712020:0eca0fb9-4f12-4532-a435-4c178f2d90e8",
+    "jira_email": "nauman.sadiq@objects.email",
+    "mm_username": "nauman.sadiq",
+    "mm_user_id": "yq4bnkg5dfbjde7e64a7czox3o",
+    "evidence": "Found Mattermost account @nauman.sadiq (ID: yq4bnkg5dfbjde7e64a7czox3o, Email: nauman.sadiq@objects.email, Name: Syed Muhammad Nauman Sadiq Hussaini) via EMAIL_LOOKUP (nauman.sadiq@objects.email).",
+    "status": "CANDIDATE_REQUIRES_CONFIRMATION",
+    "follow_up": "Operator review & explicit confirmation required before seeding into user_mappings."
+  },
+  {
+    "jira_display_name": "Muhammad Ali Siddiqui",
+    "jira_account_id": "712020:2783ea21-c611-402d-9adb-0529f5b7066d",
+    "jira_email": "",
+    "mm_username": "muhammad",
+    "mm_user_id": "tbughk65o7g5mdtcheqtu56jko",
+    "evidence": "Found Mattermost account @muhammad (ID: tbughk65o7g5mdtcheqtu56jko, Email: m.korany@objects.ws, Name: Muhammad Korany) via USERNAME_LOOKUP (muhammad).",
+    "status": "CANDIDATE_REQUIRES_CONFIRMATION",
+    "follow_up": "Operator review & explicit confirmation required before seeding into user_mappings."
+  },
+  {
+    "jira_display_name": "Daniyal Raza",
+    "jira_account_id": "63e362bd790148a180977179",
+    "jira_email": "daniyal@objects.email",
+    "mm_username": "daniyalraza",
+    "mm_user_id": "cekznaowyigp5mtgagbiz9w5xc",
+    "evidence": "Found Mattermost account @daniyalraza (ID: cekznaowyigp5mtgagbiz9w5xc, Email: daniyal@objects.email, Name: Daniyal Raza) via EMAIL_LOOKUP (daniyal@objects.email).",
+    "status": "CANDIDATE_REQUIRES_CONFIRMATION",
+    "follow_up": "Operator review & explicit confirmation required before seeding into user_mappings."
+  },
+  {
+    "jira_display_name": "shoaib hassan askari",
+    "jira_account_id": "712020:32e5be05-80c9-4ece-ac19-301da7c9487d",
+    "jira_email": "shoaib.hassan@objects.email",
+    "mm_username": "shoaib.hassan",
+    "mm_user_id": "9grxc1xwoidzdrqnxc99yp96wy",
+    "evidence": "Found Mattermost account @shoaib.hassan (ID: 9grxc1xwoidzdrqnxc99yp96wy, Email: shoaib.hassan@objects.email, Name: Shoaib Hassan Askari) via EMAIL_LOOKUP (shoaib.hassan@objects.email).",
+    "status": "CANDIDATE_REQUIRES_CONFIRMATION",
+    "follow_up": "Operator review & explicit confirmation required before seeding into user_mappings."
+  },
+  {
+    "jira_display_name": "Tahir Ali",
+    "jira_account_id": "638855b85fce844d606bb422",
+    "jira_email": "tahir@objects.email",
+    "mm_username": "tahirali",
+    "mm_user_id": "k3n3krao33gy9dwubgwr1udrbe",
+    "evidence": "Found Mattermost account @tahirali (ID: k3n3krao33gy9dwubgwr1udrbe, Email: tahir@objects.email, Name: Tahir Ali) via EMAIL_LOOKUP (tahir@objects.email).",
+    "status": "CANDIDATE_REQUIRES_CONFIRMATION",
+    "follow_up": "Operator review & explicit confirmation required before seeding into user_mappings."
+  },
+  {
+    "jira_display_name": "Ahsan Amin",
+    "jira_account_id": "712020:8bc58bcd-fe17-4f1b-9825-c5251cb6b1de",
+    "jira_email": "ahsan.amin@objects.email",
+    "mm_username": "ahsan.amin",
+    "mm_user_id": "kf4nkziu7t8w9de1pdog9cemfo",
+    "evidence": "Found Mattermost account @ahsan.amin (ID: kf4nkziu7t8w9de1pdog9cemfo, Email: ahsan.amin@objects.email, Name: ) via EMAIL_LOOKUP (ahsan.amin@objects.email).",
+    "status": "CANDIDATE_REQUIRES_CONFIRMATION",
+    "follow_up": "Operator review & explicit confirmation required before seeding into user_mappings."
+  }
+]

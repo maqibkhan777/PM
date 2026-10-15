@@ -1,0 +1,19 @@
+Jira Display Name,Jira Account ID,Mattermost Mapping Status,Mattermost Username,Mattermost User ID,Match Evidence,Required Action
+Azain Hassan,712020:1ddac8e3-e006-48e7-b4c9-ee941efc8e6e,UNMAPPED,,,No explicit database mapping in user_mappings; Jira email azain.hassan@objects.email,OBTAIN_ID
+Talha Bukhari,712020:bb2e5830-7156-4852-bba8-75fa773fc55d,UNMAPPED,,,No explicit database mapping in user_mappings; Jira email hidden,OBTAIN_ID
+Syed ali,61ee41431c42100069344a09,UNMAPPED,,,No explicit database mapping in user_mappings; Jira email syedali@objects.email,OBTAIN_ID
+Muhammad Bilal Khan,712020:12e1da4b-147f-4f91-9d2d-965b66e19b61,UNMAPPED,,,No explicit database mapping in user_mappings; Jira email bilal.khan@objects.email,OBTAIN_ID
+Ahsan Iftikhar,63da2ba4f1475ad42c584247,UNMAPPED,,,No explicit database mapping in user_mappings; Jira email ahsaniftikhar@objects.email,OBTAIN_ID
+Muhammad Hamza,5fb3d908facfd6007697c25a,UNMAPPED,,,No explicit database mapping in user_mappings; Jira email mirza.hamza@objects.email,OBTAIN_ID
+Muhammad Sufiyan,712020:c12d2371-1e5b-4797-a888-369c0c9c5a65,UNMAPPED,,,No explicit database mapping in user_mappings; Jira email muhammad.sufiyan@objects.email,OBTAIN_ID
+Muhammad Usama Azad,712020:fb8608cb-6393-48a7-a3ab-1ad744a2b7f6,UNMAPPED,,,No explicit database mapping in user_mappings; Jira email usama.azad@objects.email,OBTAIN_ID
+Hamza Hanif,638490c75fce844d606a16ef,UNMAPPED,,,No explicit database mapping in user_mappings; Jira email hamza.hanif@objects.email,OBTAIN_ID
+Muneeb Jalal,606570150a6b3f00698f9430,UNMAPPED,,,No explicit database mapping in user_mappings; Jira email muneeb@objects.email,OBTAIN_ID
+Mubashir Butt,712020:e268bcd8-d981-4b4d-992d-d5694745df8b,UNMAPPED,,,No explicit database mapping in user_mappings; Jira email mubashir@objects.email,OBTAIN_ID
+Muhammad Shahmeer Khan,712020:a6d04898-c6d8-4a39-a521-103e4b8bfe7c,UNMAPPED,,,No explicit database mapping in user_mappings; Jira email shahmeer.khan@objects.email,OBTAIN_ID
+Nauman Sadiq,712020:0eca0fb9-4f12-4532-a435-4c178f2d90e8,UNMAPPED,,,No explicit database mapping in user_mappings; Jira email nauman.sadiq@objects.email,OBTAIN_ID
+Muhammad Ali Siddiqui,712020:2783ea21-c611-402d-9adb-0529f5b7066d,UNMAPPED,,,No explicit database mapping in user_mappings; Jira email hidden,OBTAIN_ID
+Daniyal Raza,63e362bd790148a180977179,UNMAPPED,,,No explicit database mapping in user_mappings; Jira email daniyal@objects.email,OBTAIN_ID
+shoaib hassan askari,712020:32e5be05-80c9-4ece-ac19-301da7c9487d,UNMAPPED,,,No explicit database mapping in user_mappings; Jira email shoaib.hassan@objects.email,OBTAIN_ID
+Tahir Ali,638855b85fce844d606bb422,UNMAPPED,,,No explicit database mapping in user_mappings; Jira email tahir@objects.email,OBTAIN_ID
+Ahsan Amin,712020:8bc58bcd-fe17-4f1b-9825-c5251cb6b1de,UNMAPPED,,,No explicit database mapping in user_mappings; Jira email ahsan.amin@objects.email,OBTAIN_ID

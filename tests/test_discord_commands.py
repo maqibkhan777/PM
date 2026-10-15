@@ -1920,10 +1920,10 @@ class TestPhase1SlashCommandCleanup:
         expected_order = [
             "help", "status", "worklog", "overdue", "queue",
             "attention", "activity", "transition", "assign", "comment",
-            "create", "update", "notify", "report", "message"
+            "create", "update", "notify", "report", "message", "event1"
         ]
         assert subcommands == expected_order
-        assert len(subcommands) == 15
+        assert len(subcommands) == 16
 
     def test_report_compatibility_shim_choices(self):
         """Verify /pm report schema maintains all 5 required report choices."""
@@ -2210,9 +2210,9 @@ class TestManualMubashirReportCommand:
         return aid
 
     def test_mubashir_choice_in_schema(self):
-        """Verify 'mubashir' is registered in /pm report name choices and command count remains exactly 15."""
+        """Verify 'mubashir' is registered in /pm report name choices and command count reflects registered schema."""
         schema = build_pm_slash_command_schema()
-        assert len(schema["options"]) == 15
+        assert len(schema["options"]) == 16
         report_opt = next(opt for opt in schema["options"] if opt["name"] == "report")
         assert report_opt is not None
         name_param = next(p for p in report_opt["options"] if p["name"] == "name")

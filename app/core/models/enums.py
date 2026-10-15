@@ -150,3 +150,9 @@ class EventProcessingStatus(str, Enum):
     PROCESSED = "PROCESSED"
     FAILED = "FAILED"
     RETRY_PENDING = "RETRY_PENDING"
+
+
+class EventScope(str, Enum):
+    """Event-scoped authorization identifier for fine-grained dispatch permissions."""
+    MURSALEEN_WORKLOG_REMINDER = "MURSALEEN_WORKLOG_REMINDER"
+

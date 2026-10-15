@@ -1,0 +1,117 @@
+{
+  "counts": {
+    "COMPLIANT": 346,
+    "REMINDER_CANDIDATE": 8,
+    "SKIPPED_NO_ACTIVITY_LEAVE_UNVERIFIED": 42,
+    "SKIPPED_APPROVED_LEAVE": 0,
+    "SKIPPED_WEEKEND": 144,
+    "SKIPPED_HOLIDAY": 0,
+    "UNDETERMINED": 0
+  },
+  "candidates": [
+    {
+      "date": "2026-09-09",
+      "day": "Wednesday",
+      "jira_display_name": "Azain Hassan",
+      "jira_account_id": "712020:1ddac8e3-e006-48e7-b4c9-ee941efc8e6e",
+      "mattermost_user_id": "zhth9yx8yprpbds1nyc4h7tich",
+      "minutes_logged": 40,
+      "activity_detected": "Yes",
+      "decision_category": "REMINDER_CANDIDATE",
+      "prepared_message": "You have not yet logged your work. Kindly log your work for today in the respective tickets.",
+      "simulated_result": "SIMULATED_PREPARED",
+      "idempotency_key": "1445d3b39344326b"
+    },
+    {
+      "date": "2026-09-09",
+      "day": "Wednesday",
+      "jira_display_name": "Mubashir Butt",
+      "jira_account_id": "712020:e268bcd8-d981-4b4d-992d-d5694745df8b",
+      "mattermost_user_id": "e956k4q3tpbfteu4t7sanb914r",
+      "minutes_logged": 0,
+      "activity_detected": "Yes",
+      "decision_category": "REMINDER_CANDIDATE",
+      "prepared_message": "You have not yet logged your work. Kindly log your work for today in the respective tickets.",
+      "simulated_result": "SIMULATED_PREPARED",
+      "idempotency_key": "ece7dfb11558c78b"
+    },
+    {
+      "date": "2026-09-09",
+      "day": "Wednesday",
+      "jira_display_name": "Muhammad Ali Siddiqui",
+      "jira_account_id": "712020:2783ea21-c611-402d-9adb-0529f5b7066d",
+      "mattermost_user_id": "ceujrj84zjyfuce8kx8b7bnn4a",
+      "minutes_logged": 0,
+      "activity_detected": "Yes",
+      "decision_category": "REMINDER_CANDIDATE",
+      "prepared_message": "You have not yet logged your work. Kindly log your work for today in the respective tickets.",
+      "simulated_result": "SIMULATED_PREPARED",
+      "idempotency_key": "c43110987efe7f14"
+    },
+    {
+      "date": "2026-09-09",
+      "day": "Wednesday",
+      "jira_display_name": "Tahir Ali",
+      "jira_account_id": "638855b85fce844d606bb422",
+      "mattermost_user_id": "k3n3krao33gy9dwubgwr1udrbe",
+      "minutes_logged": 50,
+      "activity_detected": "Yes",
+      "decision_category": "REMINDER_CANDIDATE",
+      "prepared_message": "You have not yet logged your work. Kindly log your work for today in the respective tickets.",
+      "simulated_result": "SIMULATED_PREPARED",
+      "idempotency_key": "3517bbb7f7bf14c9"
+    },
+    {
+      "date": "2026-09-10",
+      "day": "Thursday",
+      "jira_display_name": "Muhammad Usama Azad",
+      "jira_account_id": "712020:fb8608cb-6393-48a7-a3ab-1ad744a2b7f6",
+      "mattermost_user_id": "7j347ruqitnotr8mrgibjkrdbw",
+      "minutes_logged": 35,
+      "activity_detected": "Yes",
+      "decision_category": "REMINDER_CANDIDATE",
+      "prepared_message": "You have not yet logged your work. Kindly log your work for today in the respective tickets.",
+      "simulated_result": "SIMULATED_PREPARED",
+      "idempotency_key": "84db7455ba0b5344"
+    },
+    {
+      "date": "2026-09-14",
+      "day": "Monday",
+      "jira_display_name": "Muhammad Hamza",
+      "jira_account_id": "5fb3d908facfd6007697c25a",
+      "mattermost_user_id": "rx11z31933n59bnakwaadbcf5y",
+      "minutes_logged": 0,
+      "activity_detected": "Yes",
+      "decision_category": "REMINDER_CANDIDATE",
+      "prepared_message": "You have not yet logged your work. Kindly log your work for today in the respective tickets.",
+      "simulated_result": "SIMULATED_PREPARED",
+      "idempotency_key": "60f48d796b518836"
+    },
+    {
+      "date": "2026-09-25",
+      "day": "Friday",
+      "jira_display_name": "Muhammad Usama Azad",
+      "jira_account_id": "712020:fb8608cb-6393-48a7-a3ab-1ad744a2b7f6",
+      "mattermost_user_id": "7j347ruqitnotr8mrgibjkrdbw",
+      "minutes_logged": 0,
+      "activity_detected": "Yes",
+      "decision_category": "REMINDER_CANDIDATE",
+      "prepared_message": "You have not yet logged your work. Kindly log your work for today in the respective tickets.",
+      "simulated_result": "SIMULATED_PREPARED",
+      "idempotency_key": "35ade1d363c6c40d"
+    },
+    {
+      "date": "2026-09-29",
+      "day": "Tuesday",
+      "jira_display_name": "Ahsan Amin",
+      "jira_account_id": "712020:8bc58bcd-fe17-4f1b-9825-c5251cb6b1de",
+      "mattermost_user_id": "kf4nkziu7t8w9de1pdog9cemfo",
+      "minutes_logged": 25,
+      "activity_detected": "Yes",
+      "decision_category": "REMINDER_CANDIDATE",
+      "prepared_message": "You have not yet logged your work. Kindly log your work for today in the respective tickets.",
+      "simulated_result": "SIMULATED_PREPARED",
+      "idempotency_key": "505e46f964865ff5"
+    }
+  ]
+}

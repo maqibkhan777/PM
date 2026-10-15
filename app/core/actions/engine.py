@@ -365,8 +365,30 @@ class ActionEngine:
                 recipient_id = action.parameters.get("recipient_id") or target_id
                 jira_user_id = action.parameters.get("jira_user_id") or recipient_id
                 display_name = action.parameters.get("display_name") or action.parameters.get("recipient_name")
-
                 email = action.parameters.get("email") or action.parameters.get("emailAddress")
+
+                # Early check: Canonical Exclusions for Event 1
+                event_scope = action.parameters.get("event_scope") or getattr(action, "event_scope", None)
+                if event_scope == "MURSALEEN_WORKLOG_REMINDER" and settings.is_canonical_excluded(jira_user_id, display_name):
+                    err_msg = f"Recipient '{display_name or jira_user_id}' is canonically excluded from Event 1."
+                    logger.warning(err_msg)
+                    action.status = ActionStatus.REJECTED
+                    self.action_repo.update_status(action.action_id, ActionStatus.REJECTED.value, last_error=err_msg)
+                    self.audit_service.log_action(
+                        actor=action.requested_by,
+                        action=action.action_type.value,
+                        target=f"mattermost:{jira_user_id}",
+                        result="Rejected - Canonical Exclusion",
+                        details={"jira_user_id": jira_user_id, "reason": err_msg}
+                    )
+                    return ActionResult(
+                        success=False,
+                        action_id=action.action_id,
+                        status=ActionStatus.REJECTED,
+                        target_system=target_system,
+                        target_id=target_id,
+                        error_message=err_msg
+                    )
 
                 resolved_mm_id, method = self.user_mapping_service.resolve_jira_to_mattermost(
                     jira_user_id=jira_user_id,
@@ -402,11 +424,43 @@ class ActionEngine:
                     action.parameters["recipient_id"] = resolved_mm_id
                     action.parameters["resolved_via"] = method
 
-                    # Fail-closed self-only recipient restriction for local testing workflow
-                    if not settings.is_mattermost_recipient_allowed(resolved_mm_id):
+                    # Check Event-Scoped Authorization for Event 1 (Mursaleen Worklog Reminder)
+                    event_scope = action.parameters.get("event_scope") or getattr(action, "event_scope", None)
+                    is_event1_authorized = False
+
+                    if event_scope == "MURSALEEN_WORKLOG_REMINDER":
+                        # Validate canonical exclusions
+                        if settings.is_canonical_excluded(jira_user_id, display_name):
+                            err_msg = f"Recipient '{display_name or jira_user_id}' is canonically excluded from Event 1."
+                            logger.warning(err_msg)
+                            action.status = ActionStatus.REJECTED
+                            self.action_repo.update_status(action.action_id, ActionStatus.REJECTED.value, last_error=err_msg)
+                            self.audit_service.log_action(
+                                actor=action.requested_by,
+                                action=action.action_type.value,
+                                target=f"mattermost:{resolved_mm_id}",
+                                result="Rejected - Canonical Exclusion",
+                                details={"jira_user_id": jira_user_id, "reason": err_msg}
+                            )
+                            return ActionResult(
+                                success=False,
+                                action_id=action.action_id,
+                                status=ActionStatus.REJECTED,
+                                target_system=target_system,
+                                target_id=target_id,
+                                error_message=err_msg
+                            )
+
+                        # Validate that the recipient is an eligible verified mapped member
+                        mapping_entry = self.user_mapping_service.mapping_repo.get_by_jira_id(jira_user_id)
+                        if mapping_entry and mapping_entry.get("mattermost_user_id") == resolved_mm_id and mapping_entry.get("active", 1):
+                            is_event1_authorized = True
+
+                    # Fall back to global self-only recipient restriction for un-scoped or general actions
+                    if not is_event1_authorized and not settings.is_mattermost_recipient_allowed(resolved_mm_id):
                         err_msg = (
                             f"Mattermost direct message to recipient '{resolved_mm_id}' is blocked. "
-                            f"Only verified self account '{settings.MATTERMOST_SELF_ONLY_USER_ID}' is permitted."
+                            f"Only verified self account '{settings.MATTERMOST_SELF_ONLY_USER_ID}' is permitted for general actions."
                         )
                         logger.warning(err_msg)
                         action.status = ActionStatus.REJECTED

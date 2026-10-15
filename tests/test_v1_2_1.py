@@ -120,10 +120,10 @@ class TestSlashCommandOrdering:
         expected = [
             "help", "status", "worklog", "overdue", "queue",
             "attention", "activity", "transition", "assign", "comment",
-            "create", "update", "notify", "report", "message"
+            "create", "update", "notify", "report", "message", "event1"
         ]
         assert opt_names == expected
-        assert len(opt_names) == 15
+        assert len(opt_names) == 16
 
     def test_schema_options_include_date_selectors(self):
         """Verify report commands define date parameter in schema."""

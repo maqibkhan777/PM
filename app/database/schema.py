@@ -646,6 +646,71 @@ CREATE INDEX IF NOT EXISTS idx_plugin_board_name ON plugin_board_registry(plugin
 CREATE INDEX IF NOT EXISTS idx_plugin_board_sm_key ON plugin_board_registry(service_management_project_key);
 CREATE INDEX IF NOT EXISTS idx_plugin_board_supp_key ON plugin_board_registry(support_project_key);
 CREATE INDEX IF NOT EXISTS idx_plugin_board_int_key ON plugin_board_registry(internal_project_key);
+
+-- Holiday Calendar (Official Pakistani Federal Gazetted Holidays & Verified Official Notifications)
+CREATE TABLE IF NOT EXISTS holiday_calendar (
+    id TEXT PRIMARY KEY,
+    holiday_date TEXT NOT NULL, -- YYYY-MM-DD
+    name TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'PUBLIC_HOLIDAY', -- PUBLIC_HOLIDAY, OPTIONAL_HOLIDAY, LOCAL_CLOSURE
+    source_type TEXT NOT NULL DEFAULT 'OFFICIAL_GAZETTE', -- OFFICIAL_GAZETTE, CABINET_DIVISION_CIRCULAR
+    source_url TEXT,
+    source_reference TEXT,
+    status TEXT NOT NULL DEFAULT 'VERIFIED', -- VERIFIED, UNVERIFIED, REJECTED
+    created_by TEXT NOT NULL DEFAULT 'system',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(holiday_date, category)
+);
+
+CREATE INDEX IF NOT EXISTS idx_holiday_cal_date ON holiday_calendar(holiday_date);
+CREATE INDEX IF NOT EXISTS idx_holiday_cal_status ON holiday_calendar(status);
+
+-- Event Date Suppressions (Manual Admin Date Suppressions e.g. via Discord slash command)
+CREATE TABLE IF NOT EXISTS event_date_suppressions (
+    id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL, -- e.g. EVENT1, MURSALEEN_WORKLOG_REMINDER, ALL
+    target_date TEXT NOT NULL, -- YYYY-MM-DD
+    reason TEXT NOT NULL,
+    created_by TEXT NOT NULL, -- discord:<user_id>
+    source TEXT NOT NULL DEFAULT 'MANUAL_DISCORD',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(event_type, target_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_supp_date ON event_date_suppressions(event_type, target_date);
+
+-- Event 1 Discord Leave Verification & Dispatch Approval Requests
+CREATE TABLE IF NOT EXISTS event1_approval_requests (
+    id TEXT PRIMARY KEY,
+    event_scope TEXT NOT NULL DEFAULT 'MURSALEEN_WORKLOG_REMINDER',
+    jira_account_id TEXT NOT NULL,
+    mattermost_user_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    target_date TEXT NOT NULL, -- YYYY-MM-DD in Asia/Karachi
+    worklog_minutes INTEGER NOT NULL DEFAULT 0,
+    has_activity INTEGER NOT NULL DEFAULT 0,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    discord_message_id TEXT,
+    discord_channel_id TEXT,
+    status TEXT NOT NULL DEFAULT 'PENDING', -- PENDING, APPROVED, REJECTED, EXPIRED, CANCELLED, SENT
+    decided_by TEXT, -- discord:<user_id>
+    decided_at TEXT, -- ISO8601
+    decision_reason TEXT,
+    expires_at TEXT NOT NULL, -- ISO8601 (21:00 PKT on target_date)
+    dispatch_result TEXT, -- JSON string or execution summary
+    error_details TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(jira_account_id, target_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_event1_appr_lookup ON event1_approval_requests(target_date, jira_account_id);
+CREATE INDEX IF NOT EXISTS idx_event1_appr_status ON event1_approval_requests(status);
+CREATE INDEX IF NOT EXISTS idx_event1_appr_expires ON event1_approval_requests(expires_at);
+CREATE INDEX IF NOT EXISTS idx_event1_appr_idem ON event1_approval_requests(idempotency_key);
+
 """
 
 
@@ -1642,6 +1707,170 @@ def _ensure_post_migration_indexes(conn) -> None:
     )
 
 
+OFFICIAL_PAKISTAN_PUBLIC_HOLIDAYS_2026 = [
+    {
+        "holiday_date": "2026-02-05",
+        "name": "Kashmir Day",
+        "category": "PUBLIC_HOLIDAY",
+        "source_type": "OFFICIAL_GAZETTE",
+        "source_url": "https://cabinet.gov.pk/Detail/OTE2ODBiYmItZmI0MS00NDAwLWE5NGUtYmFhNWVjYzllMzAz",
+        "source_reference": "Cabinet Division Public Holidays 2026 Circular (19 Jan 2026)",
+        "status": "VERIFIED",
+    },
+    {
+        "holiday_date": "2026-03-21",
+        "name": "Eid-ul-Fitr (Day 1)",
+        "category": "PUBLIC_HOLIDAY",
+        "source_type": "OFFICIAL_GAZETTE",
+        "source_url": "https://cabinet.gov.pk/Detail/OTE2ODBiYmItZmI0MS00NDAwLWE5NGUtYmFhNWVjYzllMzAz",
+        "source_reference": "Cabinet Division Public Holidays 2026 Circular (19 Jan 2026)",
+        "status": "VERIFIED",
+    },
+    {
+        "holiday_date": "2026-03-22",
+        "name": "Eid-ul-Fitr (Day 2)",
+        "category": "PUBLIC_HOLIDAY",
+        "source_type": "OFFICIAL_GAZETTE",
+        "source_url": "https://cabinet.gov.pk/Detail/OTE2ODBiYmItZmI0MS00NDAwLWE5NGUtYmFhNWVjYzllMzAz",
+        "source_reference": "Cabinet Division Public Holidays 2026 Circular (19 Jan 2026)",
+        "status": "VERIFIED",
+    },
+    {
+        "holiday_date": "2026-03-23",
+        "name": "Pakistan Day / Eid-ul-Fitr (Day 3)",
+        "category": "PUBLIC_HOLIDAY",
+        "source_type": "OFFICIAL_GAZETTE",
+        "source_url": "https://cabinet.gov.pk/Detail/OTE2ODBiYmItZmI0MS00NDAwLWE5NGUtYmFhNWVjYzllMzAz",
+        "source_reference": "Cabinet Division Public Holidays 2026 Circular (19 Jan 2026)",
+        "status": "VERIFIED",
+    },
+    {
+        "holiday_date": "2026-05-01",
+        "name": "Labour Day",
+        "category": "PUBLIC_HOLIDAY",
+        "source_type": "OFFICIAL_GAZETTE",
+        "source_url": "https://cabinet.gov.pk/Detail/OTE2ODBiYmItZmI0MS00NDAwLWE5NGUtYmFhNWVjYzllMzAz",
+        "source_reference": "Cabinet Division Public Holidays 2026 Circular (19 Jan 2026)",
+        "status": "VERIFIED",
+    },
+    {
+        "holiday_date": "2026-05-26",
+        "name": "Eid-ul-Azha (Day 1)",
+        "category": "PUBLIC_HOLIDAY",
+        "source_type": "OFFICIAL_GAZETTE",
+        "source_url": "https://cabinet.gov.pk",
+        "source_reference": "Cabinet Division Eid-ul-Azha Notification (20 May 2026)",
+        "status": "VERIFIED",
+    },
+    {
+        "holiday_date": "2026-05-27",
+        "name": "Eid-ul-Azha (Day 2)",
+        "category": "PUBLIC_HOLIDAY",
+        "source_type": "OFFICIAL_GAZETTE",
+        "source_url": "https://cabinet.gov.pk",
+        "source_reference": "Cabinet Division Eid-ul-Azha Notification (20 May 2026)",
+        "status": "VERIFIED",
+    },
+    {
+        "holiday_date": "2026-05-28",
+        "name": "Eid-ul-Azha (Day 3) / Youm-e-Takbeer",
+        "category": "PUBLIC_HOLIDAY",
+        "source_type": "OFFICIAL_GAZETTE",
+        "source_url": "https://cabinet.gov.pk",
+        "source_reference": "Cabinet Division Eid-ul-Azha Notification (20 May 2026)",
+        "status": "VERIFIED",
+    },
+    {
+        "holiday_date": "2026-06-24",
+        "name": "Ashura (9th Muharram)",
+        "category": "PUBLIC_HOLIDAY",
+        "source_type": "OFFICIAL_GAZETTE",
+        "source_url": "https://cabinet.gov.pk/Detail/OTE2ODBiYmItZmI0MS00NDAwLWE5NGUtYmFhNWVjYzllMzAz",
+        "source_reference": "Cabinet Division Public Holidays 2026 Circular (19 Jan 2026)",
+        "status": "VERIFIED",
+    },
+    {
+        "holiday_date": "2026-06-25",
+        "name": "Ashura (10th Muharram)",
+        "category": "PUBLIC_HOLIDAY",
+        "source_type": "OFFICIAL_GAZETTE",
+        "source_url": "https://cabinet.gov.pk/Detail/OTE2ODBiYmItZmI0MS00NDAwLWE5NGUtYmFhNWVjYzllMzAz",
+        "source_reference": "Cabinet Division Public Holidays 2026 Circular (19 Jan 2026)",
+        "status": "VERIFIED",
+    },
+    {
+        "holiday_date": "2026-08-14",
+        "name": "Independence Day",
+        "category": "PUBLIC_HOLIDAY",
+        "source_type": "OFFICIAL_GAZETTE",
+        "source_url": "https://cabinet.gov.pk/Detail/OTE2ODBiYmItZmI0MS00NDAwLWE5NGUtYmFhNWVjYzllMzAz",
+        "source_reference": "Cabinet Division Public Holidays 2026 Circular (19 Jan 2026)",
+        "status": "VERIFIED",
+    },
+    {
+        "holiday_date": "2026-08-26",
+        "name": "Eid Milad-un-Nabi (12th Rabi-ul-Awwal)",
+        "category": "PUBLIC_HOLIDAY",
+        "source_type": "OFFICIAL_GAZETTE",
+        "source_url": "https://cabinet.gov.pk",
+        "source_reference": "Cabinet Division Eid Milad-un-Nabi Notification (21 Aug 2026)",
+        "status": "VERIFIED",
+    },
+    {
+        "holiday_date": "2026-11-09",
+        "name": "Allama Iqbal Day",
+        "category": "PUBLIC_HOLIDAY",
+        "source_type": "OFFICIAL_GAZETTE",
+        "source_url": "https://cabinet.gov.pk/Detail/OTE2ODBiYmItZmI0MS00NDAwLWE5NGUtYmFhNWVjYzllMzAz",
+        "source_reference": "Cabinet Division Public Holidays 2026 Circular (19 Jan 2026)",
+        "status": "VERIFIED",
+    },
+    {
+        "holiday_date": "2026-12-25",
+        "name": "Quaid-e-Azam Day / Christmas",
+        "category": "PUBLIC_HOLIDAY",
+        "source_type": "OFFICIAL_GAZETTE",
+        "source_url": "https://cabinet.gov.pk/Detail/OTE2ODBiYmItZmI0MS00NDAwLWE5NGUtYmFhNWVjYzllMzAz",
+        "source_reference": "Cabinet Division Public Holidays 2026 Circular (19 Jan 2026)",
+        "status": "VERIFIED",
+    },
+]
+
+
+def _seed_official_public_holidays(conn) -> None:
+    """Idempotently seed verified official Pakistani federal public holidays."""
+    now_iso = "2026-01-19T00:00:00Z"
+    for item in OFFICIAL_PAKISTAN_PUBLIC_HOLIDAYS_2026:
+        rec_id = f"holiday:{item['holiday_date']}:{item['category']}"
+        conn.execute(
+            """
+            INSERT INTO holiday_calendar (
+                id, holiday_date, name, category, source_type, source_url,
+                source_reference, status, created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'official_seed', ?, ?)
+            ON CONFLICT(holiday_date, category) DO UPDATE SET
+                name = excluded.name,
+                source_type = excluded.source_type,
+                source_url = excluded.source_url,
+                source_reference = excluded.source_reference,
+                status = excluded.status,
+                updated_at = excluded.updated_at
+            """,
+            (
+                rec_id,
+                item["holiday_date"],
+                item["name"],
+                item["category"],
+                item["source_type"],
+                item.get("source_url"),
+                item.get("source_reference"),
+                item["status"],
+                now_iso,
+                now_iso,
+            ),
+        )
+
+
 def init_db(manager: Optional[DatabaseManager] = None) -> None:
     """Initialize database tables, migrations, and indexes."""
     mgr = manager or db_manager
@@ -1664,5 +1893,9 @@ def init_db(manager: Optional[DatabaseManager] = None) -> None:
 
         # 6. Seed authoritative plugin -> board registry
         _seed_plugin_board_registry(conn)
+
+        # 7. Seed verified official Pakistani federal public holidays
+        _seed_official_public_holidays(conn)
     logger.info("Database schema initialized successfully.")
+
 

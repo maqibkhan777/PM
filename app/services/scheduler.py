@@ -232,6 +232,15 @@ class PeriodicScheduler:
         except Exception as e:
             logger.error(f"Error during Monday Raw Event Retention evaluation: {e}", exc_info=True)
 
+        # 11. Evaluate Scheduled Event 1 Mursaleen Cluster Worklog Reminders (Mon-Fri 18:20 PKT)
+        event1_status = None
+        try:
+            event1_res = await self._evaluate_event1_reminders()
+            if event1_res:
+                event1_status = event1_res.get("status")
+        except Exception as e:
+            logger.error(f"Error during Event 1 Reminders evaluation: {e}", exc_info=True)
+
         logger.info(
             f"Scheduler cycle complete. Evaluated: {stale_evaluated} stale, "
             f"{overdue_evaluated} overdue, {mubashir_stale_count} mubashir stale. "
@@ -244,7 +253,8 @@ class PeriodicScheduler:
             f"Performance analysis status: {perf_analysis_status or 'idle'}, "
             f"Epic review status: {epic_review_status or 'idle'}, "
             f"Daily retention status: {daily_retention_status or 'idle'}, "
-            f"Monday retention status: {monday_retention_status or 'idle'}"
+            f"Monday retention status: {monday_retention_status or 'idle'}, "
+            f"Event 1 status: {event1_status or 'idle'}"
         )
         return {
             "timestamp": utc_now_iso(),
@@ -261,6 +271,7 @@ class PeriodicScheduler:
             "epic_review_status": epic_review_status,
             "daily_retention_status": daily_retention_status,
             "monday_retention_status": monday_retention_status,
+            "event1_status": event1_status,
         }
 
     def _sync_recent_events_to_projection(self) -> None:
@@ -867,6 +878,35 @@ class PeriodicScheduler:
             }
         except Exception as e:
             logger.error(f"Monday raw event retention maintenance encountered an error: {e}", exc_info=True)
+            return {"status": "error", "error": str(e)}
+
+    async def _evaluate_event1_reminders(self) -> Optional[Dict[str, Any]]:
+        """Evaluate Event 1 Mursaleen Cluster worklog reminders (Scheduled Mon-Fri at 18:20 PKT)."""
+        # Event 1 remains strictly inactive unless EVENT1_ENABLED is True and SCHEDULER_ENABLED is True
+        if not getattr(settings, "EVENT1_ENABLED", False):
+            return None
+
+        now_pkt = datetime.now(zoneinfo.ZoneInfo("Asia/Karachi"))
+        # Monday=0, Tuesday=1, Wednesday=2, Thursday=3, Friday=4, Saturday=5, Sunday=6
+        if now_pkt.weekday() in (5, 6):
+            return None
+
+        current_time_str = now_pkt.strftime("%H:%M")
+        scheduled_time = getattr(settings, "EVENT1_SCHEDULED_TIME", "18:20").strip()
+
+        # Check execution window: 18:20 to 21:00 PKT
+        if current_time_str < scheduled_time or current_time_str > "21:00":
+            return None
+
+        today_pkt_str = now_pkt.strftime("%Y-%m-%d")
+        from app.services.worklog_reminder_service import worklog_reminder_service
+        try:
+            return await worklog_reminder_service.evaluate_date(
+                target_date=today_pkt_str,
+                dry_run=settings.DRY_RUN
+            )
+        except Exception as e:
+            logger.error(f"Error evaluating scheduled Event 1 reminders: {e}", exc_info=True)
             return {"status": "error", "error": str(e)}
 
 

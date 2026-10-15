@@ -759,16 +759,131 @@ class DiscordSlashCommandHandler:
             message = options.get("message") or options.get("text", "")
             return await self.handle_message_command(recipient=recipient, message=message, actor=actor)
 
+        # 8. Event 1 Management & Date Suppression subcommands
+        elif sub in ("event1:skip-date", "event1:skip_date", "event1_skip_date", "skip-date", "skip_date"):
+            date_val = options.get("date")
+            reason_val = options.get("reason")
+            return await self.handle_event1_skip_date_command(
+                date_str=str(date_val) if date_val else "",
+                reason=str(reason_val) if reason_val else "",
+                discord_user_id=discord_user_id
+            )
+
+        elif sub in ("event1:status", "event1_status"):
+            date_val = options.get("date")
+            return await self.handle_event1_status_command(date_str=str(date_val) if date_val else None)
+
         else:
             return f"❌ Unknown PM command `/pm {sub}`. Type `/pm help` for available commands."
+
+    async def handle_event1_skip_date_command(
+        self,
+        date_str: str,
+        reason: str,
+        discord_user_id: Optional[str] = None
+    ) -> str:
+        """Handle /pm event1 skip-date command to manually suppress Event 1 for a date."""
+        if not date_str or not str(date_str).strip():
+            return "❌ `date` is required in `YYYY-MM-DD` format. Example: `/pm event1 skip-date date:2026-10-12 reason:\"Company holiday\"`"
+        if not reason or not str(reason).strip():
+            return "❌ `reason` cannot be empty. Example: `/pm event1 skip-date date:2026-10-12 reason:\"Company holiday\"`"
+
+        clean_date, date_err = self._validate_target_date(date_str)
+        if date_err:
+            return date_err
+
+        # Require current or future date in Asia/Karachi (reject past dates)
+        import zoneinfo
+        import datetime
+        pkt_now = datetime.datetime.now(zoneinfo.ZoneInfo("Asia/Karachi"))
+        today_pkt_str = pkt_now.strftime("%Y-%m-%d")
+        if clean_date < today_pkt_str:
+            return f"❌ Cannot suppress past date `{clean_date}`. The date must be today (`{today_pkt_str}`) or in the future."
+
+        actor_id = f"discord:{discord_user_id}" if discord_user_id else "discord:admin"
+        from app.database.repositories import SuppressionRepository
+        supp_repo = SuppressionRepository(self.mgr)
+        try:
+            supp_repo.set_suppression(
+                event_type="EVENT1",
+                target_date=clean_date,
+                reason=str(reason).strip(),
+                created_by=actor_id,
+                source="MANUAL_DISCORD"
+            )
+            return (
+                f"✅ **Event 1 Reminders Suppressed**\n"
+                f"• **Date:** `{clean_date}`\n"
+                f"• **Reason:** {str(reason).strip()}\n"
+                f"• **Status:** All Event 1 Mursaleen Cluster worklog reminders are suppressed for this date."
+            )
+        except Exception as e:
+            logger.error(f"Failed to persist Event 1 date suppression: {e}", exc_info=True)
+            return f"❌ Failed to persist date suppression: {e}"
+
+    async def handle_event1_status_command(self, date_str: Optional[str] = None) -> str:
+        """Handle /pm event1 status command to inspect holiday & suppression status."""
+        import zoneinfo
+        import datetime
+        pkt_now = datetime.datetime.now(zoneinfo.ZoneInfo("Asia/Karachi"))
+        target = date_str or pkt_now.strftime("%Y-%m-%d")
+        clean_date, date_err = self._validate_target_date(target)
+        if date_err:
+            return date_err
+
+        from app.database.repositories import HolidayRepository, SuppressionRepository
+        hol_repo = HolidayRepository(self.mgr)
+        supp_repo = SuppressionRepository(self.mgr)
+
+        is_official = hol_repo.is_official_public_holiday(clean_date)
+        hol_record = hol_repo.get_by_date(clean_date)
+        supp_record = supp_repo.get_suppression("EVENT1", clean_date)
+
+        # Parse weekday
+        dt = datetime.datetime.strptime(clean_date, "%Y-%m-%d")
+        weekday_name = dt.strftime("%A")
+        is_weekend = dt.weekday() in (5, 6)
+
+        lines = [f"**Event 1 Status for `{clean_date}` ({weekday_name})**"]
+
+        if is_weekend:
+            lines.append("• **Weekend:** Yes (`SKIPPED_WEEKEND`)")
+        else:
+            lines.append("• **Weekend:** No (Business day)")
+
+        if is_official and hol_record:
+            lines.append(f"• **Official Federal Public Holiday:** Yes (`{hol_record.get('name')}` - {hol_record.get('source_reference') or 'Cabinet Division'})")
+        else:
+            lines.append("• **Official Federal Public Holiday:** No")
+
+        if supp_record:
+            lines.append(f"• **Manual Admin Suppression:** Yes (`{supp_record.get('reason')}` by {supp_record.get('created_by')})")
+        else:
+            lines.append("• **Manual Admin Suppression:** None")
+
+        if is_weekend or is_official or supp_record:
+            lines.append("• **Event 1 Execution Verdict:** ⏸️ **SKIPPED** (No reminders will be sent)")
+        else:
+            lines.append("• **Event 1 Execution Verdict:** ▶️ **ACTIVE** (Subject to member worklog thresholds)")
+
+        return "\n".join(lines)
 
     def parse_interaction_options(self, options_list: Optional[List[Dict[str, Any]]]) -> Tuple[str, Dict[str, Any]]:
         """Extract subcommand and flat dictionary of option values from Discord Interaction data payload."""
         if not options_list:
             return "help", {}
 
-        # Check if first option is a SUB_COMMAND (type 1)
         first_opt = options_list[0]
+        # Check if first option is SUB_COMMAND_GROUP (type 2) e.g. /pm event1 skip-date ...
+        if first_opt.get("type") == 2 or (first_opt.get("name") == "event1" and "options" in first_opt and first_opt["options"] and first_opt["options"][0].get("type") == 1):
+            group_name = first_opt.get("name")
+            sub_opt = first_opt["options"][0]
+            subcommand = f"{group_name}:{sub_opt.get('name')}"
+            inner_opts = sub_opt.get("options", [])
+            extracted = {o.get("name"): o.get("value") for o in inner_opts if "name" in o}
+            return subcommand, extracted
+
+        # Check if first option is a SUB_COMMAND (type 1)
         if first_opt.get("type") == 1 or "options" in first_opt:
             subcommand = first_opt.get("name", "help")
             inner_opts = first_opt.get("options", [])

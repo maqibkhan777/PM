@@ -1,0 +1,90 @@
+{
+  "summary": {
+    "dates_evaluated": 30,
+    "eligible_members": 18,
+    "combinations_evaluated": 540,
+    "compliant_cases": 346,
+    "reminder_candidates": 8,
+    "skipped_zero_worklog_zero_activity": 42,
+    "skipped_approved_leave": 0,
+    "skipped_weekends": 144,
+    "skipped_holidays": 0,
+    "unmapped_members": 18,
+    "undetermined_cases": 0
+  },
+  "candidates": [
+    {
+      "date": "2026-09-09",
+      "day": "Wednesday",
+      "account_id": "712020:1ddac8e3-e006-48e7-b4c9-ee941efc8e6e",
+      "name": "Azain Hassan",
+      "minutes": 40,
+      "activity": "yes",
+      "reason": "Logged only 40m (Threshold: 60m)"
+    },
+    {
+      "date": "2026-09-09",
+      "day": "Wednesday",
+      "account_id": "712020:e268bcd8-d981-4b4d-992d-d5694745df8b",
+      "name": "Mubashir Butt",
+      "minutes": 0,
+      "activity": "yes",
+      "reason": "Active on Jira today but 0m logged"
+    },
+    {
+      "date": "2026-09-09",
+      "day": "Wednesday",
+      "account_id": "712020:2783ea21-c611-402d-9adb-0529f5b7066d",
+      "name": "Muhammad Ali Siddiqui",
+      "minutes": 0,
+      "activity": "yes",
+      "reason": "Active on Jira today but 0m logged"
+    },
+    {
+      "date": "2026-09-09",
+      "day": "Wednesday",
+      "account_id": "638855b85fce844d606bb422",
+      "name": "Tahir Ali",
+      "minutes": 50,
+      "activity": "yes",
+      "reason": "Logged only 50m (Threshold: 60m)"
+    },
+    {
+      "date": "2026-09-10",
+      "day": "Thursday",
+      "account_id": "712020:fb8608cb-6393-48a7-a3ab-1ad744a2b7f6",
+      "name": "Muhammad Usama Azad",
+      "minutes": 35,
+      "activity": "yes",
+      "reason": "Logged only 35m (Threshold: 60m)"
+    },
+    {
+      "date": "2026-09-14",
+      "day": "Monday",
+      "account_id": "5fb3d908facfd6007697c25a",
+      "name": "Muhammad Hamza",
+      "minutes": 0,
+      "activity": "yes",
+      "reason": "Active on Jira today but 0m logged"
+    },
+    {
+      "date": "2026-09-25",
+      "day": "Friday",
+      "account_id": "712020:fb8608cb-6393-48a7-a3ab-1ad744a2b7f6",
+      "name": "Muhammad Usama Azad",
+      "minutes": 0,
+      "activity": "yes",
+      "reason": "Active on Jira today but 0m logged"
+    },
+    {
+      "date": "2026-09-29",
+      "day": "Tuesday",
+      "account_id": "712020:8bc58bcd-fe17-4f1b-9825-c5251cb6b1de",
+      "name": "Ahsan Amin",
+      "minutes": 25,
+      "activity": "yes",
+      "reason": "Logged only 25m (Threshold: 60m)"
+    }
+  ],
+  "records_count": 540
+}
