@@ -155,4 +155,5 @@ class EventProcessingStatus(str, Enum):
 class EventScope(str, Enum):
     """Event-scoped authorization identifier for fine-grained dispatch permissions."""
     MURSALEEN_WORKLOG_REMINDER = "MURSALEEN_WORKLOG_REMINDER"
+    JIRA_COMMENT_NOTIFICATION = "JIRA_COMMENT_NOTIFICATION"
 

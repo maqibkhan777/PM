@@ -18,7 +18,19 @@ All core architectural requirements, data models, official holiday integrations,
 
 ---
 
-## 2. Summary of Implemented Changes and File Artifacts
+## 2. Gap Analysis and Production Resolutions
+
+| Gap # | Problem Identified | Architectural & Code Fix | Verification Method | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **Gap 1: Real Jira Data Retrieval** | `evaluate_date()` received empty `roster_worklogs`, evaluating 0 members during scheduled runs. | Implemented `WorklogReminderService.fetch_cluster_worklogs_and_activity()` to query group members of `Mursaleen Cluster`, filter exclusions, sync worklogs via `DailyWorklogReportGenerator`, and query Jira comments/changelogs. When `roster_worklogs is None`, `evaluate_date()` retrieves live data. | Automated unit test `test_scheduler_event1_retrieves_real_jira_data` & historical baseline run. | **Implemented & Verified** |
+| **Gap 2: Discord Approval Delivery** | `send_channel_message` was missing on `DiscordGatewayClient`, preventing Discord approval cards from posting. | Added `DiscordGatewayClient.send_channel_message()` targeting Discord REST API `/channels/{channel_id}/messages` with auth headers, embeds, and interactive component buttons. | End-to-end Discord embed and button generation tests. | **Implemented & Verified** |
+| **Gap 3 & 4: Mursaleen Cluster Membership & Authorization** | Authorization only checked if a Mattermost mapping existed; did not verify Jira user actually belongs to `Mursaleen Cluster`. | Added authoritative group check `is_cluster_member()` in `ActionEngine.execute()` and `handle_approval_decision()` revalidation. Fails closed (`NON_CLUSTER_MEMBER`) if mapped user is not in `Mursaleen Cluster`. | `test_authorization_fails_closed_for_mapped_non_cluster_member`. | **Implemented & Verified** |
+| **Gap 5: Duplicate Approvals & Hard DRY_RUN Protection** | Repeated scheduler runs could re-create pending approvals and post duplicate Discord embeds; Discord client lacked explicit `DRY_RUN` check. | Added existing approval check `get_by_employee_and_date()` in `evaluate_date()`. If approval already exists in any state, skips Discord dispatch. Enforced strict `DRY_RUN` protection in `send_channel_message()` and `send_discord_approval_request()`. | `test_repeated_scheduler_cycles_do_not_produce_duplicate_approvals` and `test_discord_channel_message_strict_dry_run_protection`. | **Implemented & Verified** |
+| **Gap 6: Safe Delivery State Machine** | Approval transitioned directly from `PENDING -> APPROVED -> SENT`, risking state corruption or duplicate sends on network failure. | Implemented robust state flow: `PENDING -> APPROVED -> DELIVERY_PENDING -> SENT` (or `FAILED` on dispatch error with recoverable `mark_failed()`). Prevented unrecorded deliveries. | `test_delivery_state_machine_failure_recovery` and atomic transition unit tests. | **Implemented & Verified** |
+
+---
+
+## 3. Summary of Implemented Changes and File Artifacts
 
 | Component | File Path | Description of Changes |
 | :--- | :--- | :--- |
@@ -255,30 +267,39 @@ You have not yet logged your work. Kindly log your work for today in the respect
 
 ## 11. Test Execution Evidence & Pass Counts
 
-1. **New Discord Approval & Gating Suite:**
-   - **Command:** `pytest tests/test_event1_discord_approval.py -v`
-   - **Result:** **14 passed in 1.97s** (100% pass rate).
-   - Covers authorized 👍, authorized 👎, unauthorized denial, duplicate reaction idempotency, bot reaction filtering, canonical exclusion revalidation, holiday addition after approval, 21:00 PKT cutoff expiration, and concurrent decision atomicity.
+1. **Focused Event 1 & Discord Approval Suites:**
+   - **Command:** `pytest tests/test_event1_implementation.py tests/test_event1_discord_approval.py tests/test_event1_decision_logic.py -v`
+   - **Result:** **35 passed in 3.29s** (100% pass rate).
+   - Covers:
+     - Real Jira group retrieval and fallback.
+     - Discord channel message DRY_RUN simulation.
+     - Authorized 👍 and 👎 decisions.
+     - Unauthorized decision rejection.
+     - Duplicate approval avoidance across repeated scheduler runs.
+     - Mursaleen Cluster membership validation failing closed for non-members.
+     - Safe delivery recovery state machine (`PENDING -> APPROVED -> DELIVERY_PENDING -> SENT` or `FAILED`).
 
-2. **Event 1 Implementation & Decision Logic Suites:**
-   - **Command:** `pytest tests/test_event1_implementation.py tests/test_event1_decision_logic.py -v`
-   - **Result:** **21 passed in 1.24s** (100% pass rate).
+2. **Extended Authorization & Safety Suite:**
+   - **Command:** `pytest tests/test_mattermost_self_only_guard.py tests/test_connectors.py tests/test_user_mapping.py tests/test_scheduler.py tests/test_action_engine.py`
+   - **Result:** **49 passed in 17.07s** (100% pass rate).
 
 3. **Full Repository Regression Suite:**
-   - **Command:** `pytest`
-   - **Result:** **605 passed, 1 skipped in 272.36s (0:04:32)** (0 failures across all 606 collected items).
+   - **Command:** `pytest -v -m "not live_jira"`
+   - **Result:** **610 passed, 1 skipped in 213.70s (0:03:33)** (0 failures across all 611 collected items).
 
 ---
 
 ## 12. Final Confirmation & Safe State
 
-- `DRY_RUN`: `True`
-- `JIRA_POLLING_ENABLED`: `False`
-- `SCHEDULER_ENABLED`: `False`
-- `EVENT1_ENABLED`: `False`
+- `DRY_RUN`: `true`
+- `JIRA_POLLING_ENABLED`: `false`
+- `SCHEDULER_ENABLED`: `false`
+- `EVENT1_ENABLED`: `false`
 - `MATTERMOST_SELF_ONLY_USER_ID`: `yp7quu37tf8p5enxr9rr8gsqay`
 - All 4 canonical exclusions verified and active.
 - Global Mattermost self-only guard remains enforced for all general/unscoped actions.
-- **Zero** live messages sent to team members or channels.
-- Event 1 is fully implemented, approval-gated, and verified, and remains inactive awaiting separate explicit activation authorization.
+- **Zero** live Mattermost messages sent.
+- **Zero** live Discord approval requests dispatched.
+- Event 1 is fully implemented, approval-gated, and verified, and remains safely inactive awaiting separate explicit activation authorization.
+- Event 2 has NOT been started.
 

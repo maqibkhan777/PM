@@ -3054,8 +3054,12 @@ class Event1ApprovalRepository:
         discord_message_id: Optional[str] = None,
         discord_channel_id: Optional[str] = None,
         event_scope: str = "MURSALEEN_WORKLOG_REMINDER",
-    ) -> str:
-        """Create a new pending approval record. If already exists for this (jira_account_id, target_date), returns existing ID."""
+    ) -> Tuple[str, bool]:
+        """Create a new pending approval record.
+        
+        Returns (approval_id, was_created). If already exists for this (jira_account_id, target_date),
+        returns (existing_id, False).
+        """
         now_iso = utc_now_iso()
         with self.mgr.session() as conn:
             # Check existing
@@ -3065,7 +3069,7 @@ class Event1ApprovalRepository:
             )
             row = cur.fetchone()
             if row:
-                return str(row["id"])
+                return str(row["id"]), False
 
             conn.execute(
                 """
@@ -3093,7 +3097,7 @@ class Event1ApprovalRepository:
                     now_iso,
                 ),
             )
-        return approval_id
+        return approval_id, True
 
     def get_by_id(self, approval_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve approval record by primary key."""
@@ -3187,7 +3191,7 @@ class Event1ApprovalRepository:
         approval_id: str,
         dispatch_result: Optional[str] = None,
     ) -> bool:
-        """Atomically mark an APPROVED record as SENT."""
+        """Atomically mark a DELIVERY_PENDING or APPROVED record as SENT."""
         now_iso = utc_now_iso()
         with self.mgr.session() as conn:
             cur = conn.execute(
@@ -3196,9 +3200,29 @@ class Event1ApprovalRepository:
                 SET status = 'SENT',
                     dispatch_result = ?,
                     updated_at = ?
-                WHERE id = ? AND status = 'APPROVED'
+                WHERE id = ? AND status IN ('DELIVERY_PENDING', 'APPROVED')
                 """,
                 (dispatch_result, now_iso, approval_id),
+            )
+            return cur.rowcount == 1
+
+    def mark_failed(
+        self,
+        approval_id: str,
+        error_details: str,
+    ) -> bool:
+        """Atomically transition a DELIVERY_PENDING or APPROVED record to FAILED on dispatch failure."""
+        now_iso = utc_now_iso()
+        with self.mgr.session() as conn:
+            cur = conn.execute(
+                """
+                UPDATE event1_approval_requests
+                SET status = 'FAILED',
+                    error_details = ?,
+                    updated_at = ?
+                WHERE id = ? AND status IN ('DELIVERY_PENDING', 'APPROVED')
+                """,
+                (error_details, now_iso, approval_id),
             )
             return cur.rowcount == 1
 
@@ -3257,6 +3281,102 @@ class Event1ApprovalRepository:
         with self.mgr.session() as conn:
             cur = conn.execute(query, tuple(params))
             return [dict(r) for r in cur.fetchall()]
+
+
+class Event2NotificationRepository:
+    """Repository for Event 2 (Jira comment direction) notification tracking and idempotency."""
+
+    def __init__(self, manager: Optional[DatabaseManager] = None):
+        self.mgr = manager or db_manager
+
+    def record_notification(
+        self,
+        comment_id: str,
+        task_key: str,
+        leading_tagged_user: Optional[str],
+        leading_account_id: Optional[str],
+        assignee_account_id: str,
+        mattermost_user_id: str,
+        idempotency_key: str,
+        comment_url: str,
+        status: str = "PROCESSED",
+        error_details: Optional[str] = None,
+    ) -> Tuple[str, bool]:
+        """Record an Event 2 notification.
+        
+        Returns (id, was_created). If already exists for comment_id or idempotency_key, returns (existing_id, False).
+        """
+        now_iso = utc_now_iso()
+        record_id = str(uuid.uuid4())
+        with self.mgr.session() as conn:
+            cur = conn.execute(
+                "SELECT id FROM event2_notifications WHERE comment_id = ? OR idempotency_key = ?",
+                (comment_id, idempotency_key),
+            )
+            row = cur.fetchone()
+            if row:
+                return str(row["id"]), False
+
+            conn.execute(
+                """
+                INSERT INTO event2_notifications (
+                    id, comment_id, task_key, leading_tagged_user, leading_account_id,
+                    assignee_account_id, mattermost_user_id, idempotency_key,
+                    comment_url, status, error_details, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record_id,
+                    comment_id,
+                    task_key,
+                    leading_tagged_user,
+                    leading_account_id,
+                    assignee_account_id,
+                    mattermost_user_id,
+                    idempotency_key,
+                    comment_url,
+                    status,
+                    error_details,
+                    now_iso,
+                ),
+            )
+        return record_id, True
+
+    def get_by_comment_id(self, comment_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve record by Jira comment ID."""
+        if not comment_id:
+            return None
+        with self.mgr.session() as conn:
+            cur = conn.execute(
+                "SELECT * FROM event2_notifications WHERE comment_id = ?",
+                (comment_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def get_by_idempotency_key(self, idempotency_key: str) -> Optional[Dict[str, Any]]:
+        """Retrieve record by idempotency key."""
+        if not idempotency_key:
+            return None
+        with self.mgr.session() as conn:
+            cur = conn.execute(
+                "SELECT * FROM event2_notifications WHERE idempotency_key = ?",
+                (idempotency_key,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def update_status(self, comment_id: str, status: str, error_details: Optional[str] = None) -> None:
+        """Update status and error details for a recorded notification."""
+        with self.mgr.session() as conn:
+            conn.execute(
+                """
+                UPDATE event2_notifications
+                SET status = ?, error_details = ?
+                WHERE comment_id = ?
+                """,
+                (status, error_details, comment_id),
+            )
 
 
 

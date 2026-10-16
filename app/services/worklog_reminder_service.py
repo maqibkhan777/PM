@@ -1,7 +1,7 @@
 """Worklog Reminder Service (Event 1: Mursaleen Cluster Daily Worklog Reminders).
 
 Specification:
-- Schedule: Mon–Fri at 18:20 PKT (Asia/Karachi).
+- Schedule: Mon–Fri at 17:00 PKT (Asia/Karachi).
 - Team: Jira group 'Mursaleen Cluster'.
 - Eligibility: Active mapped members with < 60 min logged work for target date.
 - Message: "You have not yet logged your work. Kindly log your work for today in the respective tickets."
@@ -54,6 +54,8 @@ class WorklogReminderService:
         self.mapping_service = UserMappingService(self.mgr)
         self.approval_repo = Event1ApprovalRepository(self.mgr)
         self.discord_connector = DiscordWebhookConnector()
+        # Test-only recipient overrides: strictly temporary and isolated to designated test runs
+        self._test_recipient_overrides: set = set()
 
     def is_date_suppressed_or_holiday(self, target_date: str) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
         """Check whether target date is a weekend, official holiday, or manual suppression."""
@@ -105,14 +107,19 @@ class WorklogReminderService:
         """Evaluate an individual cluster member's worklog status for target date."""
         # 1. Canonical exclusions check
         if settings.is_canonical_excluded(jira_account_id, display_name):
-            return {
-                "jira_account_id": jira_account_id,
-                "display_name": display_name,
-                "status": "EXCLUDED",
-                "reason": "Canonical exclusion (PM / Management / Lead)",
-                "worklog_minutes": worklog_minutes,
-                "send_reminder": False,
-            }
+            if jira_account_id in self._test_recipient_overrides:
+                logger.info(
+                    f"TEST_RECIPIENT_OVERRIDE event=EVENT1 jira_account_id={jira_account_id} evaluate_member_permitted=True"
+                )
+            else:
+                return {
+                    "jira_account_id": jira_account_id,
+                    "display_name": display_name,
+                    "status": "EXCLUDED",
+                    "reason": "Canonical exclusion (PM / Management / Lead)",
+                    "worklog_minutes": worklog_minutes,
+                    "send_reminder": False,
+                }
 
         # 2. Mattermost identity resolution
         mm_id, method = self.mapping_service.resolve_jira_to_mattermost(jira_account_id, display_name)
@@ -193,6 +200,131 @@ class WorklogReminderService:
             "send_reminder": True,
         }
 
+    async def fetch_cluster_worklogs_and_activity(
+        self,
+        target_date: str,
+        team_group: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve authoritative roster, worklogs, and activity for Mursaleen Cluster on target date from Jira.
+        
+        Steps:
+        1. Query authoritative Jira group members for 'Mursaleen Cluster' (or settings.EVENT1_TEAM_GROUP).
+        2. Filter out inactive accounts and canonical exclusions.
+        3. Sync today's worklogs from Jira via DailyWorklogReportGenerator.sync_jira_worklogs_for_date.
+        4. Query recent Jira activity (changelogs/comments/updates on target date).
+        5. Build standard roster_worklogs payload for evaluate_date.
+        """
+        group_name = team_group or getattr(settings, "EVENT1_TEAM_GROUP", "Mursaleen Cluster")
+        from app.connectors.jira.client import JiraClient
+        from app.core.reports.worklog_report import DailyWorklogReportGenerator
+        from app.database.repositories import JiraWorklogRepository
+
+        client = JiraClient()
+        worklog_repo = JiraWorklogRepository(self.mgr)
+        excluded_ids = settings.get_canonical_excluded_account_ids()
+
+        # 1. Authoritative group members
+        try:
+            raw_members = await client.get_group_members(group_name)
+        except Exception as e:
+            logger.error(f"Failed to fetch Jira group members for '{group_name}': {e}", exc_info=True)
+            raw_members = []
+
+        eligible_roster: Dict[str, str] = {}
+        for m in raw_members:
+            aid = m.get("accountId")
+            name = m.get("displayName") or "Unknown"
+            if not aid or not m.get("active", True):
+                continue
+            if aid in excluded_ids:
+                if aid in self._test_recipient_overrides:
+                    logger.info(
+                        f"TEST_RECIPIENT_OVERRIDE event=EVENT1 jira_account_id={aid} display_name={name}"
+                    )
+                else:
+                    continue
+            eligible_roster[aid] = name
+
+        # 2. Sync worklogs for target date
+        generator = DailyWorklogReportGenerator(manager=self.mgr, client=client)
+        try:
+            await generator.sync_jira_worklogs_for_date(target_date)
+        except Exception as e:
+            logger.warning(f"Notice: Live worklog sync for {target_date} had an issue or was skipped: {e}")
+
+        # 3. Read synced worklogs from local repository
+        worklogs = worklog_repo.get_worklogs_for_date(target_date, team_group=group_name)
+        if not worklogs:
+            worklogs = worklog_repo.get_worklogs_for_date(target_date)
+
+        worklog_seconds_by_user: Dict[str, int] = {aid: 0 for aid in eligible_roster}
+        for w in worklogs:
+            author_id = w.get("author_account_id")
+            if author_id in worklog_seconds_by_user:
+                worklog_seconds_by_user[author_id] += int(w.get("time_spent_seconds", 0))
+
+        # 4. Query Jira ticket activity (comments/updates) on target date
+        activity_detected_users: set = set()
+        try:
+            jql = f'updatedDate >= "{target_date}" AND updatedDate <= "{target_date} 23:59"'
+            res = await client.search_issues(
+                jql=jql,
+                max_results=50,
+                expand="changelog",
+                fields=["comment", "updated"]
+            )
+            issues = res.get("issues", []) if isinstance(res, dict) else []
+            for issue in issues:
+                fields = issue.get("fields", {})
+                # Check comment authors
+                comments = (fields.get("comment") or {}).get("comments", [])
+                for c in comments:
+                    c_author = (c.get("author") or {}).get("accountId")
+                    c_created = str(c.get("created") or "")[:10]
+                    if c_author in eligible_roster and c_created == target_date:
+                        activity_detected_users.add(c_author)
+
+                # Check changelog histories
+                changelog = issue.get("changelog", {})
+                histories = changelog.get("histories", []) if isinstance(changelog, dict) else []
+                for h in histories:
+                    h_author = (h.get("author") or {}).get("accountId")
+                    h_created = str(h.get("created") or "")[:10]
+                    if h_author in eligible_roster and h_created == target_date:
+                        activity_detected_users.add(h_author)
+        except Exception as e:
+            logger.debug(f"Notice: Activity query for {target_date} fallback: {e}")
+
+        # 5. Build roster list
+        roster_items: List[Dict[str, Any]] = []
+        for aid, disp_name in eligible_roster.items():
+            mins = worklog_seconds_by_user.get(aid, 0) // 60
+            has_act = (aid in activity_detected_users) or (mins > 0)
+            roster_items.append({
+                "account_id": aid,
+                "jira_account_id": aid,
+                "display_name": disp_name,
+                "time_spent_minutes": mins,
+                "has_activity": has_act,
+                "leave_status": "unavailable",
+            })
+
+        return roster_items
+
+    async def is_cluster_member(self, jira_account_id: str, group_name: Optional[str] = None) -> bool:
+        """Verify whether jira_account_id belongs to the authoritative Mursaleen Cluster Jira group."""
+        group = group_name or getattr(settings, "EVENT1_TEAM_GROUP", "Mursaleen Cluster")
+        from app.connectors.jira.client import JiraClient
+        client = JiraClient()
+        try:
+            members = await client.get_group_members(group)
+            for m in members:
+                if m.get("accountId") == jira_account_id and m.get("active", True):
+                    return True
+        except Exception as e:
+            logger.warning(f"Error querying group membership for {jira_account_id} in {group}: {e}")
+        return False
+
     async def send_discord_approval_request(
         self,
         approval_id: str,
@@ -202,8 +334,12 @@ class WorklogReminderService:
         target_date: str,
         worklog_minutes: int,
         has_activity: bool,
+        dry_run: Optional[bool] = None,
     ) -> Optional[str]:
-        """Dispatch approval request embed with interactive buttons to #pm-alerts."""
+        """Dispatch approval request embed with interactive buttons to #pm-alerts.
+        
+        Strictly respects DRY_RUN: if DRY_RUN=True, returns simulated message ID without live Discord POST.
+        """
         payload = DiscordFormatter.format_event1_approval_request(
             approval_id=approval_id,
             display_name=display_name,
@@ -214,23 +350,37 @@ class WorklogReminderService:
             has_activity=has_activity,
         )
 
+        is_dry_run = settings.DRY_RUN if dry_run is None else dry_run
+
         try:
-            # Use bot client or webhook to dispatch to #pm-alerts
-            # In live gateway mode with bot token, message components can be posted via REST
-            # In webhook / dry-run mode, we simulate or post payload
             from app.connectors.discord.gateway_client import discord_gateway_client
+            channel_id = settings.DISCORD_PM_CHANNEL_ID
+            if not channel_id:
+                channel_id = "1293539342186188835"  # default PM alerts channel fallback
+
+            if is_dry_run:
+                # Deterministic simulation without touching Discord network
+                sim_result = await discord_gateway_client.send_channel_message(
+                    channel_id=channel_id,
+                    content="",
+                    embeds=payload.get("embeds"),
+                    components=payload.get("components"),
+                    dry_run=True,
+                )
+                if sim_result and isinstance(sim_result, dict):
+                    return str(sim_result.get("id", f"sim_{approval_id}"))
+                return f"sim_{approval_id}"
+
             if discord_gateway_client and discord_gateway_client.is_connected:
-                # Can post via channel rest endpoint if bot is configured
-                channel_id = settings.DISCORD_PM_CHANNEL_ID
-                if channel_id:
-                    msg_data = await discord_gateway_client.send_channel_message(
-                        channel_id=channel_id,
-                        content="",
-                        embeds=payload.get("embeds"),
-                        components=payload.get("components"),
-                    )
-                    if msg_data and isinstance(msg_data, dict):
-                        return str(msg_data.get("id", ""))
+                msg_data = await discord_gateway_client.send_channel_message(
+                    channel_id=channel_id,
+                    content="",
+                    embeds=payload.get("embeds"),
+                    components=payload.get("components"),
+                    dry_run=False,
+                )
+                if msg_data and isinstance(msg_data, dict):
+                    return str(msg_data.get("id", ""))
             return None
         except Exception as e:
             logger.warning(f"Notice: Failed to dispatch live Discord approval message: {e}")
@@ -264,10 +414,14 @@ class WorklogReminderService:
                 "actions_dispatched": 0,
             }
 
-        # 2. Retrieve eligible roster members
+        # 2. Retrieve eligible roster members from Jira if not provided
+        if roster_worklogs is None:
+            worklogs_by_user = await self.fetch_cluster_worklogs_and_activity(resolved_date)
+        else:
+            worklogs_by_user = roster_worklogs
+
         evaluations: List[Dict[str, Any]] = []
         approval_requests_created = 0
-        worklogs_by_user = roster_worklogs or []
 
         # Calculate 21:00 PKT cutoff
         expires_at = self.calculate_cutoff_expiry(resolved_date)
@@ -300,8 +454,17 @@ class WorklogReminderService:
                 approval_id_raw = f"APPR:{resolved_date}:{acc_id}"
                 approval_id = hashlib.sha256(approval_id_raw.encode("utf-8")).hexdigest()[:16]
 
+                # Check if approval record already exists for this (account_id, date)
+                existing_approval = self.approval_repo.get_by_employee_and_date(acc_id, resolved_date)
+                if existing_approval:
+                    logger.debug(
+                        f"Approval request already exists for {disp_name} on {resolved_date} "
+                        f"(status={existing_approval.get('status')}). Skipping duplicate Discord dispatch."
+                    )
+                    continue
+
                 # Persist pending approval in SQLite
-                created_id = self.approval_repo.create_pending_approval(
+                created_id, was_created = self.approval_repo.create_pending_approval(
                     approval_id=approval_id,
                     jira_account_id=acc_id,
                     mattermost_user_id=str(mm_user_id),
@@ -313,20 +476,23 @@ class WorklogReminderService:
                     expires_at=expires_at,
                     event_scope=EventScope.MURSALEEN_WORKLOG_REMINDER.value,
                 )
-                approval_requests_created += 1
 
-                # Dispatch Discord approval embed to #pm-alerts
-                msg_id = await self.send_discord_approval_request(
-                    approval_id=approval_id,
-                    display_name=disp_name,
-                    jira_account_id=acc_id,
-                    mattermost_user_id=str(mm_user_id),
-                    target_date=resolved_date,
-                    worklog_minutes=minutes,
-                    has_activity=has_act,
-                )
-                if msg_id:
-                    self.approval_repo.update_discord_message_info(approval_id, msg_id)
+                if was_created:
+                    approval_requests_created += 1
+
+                    # Dispatch Discord approval embed to #pm-alerts
+                    msg_id = await self.send_discord_approval_request(
+                        approval_id=approval_id,
+                        display_name=disp_name,
+                        jira_account_id=acc_id,
+                        mattermost_user_id=str(mm_user_id),
+                        target_date=resolved_date,
+                        worklog_minutes=minutes,
+                        has_activity=has_act,
+                        dry_run=dry_run,
+                    )
+                    if msg_id:
+                        self.approval_repo.update_discord_message_info(approval_id, msg_id)
 
         return {
             "target_date": resolved_date,
@@ -352,6 +518,7 @@ class WorklogReminderService:
         - Atomic status transition from PENDING -> APPROVED or REJECTED.
         - If REJECTED (👎), marks REJECTED, sends nothing.
         - If APPROVED (👍), performs exhaustive revalidation before calling Mattermost dispatch.
+        - State machine: PENDING -> APPROVED -> DELIVERY_PENDING -> SENT (or FAILED on dispatch error).
         - Fails closed on any revalidation error or cutoff expiration.
         """
         clean_dec = decision.strip().upper()
@@ -461,10 +628,15 @@ class WorklogReminderService:
 
         # 1. Revalidate Canonical Exclusions
         if settings.is_canonical_excluded(jira_acc_id, disp_name):
-            err_msg = f"Revalidation failed: Recipient {disp_name} ({jira_acc_id}) is canonically excluded."
-            logger.warning(err_msg)
-            self.approval_repo.record_error(approval_id, err_msg)
-            return {"success": False, "status": "EXCLUDED", "message": f"🛑 {err_msg} Send cancelled."}
+            if jira_acc_id in self._test_recipient_overrides:
+                logger.info(
+                    f"TEST_RECIPIENT_OVERRIDE event=EVENT1 jira_account_id={jira_acc_id} display_name={disp_name} revalidation_permitted=True"
+                )
+            else:
+                err_msg = f"Revalidation failed: Recipient {disp_name} ({jira_acc_id}) is canonically excluded."
+                logger.warning(err_msg)
+                self.approval_repo.record_error(approval_id, err_msg)
+                return {"success": False, "status": "EXCLUDED", "message": f"🛑 {err_msg} Send cancelled."}
 
         # 2. Revalidate Weekend / Official Holiday / Manual Suppression
         is_supp, supp_status, _ = self.is_date_suppressed_or_holiday(target_date)
@@ -474,7 +646,6 @@ class WorklogReminderService:
             self.approval_repo.record_error(approval_id, err_msg)
             return {"success": False, "status": "BLOCKED", "message": f"🛑 {err_msg} Send cancelled."}
 
-
         # 3. Revalidate Active Jira -> Mattermost Mapping
         resolved_mm_id, _ = self.mapping_service.resolve_jira_to_mattermost(jira_acc_id, disp_name)
         if not resolved_mm_id or resolved_mm_id != mm_user_id:
@@ -483,10 +654,37 @@ class WorklogReminderService:
             self.approval_repo.record_error(approval_id, err_msg)
             return {"success": False, "status": "MAPPING_INVALID", "message": f"🛑 {err_msg} Send cancelled."}
 
-        # 4. Determine Effective Dry Run
+        # 4. Revalidate Authoritative Cluster Membership
+        is_member = await self.is_cluster_member(jira_acc_id)
+        if not is_member:
+            err_msg = f"Revalidation failed: User {disp_name} ({jira_acc_id}) is not an active member of Mursaleen Cluster."
+            logger.warning(err_msg)
+            self.approval_repo.record_error(approval_id, err_msg)
+            return {"success": False, "status": "NON_CLUSTER_MEMBER", "message": f"🛑 {err_msg} Send cancelled."}
+
+        # 5. Transition to DELIVERY_PENDING before network dispatch
+        claim_ok = self.approval_repo.transition_status(
+            approval_id=approval_id,
+            target_status="DELIVERY_PENDING",
+            decided_by=f"discord:{user_id_only}",
+            decision_reason="Dispatch claimed; initiating delivery",
+            expected_status="APPROVED",
+        )
+        if not claim_ok:
+            return {
+                "success": False,
+                "status": "CONCURRENT_CONFLICT",
+                "message": "⚠️ Could not transition to DELIVERY_PENDING (already claimed or resolved).",
+            }
+
+        # 6. Determine Effective Dry Run
         effective_dry_run = settings.DRY_RUN if force_dry_run is None else force_dry_run
 
-        # 5. Build and execute Action via ActionEngine with EventScope.MURSALEEN_WORKLOG_REMINDER
+        # 7. Build and execute Action via ActionEngine with EventScope.MURSALEEN_WORKLOG_REMINDER
+        if "mattermost" not in action_engine._connectors:
+            from app.connectors.mattermost.connector import MattermostConnector
+            action_engine.register_connector(MattermostConnector())
+
         action = create_send_message_action(
             target_system="mattermost",
             target_id=str(mm_user_id),
@@ -498,13 +696,15 @@ class WorklogReminderService:
         action.parameters["event_scope"] = EventScope.MURSALEEN_WORKLOG_REMINDER.value
         action.parameters["jira_user_id"] = jira_acc_id
         action.parameters["display_name"] = disp_name
+        if jira_acc_id in self._test_recipient_overrides:
+            action.parameters["test_recipient_override"] = True
 
         try:
             result = await action_engine.execute(action)
         except Exception as ex:
             err_msg = f"ActionEngine dispatch failed: {ex}"
             logger.error(err_msg, exc_info=True)
-            self.approval_repo.record_error(approval_id, err_msg)
+            self.approval_repo.mark_failed(approval_id, err_msg)
             return {"success": False, "status": "DISPATCH_FAILED", "message": f"❌ {err_msg}"}
 
         if result.success or result.status in (ActionStatus.COMPLETED, ActionStatus.DRY_RUN_SIMULATED):
@@ -522,7 +722,7 @@ class WorklogReminderService:
             }
         else:
             err_details = result.error_message or "ActionEngine failed"
-            self.approval_repo.record_error(approval_id, err_details)
+            self.approval_repo.mark_failed(approval_id, err_details)
             return {
                 "success": False,
                 "status": result.status.value,

@@ -120,9 +120,12 @@ class Settings(BaseSettings):
 
     # Event 1 Mursaleen Cluster Worklog Reminder Settings
     EVENT1_ENABLED: bool = False
-    EVENT1_SCHEDULED_TIME: str = "18:20"  # 6:20 PM PKT
+    EVENT1_SCHEDULED_TIME: str = "17:00"  # 5:00 PM PKT
     EVENT1_SCHEDULED_TIMEZONE: str = "Asia/Karachi"
     EVENT1_TEAM_GROUP: str = "Mursaleen Cluster"
+
+    # Event 2 Jira Comment Direction Notification Settings
+    EVENT2_ENABLED: bool = False
 
     # Daily Overdue Digest Settings
     OVERDUE_DIGEST_ENABLED: bool = False

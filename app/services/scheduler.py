@@ -232,7 +232,7 @@ class PeriodicScheduler:
         except Exception as e:
             logger.error(f"Error during Monday Raw Event Retention evaluation: {e}", exc_info=True)
 
-        # 11. Evaluate Scheduled Event 1 Mursaleen Cluster Worklog Reminders (Mon-Fri 18:20 PKT)
+        # 11. Evaluate Scheduled Event 1 Mursaleen Cluster Worklog Reminders (Mon-Fri 17:00 PKT)
         event1_status = None
         try:
             event1_res = await self._evaluate_event1_reminders()
@@ -881,8 +881,10 @@ class PeriodicScheduler:
             return {"status": "error", "error": str(e)}
 
     async def _evaluate_event1_reminders(self) -> Optional[Dict[str, Any]]:
-        """Evaluate Event 1 Mursaleen Cluster worklog reminders (Scheduled Mon-Fri at 18:20 PKT)."""
-        # Event 1 remains strictly inactive unless EVENT1_ENABLED is True and SCHEDULER_ENABLED is True
+        """Evaluate Event 1 Mursaleen Cluster worklog reminders (Scheduled Mon-Fri at 17:00 PKT)."""
+        # Event 1 independently enforces SCHEDULER_ENABLED and EVENT1_ENABLED
+        if not getattr(settings, "SCHEDULER_ENABLED", False):
+            return None
         if not getattr(settings, "EVENT1_ENABLED", False):
             return None
 
@@ -892,9 +894,9 @@ class PeriodicScheduler:
             return None
 
         current_time_str = now_pkt.strftime("%H:%M")
-        scheduled_time = getattr(settings, "EVENT1_SCHEDULED_TIME", "18:20").strip()
+        scheduled_time = getattr(settings, "EVENT1_SCHEDULED_TIME", "17:00").strip()
 
-        # Check execution window: 18:20 to 21:00 PKT
+        # Check execution window: scheduled_time to 21:00 PKT
         if current_time_str < scheduled_time or current_time_str > "21:00":
             return None
 

@@ -709,7 +709,25 @@ CREATE TABLE IF NOT EXISTS event1_approval_requests (
 CREATE INDEX IF NOT EXISTS idx_event1_appr_lookup ON event1_approval_requests(target_date, jira_account_id);
 CREATE INDEX IF NOT EXISTS idx_event1_appr_status ON event1_approval_requests(status);
 CREATE INDEX IF NOT EXISTS idx_event1_appr_expires ON event1_approval_requests(expires_at);
-CREATE INDEX IF NOT EXISTS idx_event1_appr_idem ON event1_approval_requests(idempotency_key);
+-- Event 2 Jira Comment Direction Notification Tracking
+CREATE TABLE IF NOT EXISTS event2_notifications (
+    id TEXT PRIMARY KEY,
+    comment_id TEXT NOT NULL UNIQUE,
+    task_key TEXT NOT NULL,
+    leading_tagged_user TEXT,
+    leading_account_id TEXT,
+    assignee_account_id TEXT NOT NULL,
+    mattermost_user_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    comment_url TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PROCESSED', -- PROCESSED, DRY_RUN_SIMULATED, FAILED
+    error_details TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_event2_comment_id ON event2_notifications(comment_id);
+CREATE INDEX IF NOT EXISTS idx_event2_idem_key ON event2_notifications(idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_event2_task_key ON event2_notifications(task_key);
 
 """
 

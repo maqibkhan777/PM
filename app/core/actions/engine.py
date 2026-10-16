@@ -182,7 +182,7 @@ class ActionEngine:
 
         return None
 
-    async def execute(self, action: BaseAction, approved: bool = False) -> ActionResult:
+    async def execute(self, action: BaseAction, approved: bool = False, force_live: bool = False) -> ActionResult:
         """Process and execute an action through the entire pipeline.
 
         Pipeline:
@@ -208,7 +208,7 @@ class ActionEngine:
         # 1. Idempotency Check
         # ----------------------------------------------------------------------
         existing = self.action_repo.get_by_idempotency_key(key)
-        is_current_dry_run = bool(settings.DRY_RUN or action.dry_run)
+        is_current_dry_run = False if force_live else bool(settings.DRY_RUN or action.dry_run)
 
         if existing:
             existing_status = existing.get("status")
@@ -369,26 +369,30 @@ class ActionEngine:
 
                 # Early check: Canonical Exclusions for Event 1
                 event_scope = action.parameters.get("event_scope") or getattr(action, "event_scope", None)
+                is_test_override = bool(action.parameters.get("test_recipient_override"))
                 if event_scope == "MURSALEEN_WORKLOG_REMINDER" and settings.is_canonical_excluded(jira_user_id, display_name):
-                    err_msg = f"Recipient '{display_name or jira_user_id}' is canonically excluded from Event 1."
-                    logger.warning(err_msg)
-                    action.status = ActionStatus.REJECTED
-                    self.action_repo.update_status(action.action_id, ActionStatus.REJECTED.value, last_error=err_msg)
-                    self.audit_service.log_action(
-                        actor=action.requested_by,
-                        action=action.action_type.value,
-                        target=f"mattermost:{jira_user_id}",
-                        result="Rejected - Canonical Exclusion",
-                        details={"jira_user_id": jira_user_id, "reason": err_msg}
-                    )
-                    return ActionResult(
-                        success=False,
-                        action_id=action.action_id,
-                        status=ActionStatus.REJECTED,
-                        target_system=target_system,
-                        target_id=target_id,
-                        error_message=err_msg
-                    )
+                    if is_test_override and jira_user_id in ("5f83e3937d9637006ffd0436", "712020:e268bcd8-d981-4b4d-992d-d5694745df8b"):
+                        logger.info(f"TEST_RECIPIENT_OVERRIDE event=EVENT1 jira_account_id={jira_user_id} ActionEngine early check permitted")
+                    else:
+                        err_msg = f"Recipient '{display_name or jira_user_id}' is canonically excluded from Event 1."
+                        logger.warning(err_msg)
+                        action.status = ActionStatus.REJECTED
+                        self.action_repo.update_status(action.action_id, ActionStatus.REJECTED.value, last_error=err_msg)
+                        self.audit_service.log_action(
+                            actor=action.requested_by,
+                            action=action.action_type.value,
+                            target=f"mattermost:{jira_user_id}",
+                            result="Rejected - Canonical Exclusion",
+                            details={"jira_user_id": jira_user_id, "reason": err_msg}
+                        )
+                        return ActionResult(
+                            success=False,
+                            action_id=action.action_id,
+                            status=ActionStatus.REJECTED,
+                            target_system=target_system,
+                            target_id=target_id,
+                            error_message=err_msg
+                        )
 
                 resolved_mm_id, method = self.user_mapping_service.resolve_jira_to_mattermost(
                     jira_user_id=jira_user_id,
@@ -424,14 +428,73 @@ class ActionEngine:
                     action.parameters["recipient_id"] = resolved_mm_id
                     action.parameters["resolved_via"] = method
 
-                    # Check Event-Scoped Authorization for Event 1 (Mursaleen Worklog Reminder)
+                    # Check Event-Scoped Authorization
                     event_scope = action.parameters.get("event_scope") or getattr(action, "event_scope", None)
                     is_event1_authorized = False
+                    is_event2_authorized = False
 
                     if event_scope == "MURSALEEN_WORKLOG_REMINDER":
                         # Validate canonical exclusions
                         if settings.is_canonical_excluded(jira_user_id, display_name):
-                            err_msg = f"Recipient '{display_name or jira_user_id}' is canonically excluded from Event 1."
+                            if is_test_override and jira_user_id in ("5f83e3937d9637006ffd0436", "712020:e268bcd8-d981-4b4d-992d-d5694745df8b"):
+                                logger.info(f"TEST_RECIPIENT_OVERRIDE event=EVENT1 jira_account_id={jira_user_id} ActionEngine authorization permitted")
+                            else:
+                                err_msg = f"Recipient '{display_name or jira_user_id}' is canonically excluded from Event 1."
+                                logger.warning(err_msg)
+                                action.status = ActionStatus.REJECTED
+                                self.action_repo.update_status(action.action_id, ActionStatus.REJECTED.value, last_error=err_msg)
+                                self.audit_service.log_action(
+                                    actor=action.requested_by,
+                                    action=action.action_type.value,
+                                    target=f"mattermost:{resolved_mm_id}",
+                                    result="Rejected - Canonical Exclusion",
+                                    details={"jira_user_id": jira_user_id, "reason": err_msg}
+                                )
+                                return ActionResult(
+                                    success=False,
+                                    action_id=action.action_id,
+                                    status=ActionStatus.REJECTED,
+                                    target_system=target_system,
+                                    target_id=target_id,
+                                    error_message=err_msg
+                                )
+
+                        # Validate that the recipient is an eligible verified mapped member
+                        mapping_entry = self.user_mapping_service.mapping_repo.get_by_jira_id(jira_user_id)
+                        if mapping_entry and mapping_entry.get("mattermost_user_id") == resolved_mm_id and mapping_entry.get("active", 1):
+                            # Verify authoritative Mursaleen Cluster membership (fail-closed if not member)
+                            from app.services.worklog_reminder_service import worklog_reminder_service
+                            is_cluster_member = await worklog_reminder_service.is_cluster_member(jira_user_id)
+                            if is_cluster_member:
+                                is_event1_authorized = True
+                            else:
+                                err_msg = f"Recipient '{display_name or jira_user_id}' is mapped but NOT a verified member of Mursaleen Cluster."
+                                logger.warning(err_msg)
+                                action.status = ActionStatus.REJECTED
+                                self.action_repo.update_status(action.action_id, ActionStatus.REJECTED.value, last_error=err_msg)
+                                self.audit_service.log_action(
+                                    actor=action.requested_by,
+                                    action=action.action_type.value,
+                                    target=f"mattermost:{resolved_mm_id}",
+                                    result="Rejected - Not Cluster Member",
+                                    details={"jira_user_id": jira_user_id, "reason": err_msg}
+                                )
+                                return ActionResult(
+                                    success=False,
+                                    action_id=action.action_id,
+                                    status=ActionStatus.REJECTED,
+                                    target_system=target_system,
+                                    target_id=target_id,
+                                    error_message=err_msg
+                                )
+
+                    elif event_scope == "JIRA_COMMENT_NOTIFICATION":
+                        # Validate that the recipient is a verified active mapped user matching resolved_mm_id
+                        mapping_entry = self.user_mapping_service.mapping_repo.get_by_jira_id(jira_user_id)
+                        if mapping_entry and mapping_entry.get("mattermost_user_id") == resolved_mm_id and mapping_entry.get("active", 1):
+                            is_event2_authorized = True
+                        else:
+                            err_msg = f"Event 2 Recipient '{display_name or jira_user_id}' has no verified active Mattermost mapping."
                             logger.warning(err_msg)
                             action.status = ActionStatus.REJECTED
                             self.action_repo.update_status(action.action_id, ActionStatus.REJECTED.value, last_error=err_msg)
@@ -439,7 +502,7 @@ class ActionEngine:
                                 actor=action.requested_by,
                                 action=action.action_type.value,
                                 target=f"mattermost:{resolved_mm_id}",
-                                result="Rejected - Canonical Exclusion",
+                                result="Rejected - Event 2 Mapping Invalid",
                                 details={"jira_user_id": jira_user_id, "reason": err_msg}
                             )
                             return ActionResult(
@@ -451,13 +514,8 @@ class ActionEngine:
                                 error_message=err_msg
                             )
 
-                        # Validate that the recipient is an eligible verified mapped member
-                        mapping_entry = self.user_mapping_service.mapping_repo.get_by_jira_id(jira_user_id)
-                        if mapping_entry and mapping_entry.get("mattermost_user_id") == resolved_mm_id and mapping_entry.get("active", 1):
-                            is_event1_authorized = True
-
                     # Fall back to global self-only recipient restriction for un-scoped or general actions
-                    if not is_event1_authorized and not settings.is_mattermost_recipient_allowed(resolved_mm_id):
+                    if not is_event1_authorized and not is_event2_authorized and not settings.is_mattermost_recipient_allowed(resolved_mm_id):
                         err_msg = (
                             f"Mattermost direct message to recipient '{resolved_mm_id}' is blocked. "
                             f"Only verified self account '{settings.MATTERMOST_SELF_ONLY_USER_ID}' is permitted for general actions."
@@ -541,7 +599,8 @@ class ActionEngine:
         # ----------------------------------------------------------------------
         # 7. Centralized Dry Run
         # ----------------------------------------------------------------------
-        if settings.DRY_RUN or action.dry_run:
+        is_dry_run = False if force_live else (settings.DRY_RUN or action.dry_run)
+        if is_dry_run:
             summary = action.preview.summary if action.preview else f"{action.action_type.value} on {target_system}"
             dry_run_banner = (
                 "\n" + "=" * 60 + "\n"

@@ -91,7 +91,16 @@ def approval_svc():
         display_name="Candidate Two",
         active=True,
     )
-    yield svc
+
+    mock_cluster_members = [
+        {"accountId": "test_candidate_jira_001", "displayName": "Candidate One", "active": True},
+        {"accountId": "test_candidate_jira_002", "displayName": "Candidate Two", "active": True},
+        {"accountId": "712020:1ddac8e3-e006-48e7-b4c9-ee941efc8e6e", "displayName": "Azain Hassan", "active": True},
+        {"accountId": "712020:2783ea21-c611-402d-9adb-0529f5b7066d", "displayName": "Muhammad Ali Siddiqui", "active": True},
+    ]
+    with patch("app.connectors.jira.client.JiraClient.get_group_members", new_callable=AsyncMock) as mock_get_members:
+        mock_get_members.return_value = mock_cluster_members
+        yield svc
 
     # Cleanup after test
     with db_manager.session() as conn:
@@ -539,6 +548,169 @@ async def test_database_write_failure_during_approval_fails_closed(approval_svc)
                     decided_by=f"discord:{AUTHORIZED_ADMIN_ID}",
                 )
             assert not mock_exec.called
+
+
+# =============================================================================
+# 4. Gaps 1 to 6 Verification Tests
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_scheduler_event1_retrieves_real_jira_data(approval_svc):
+    """Gap 1: When roster_worklogs is None, evaluate_date queries Jira group, worklogs, and activity."""
+    target_date = "2026-11-24"
+    mock_members = [
+        {"accountId": "test_candidate_jira_001", "displayName": "Candidate One", "active": True},
+        {"accountId": "test_candidate_jira_002", "displayName": "Candidate Two", "active": True},
+    ]
+
+    with patch.object(approval_svc, "fetch_cluster_worklogs_and_activity", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = [
+            {
+                "jira_account_id": "test_candidate_jira_001",
+                "display_name": "Candidate One",
+                "time_spent_minutes": 25,
+                "has_activity": True,
+                "leave_status": "unavailable",
+            }
+        ]
+        res = await approval_svc.evaluate_date(target_date=target_date, roster_worklogs=None, dry_run=True)
+        assert mock_fetch.called
+        assert res["status"] == "COMPLETED"
+        assert res["approval_requests_created"] == 1
+
+
+@pytest.mark.asyncio
+async def test_discord_channel_message_strict_dry_run_protection():
+    """Gap 2 & 5: DRY_RUN=True strictly prevents live HTTP calls in DiscordGatewayClient."""
+    from app.connectors.discord.gateway_client import DiscordGatewayClient
+    client = DiscordGatewayClient()
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_http:
+        res = await client.send_channel_message(
+            channel_id="1293539342186188835",
+            content="Test message",
+            dry_run=True,
+        )
+        assert res is not None
+        assert res.get("simulated") is True
+        assert not mock_http.called
+
+
+@pytest.mark.asyncio
+async def test_authorization_fails_closed_for_mapped_non_cluster_member(approval_svc):
+    """Gap 4: A recipient with active Mattermost mapping who is NOT in Mursaleen Cluster is rejected."""
+    target_date = "2026-11-25"
+    # test_candidate_jira_999 is mapped but NOT in mock_cluster_members
+    approval_svc.mapping_repo.upsert_mapping(
+        jira_user_id="test_candidate_jira_999",
+        mattermost_user_id="test_candidate_mm_999",
+        display_name="Impostor User",
+        active=True,
+    )
+
+    await approval_svc.evaluate_date(
+        target_date=target_date,
+        roster_worklogs=[{
+            "jira_account_id": "test_candidate_jira_999",
+            "display_name": "Impostor User",
+            "time_spent_minutes": 10,
+            "has_activity": True,
+            "leave_status": "unavailable",
+        }],
+        dry_run=True,
+    )
+    approval_rec = approval_svc.approval_repo.get_by_employee_and_date("test_candidate_jira_999", target_date)
+    assert approval_rec is not None
+    approval_id = approval_rec["id"]
+
+    # When approved, revalidation verifies Mursaleen Cluster membership
+    res = await approval_svc.handle_approval_decision(
+        approval_id=approval_id,
+        decision="APPROVE",
+        decided_by=f"discord:{AUTHORIZED_ADMIN_ID}",
+        force_dry_run=True,
+    )
+    assert res["success"] is False
+    assert res["status"] == "NON_CLUSTER_MEMBER"
+
+    # In addition, ActionEngine also rejects if action is submitted directly
+    action = create_send_message_action(
+        target_system="mattermost",
+        target_id="test_candidate_mm_999",
+        text=EVENT1_REMINDER_TEXT,
+        requested_by="Test",
+    )
+    action.parameters["event_scope"] = EventScope.MURSALEEN_WORKLOG_REMINDER.value
+    action.parameters["jira_user_id"] = "test_candidate_jira_999"
+    action.parameters["display_name"] = "Impostor User"
+    action.dry_run = True
+
+    act_res = await action_engine.execute(action)
+    assert act_res.success is False
+    assert act_res.status == ActionStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_repeated_scheduler_cycles_do_not_produce_duplicate_approvals(approval_svc):
+    """Gap 5: Repeated evaluation cycles on the same target date do not create duplicate approval requests."""
+    target_date = "2026-11-26"
+    roster = [{
+        "jira_account_id": "test_candidate_jira_001",
+        "display_name": "Candidate One",
+        "time_spent_minutes": 20,
+        "has_activity": True,
+        "leave_status": "unavailable",
+    }]
+
+    # Cycle 1: creates approval request
+    with patch.object(approval_svc, "send_discord_approval_request", new_callable=AsyncMock) as mock_send:
+        mock_send.return_value = "msg_123"
+        res1 = await approval_svc.evaluate_date(target_date=target_date, roster_worklogs=roster, dry_run=True)
+        assert res1["approval_requests_created"] == 1
+        assert mock_send.call_count == 1
+
+    # Cycle 2: identical roster and date -> skips duplicate Discord send and returns 0 new requests
+    with patch.object(approval_svc, "send_discord_approval_request", new_callable=AsyncMock) as mock_send:
+        res2 = await approval_svc.evaluate_date(target_date=target_date, roster_worklogs=roster, dry_run=True)
+        assert res2["approval_requests_created"] == 0
+        assert mock_send.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_delivery_state_machine_failure_recovery(approval_svc):
+    """Gap 6: State machine transitions PENDING -> APPROVED -> DELIVERY_PENDING -> FAILED on dispatch error, enabling safe recovery."""
+    target_date = "2026-11-27"
+    await approval_svc.evaluate_date(
+        target_date=target_date,
+        roster_worklogs=[{
+            "jira_account_id": "test_candidate_jira_001",
+            "display_name": "Candidate One",
+            "time_spent_minutes": 20,
+            "has_activity": True,
+            "leave_status": "unavailable",
+        }],
+        dry_run=True,
+    )
+    approval_rec = approval_svc.approval_repo.get_by_employee_and_date("test_candidate_jira_001", target_date)
+    approval_id = approval_rec["id"]
+
+    # Dispatch fails
+    with patch.object(action_engine, "execute", new_callable=AsyncMock) as mock_exec:
+        mock_exec.side_effect = Exception("Mattermost Gateway timeout")
+        res = await approval_svc.handle_approval_decision(
+            approval_id=approval_id,
+            decision="APPROVE",
+            decided_by=f"discord:{AUTHORIZED_ADMIN_ID}",
+            force_dry_run=True,
+        )
+        assert res["success"] is False
+        assert res["status"] == "DISPATCH_FAILED"
+
+    # Status must be FAILED, NOT SENT
+    failed_rec = approval_svc.approval_repo.get_by_id(approval_id)
+    assert failed_rec["status"] == "FAILED"
+    assert "timeout" in failed_rec["error_details"].lower()
+
 
 
 

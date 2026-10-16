@@ -84,6 +84,11 @@ class SystemOrchestrator:
             actions = rules_engine.evaluate_event(event)
             for action in actions:
                 await action_engine.execute(action)
+
+            # Event 2: Jira Comment Direction -> Mattermost Notification
+            if getattr(settings, "EVENT2_ENABLED", False) and isinstance(event, TaskCommentAdded):
+                from app.services.jira_comment_notification_service import jira_comment_notification_service
+                await jira_comment_notification_service.process_comment_notification(event)
         except Exception as e:
             logger.error(f"Error processing event {event.event_type} in rules pipeline: {e}", exc_info=True)
 

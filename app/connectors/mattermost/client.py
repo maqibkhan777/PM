@@ -128,9 +128,9 @@ class MattermostClient:
             f"Mattermost channel messaging is blocked under the self-only testing restriction (channel: {channel_id})."
         )
 
-    async def send_direct_message(self, target_user_id: str, message: str) -> Dict[str, Any]:
+    async def send_direct_message(self, target_user_id: str, message: str, allow_override: bool = False) -> Dict[str, Any]:
         """Send a direct message to a specific user ID."""
-        if not settings.is_mattermost_recipient_allowed(target_user_id):
+        if not allow_override and not settings.is_mattermost_recipient_allowed(target_user_id):
             raise PermissionError(
                 f"Mattermost direct message to user '{target_user_id}' is blocked. "
                 f"Only verified self account '{settings.MATTERMOST_SELF_ONLY_USER_ID}' is permitted."

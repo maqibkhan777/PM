@@ -90,23 +90,26 @@ def test_optional_holidays_excluded_from_public_holiday_suppression(clean_repos)
 def test_holiday_upsert_idempotent(clean_repos):
     """Verify repeated holiday imports do not create duplicate rows."""
     hol_repo, _, _ = clean_repos
+    test_date = "2099-10-15"
     id1 = hol_repo.upsert_holiday(
-        holiday_date="2026-10-15",
+        holiday_date=test_date,
         name="Test Holiday",
         category="PUBLIC_HOLIDAY",
         source_type="OFFICIAL_GAZETTE",
         status="VERIFIED"
     )
     id2 = hol_repo.upsert_holiday(
-        holiday_date="2026-10-15",
+        holiday_date=test_date,
         name="Test Holiday Updated",
         category="PUBLIC_HOLIDAY",
         source_type="OFFICIAL_GAZETTE",
         status="VERIFIED"
     )
     assert id1 == id2
-    rec = hol_repo.get_by_date("2026-10-15")
+    rec = hol_repo.get_by_date(test_date)
     assert rec["name"] == "Test Holiday Updated"
+    with hol_repo.mgr.session() as conn:
+        conn.execute("DELETE FROM holiday_calendar WHERE holiday_date = ?", (test_date,))
 
 
 # =============================================================================

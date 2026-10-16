@@ -3,6 +3,7 @@
 import asyncio
 import json
 import random
+import uuid
 from typing import Any, Dict, List, Optional, Union
 import httpx
 import websockets
@@ -543,6 +544,65 @@ class DiscordGatewayClient:
         except Exception as e:
             logger.error(f"Error updating deferred Discord interaction response: {e}")
             return False
+
+    async def send_channel_message(
+        self,
+        channel_id: str,
+        content: str = "",
+        embeds: Optional[List[Dict[str, Any]]] = None,
+        components: Optional[List[Dict[str, Any]]] = None,
+        dry_run: Optional[bool] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Post a message to a Discord channel via REST API with strict DRY_RUN safety.
+        
+        When DRY_RUN=True (either explicitly or via settings.DRY_RUN), network dispatch is bypassed,
+        and a simulated Discord message payload is returned.
+        """
+        is_dry_run = settings.DRY_RUN if dry_run is None else dry_run
+        if is_dry_run:
+            simulated_id = f"sim_msg_{uuid.uuid4().hex[:16]}"
+            logger.info(
+                f"[DRY_RUN] DiscordGatewayClient: Simulated send_channel_message to channel {channel_id} "
+                f"(embeds={len(embeds or [])}, components={len(components or [])}). Message ID: {simulated_id}"
+            )
+            return {
+                "id": simulated_id,
+                "channel_id": channel_id,
+                "content": content,
+                "embeds": embeds or [],
+                "components": components or [],
+                "simulated": True,
+            }
+
+        token = self.bot_token or settings.DISCORD_BOT_TOKEN
+        if not token:
+            logger.warning("Cannot post channel message: DISCORD_BOT_TOKEN is not configured.")
+            return None
+
+        if not channel_id:
+            logger.warning("Cannot post channel message: channel_id is empty.")
+            return None
+
+        url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"
+        payload: Dict[str, Any] = {}
+        if content:
+            payload["content"] = content
+        if embeds:
+            payload["embeds"] = embeds
+        if components:
+            payload["components"] = components
+
+        headers = self._get_auth_headers()
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                res = await client.post(url, headers=headers, json=payload)
+                if res.status_code in (200, 201):
+                    return res.json()
+                logger.error(f"Error posting Discord channel message: HTTP {res.status_code} - {res.text}")
+                return None
+        except Exception as e:
+            logger.error(f"Exception posting Discord channel message to {channel_id}: {e}")
+            return None
 
     async def start(self) -> None:
         """Start the background Gateway listener task."""

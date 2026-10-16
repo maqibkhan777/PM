@@ -247,3 +247,64 @@ async def test_existing_report_schedules_unaffected(temp_db):
     assert hasattr(scheduler, "_evaluate_performance_analysis")
     assert hasattr(scheduler, "_evaluate_daily_retention")
     assert hasattr(scheduler, "_evaluate_monday_retention")
+    assert hasattr(scheduler, "_evaluate_event1_reminders")
+
+
+@pytest.mark.asyncio
+async def test_event1_scheduled_configuration():
+    """Verify Event 1 scheduled execution time is 17:00 Asia/Karachi and 18:20 is no longer configured."""
+    from app.config.settings import settings
+
+    assert settings.EVENT1_SCHEDULED_TIME == "17:00"
+    assert settings.EVENT1_SCHEDULED_TIMEZONE == "Asia/Karachi"
+    assert settings.EVENT1_SCHEDULED_TIME != "18:20"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_event1_reminders_timing_and_execution_window(temp_db, monkeypatch):
+    """Verify scheduler _evaluate_event1_reminders triggers at 17:00 PKT and skips before 17:00."""
+    import datetime as dt_module
+    import zoneinfo
+    from unittest.mock import AsyncMock
+    from app.config.settings import settings
+
+    scheduler = PeriodicScheduler(manager=temp_db)
+
+    # 1. Disabled when SCHEDULER_ENABLED=False or EVENT1_ENABLED=False
+    monkeypatch.setattr(settings, "SCHEDULER_ENABLED", False)
+    monkeypatch.setattr(settings, "EVENT1_ENABLED", False)
+    assert await scheduler._evaluate_event1_reminders() is None
+
+    monkeypatch.setattr(settings, "SCHEDULER_ENABLED", True)
+    monkeypatch.setattr(settings, "EVENT1_ENABLED", True)
+
+    tz = zoneinfo.ZoneInfo("Asia/Karachi")
+
+    # 2. Before 17:00 (e.g. 16:59 on Monday) -> None (skipped)
+    dt_before = dt_module.datetime(2026, 10, 19, 16, 59, 0, tzinfo=tz)  # 2026-10-19 is Monday
+    class MockDatetimeBefore:
+        @classmethod
+        def now(cls, tz=None):
+            return dt_before
+
+    monkeypatch.setattr("app.services.scheduler.datetime", MockDatetimeBefore)
+    res_before = await scheduler._evaluate_event1_reminders()
+    assert res_before is None
+
+    # 3. At 17:00 PKT -> calls worklog_reminder_service.evaluate_date
+    dt_at = dt_module.datetime(2026, 10, 19, 17, 0, 0, tzinfo=tz)
+    class MockDatetimeAt:
+        @classmethod
+        def now(cls, tz=None):
+            return dt_at
+
+    monkeypatch.setattr("app.services.scheduler.datetime", MockDatetimeAt)
+
+    from app.services.worklog_reminder_service import worklog_reminder_service
+    mock_eval = AsyncMock(return_value={"status": "completed", "date": "2026-10-19", "candidates_count": 0})
+    monkeypatch.setattr(worklog_reminder_service, "evaluate_date", mock_eval)
+
+    res_at = await scheduler._evaluate_event1_reminders()
+    assert res_at == {"status": "completed", "date": "2026-10-19", "candidates_count": 0}
+    mock_eval.assert_awaited_once_with(target_date="2026-10-19", dry_run=settings.DRY_RUN)
+
