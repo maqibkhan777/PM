@@ -16,8 +16,9 @@ class MattermostClient:
         token: Optional[str] = None,
         timeout: Optional[float] = None
     ):
-        self.base_url = (base_url or settings.MATTERMOST_URL).rstrip("/")
-        self.token = token or settings.MATTERMOST_TOKEN
+        raw_url = base_url if base_url is not None else settings.MATTERMOST_URL
+        self.base_url = raw_url.rstrip("/") if raw_url else ""
+        self.token = token if token is not None else (settings.MATTERMOST_TOKEN or "")
         self.timeout = timeout or settings.REQUEST_TIMEOUT_SECONDS
         self._client: Optional[httpx.AsyncClient] = None
         self._bot_user_id: Optional[str] = None
