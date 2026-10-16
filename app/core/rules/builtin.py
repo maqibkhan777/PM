@@ -69,7 +69,22 @@ class ActiveWorkRule(BaseRule):
             resource_name = event.actor_name or "Unassigned"
             project_name = event.project_key or "N/A"
             issue_obj = event.payload.get("issue") if isinstance(event.payload, dict) and "issue" in event.payload else event.payload
-            task_title = issue_obj.get("fields", {}).get("summary", "") if isinstance(issue_obj, dict) else ""
+            fields_obj = issue_obj.get("fields", {}) if isinstance(issue_obj, dict) else {}
+            task_title = fields_obj.get("summary", "")
+
+            # Exclude canonical excluded accounts (e.g. Aqib Khan) from Jira Workflow alerts
+            actor_id = getattr(event, "author_id", None) or event.actor_id
+            assignee_obj = fields_obj.get("assignee") if isinstance(fields_obj.get("assignee"), dict) else {}
+            assignee_id = assignee_obj.get("accountId")
+            assignee_name = assignee_obj.get("displayName")
+
+            if settings.is_canonical_excluded(actor_id, resource_name):
+                logger.info(f"Rule [ActiveWorkDetection] suppressed for canonical excluded actor '{resource_name}' ({actor_id}) on {task_key}")
+                return []
+
+            if settings.is_canonical_excluded(assignee_id, assignee_name):
+                logger.info(f"Rule [ActiveWorkDetection] suppressed for canonical excluded assignee '{assignee_name}' ({assignee_id}) on {task_key}")
+                return []
 
             # Deduplication check
             if not notification_dedup_service.should_notify(

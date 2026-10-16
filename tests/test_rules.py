@@ -55,6 +55,79 @@ def test_active_work_rule_triggers_on_todo_comment():
     assert "Jira Workflow Alert" in action.parameters.get("title", "")
 
 
+def test_active_work_rule_excludes_aqib_khan_primary_account():
+    """ActiveWorkRule suppresses Jira Workflow Alert if actor is Aqib Khan (primary ID)."""
+    rule = ActiveWorkRule()
+    event = TaskCommentAdded(
+        source="jira",
+        task_key="CF7-AqibPrimary",
+        comment_body="Reviewing ticket progress.",
+        actor_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        actor_name="Aqib Khan",
+        payload={
+            "issue": {
+                "fields": {
+                    "status": {"name": "To Do"},
+                    "summary": "Core Feature",
+                    "project": {"key": "CF7", "name": "CF7 Apps"}
+                }
+            }
+        }
+    )
+    actions = rule.evaluate(event)
+    assert actions == []
+
+
+def test_active_work_rule_excludes_aqib_khan_alias_account():
+    """ActiveWorkRule suppresses Jira Workflow Alert if actor is Aqib Khan (alias ID)."""
+    rule = ActiveWorkRule()
+    event = TaskCommentAdded(
+        source="jira",
+        task_key="CF7-AqibAlias",
+        comment_body="Updating scope.",
+        actor_id="712020:1b564792-a3ab-447c-951d-17aa5507b946",
+        actor_name="Aqib Khan",
+        payload={
+            "issue": {
+                "fields": {
+                    "status": {"name": "To Do"},
+                    "summary": "Core Feature",
+                    "project": {"key": "CF7", "name": "CF7 Apps"}
+                }
+            }
+        }
+    )
+    actions = rule.evaluate(event)
+    assert actions == []
+
+
+def test_active_work_rule_excludes_when_assignee_is_aqib_khan():
+    """ActiveWorkRule suppresses Jira Workflow Alert if issue assignee is Aqib Khan."""
+    rule = ActiveWorkRule()
+    event = TaskCommentAdded(
+        source="jira",
+        task_key="CF7-AqibAssignee",
+        comment_body="Comment by teammate.",
+        actor_id="jira-user-teammate",
+        actor_name="Teammate",
+        payload={
+            "issue": {
+                "fields": {
+                    "status": {"name": "To Do"},
+                    "summary": "Core Feature",
+                    "project": {"key": "CF7", "name": "CF7 Apps"},
+                    "assignee": {
+                        "accountId": "712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+                        "displayName": "Aqib Khan"
+                    }
+                }
+            }
+        }
+    )
+    actions = rule.evaluate(event)
+    assert actions == []
+
+
 def test_active_work_rule_does_not_trigger_on_in_progress():
     """Rule 1 should not trigger when status is already 'In Progress'."""
     rule = ActiveWorkRule()
