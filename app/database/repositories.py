@@ -1,9 +1,10 @@
 """Database repositories for typed query operations."""
 
+from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from app.database.connection import db_manager, DatabaseManager
 from app.utils.time import utc_now_iso
 
