@@ -718,3 +718,66 @@ def test_user_overdue_digest_embed_empty_and_populated():
     assert "**Total Overdue:** 2" in e1["description"]
     assert f"• [WSSS-401]({base_url}/browse/WSSS-401): Fix checkout concurrency lock (Due: 2026-09-10)" in e1["description"]
     assert f"• [WSSS-402]({base_url}/browse/WSSS-402): Database backup validation (Due: 2026-09-12)" in e1["description"]
+
+
+# ==============================================================================
+# Live Jira Querying & Cache Fallback Tests
+# ==============================================================================
+def test_generate_digest_live_jira_success(temp_db):
+    """When live_jira=True and Jira is configured, live issues are fetched and cached."""
+    gen = DailyOverdueReportGenerator(manager=temp_db)
+    mock_issues = [
+        {
+            "key": "LIVE-101",
+            "fields": {
+                "summary": "Fix prod checkout",
+                "status": {"name": "In Progress"},
+                "priority": {"name": "High"},
+                "duedate": "2026-09-01",
+                "updated": "2026-09-02T10:00:00Z",
+                "assignee": {"displayName": "Ali Developer"},
+                "project": {"key": "LIVE"},
+                "issuetype": {"name": "Bug"},
+            },
+        }
+    ]
+
+    from app.config.settings import Settings
+    with patch.object(gen, "_fetch_jira_issues_sync", return_value=mock_issues) as mock_fetch:
+        with patch.object(Settings, "is_jira_configured", return_value=True):
+            res = gen.generate_digest(target_date="2026-09-10", live_jira=True)
+
+    assert mock_fetch.called
+    assert res["overdue_count"] == 1
+    assert res["tickets"][0]["key"] == "LIVE-101"
+    assert res["tickets"][0]["summary"] == "Fix prod checkout"
+    assert res["tickets"][0]["due_date"] == "2026-09-01"
+
+    # Verify cached into SQLite
+    cached = gen.issue_state_repo.get("LIVE-101")
+    assert cached is not None
+    assert cached["summary"] == "Fix prod checkout"
+
+
+def test_generate_digest_live_jira_fallback_on_error(temp_db):
+    """When live_jira=True but Jira API throws, fallback cleanly to SQLite repository candidates."""
+    from app.config.settings import Settings
+    gen = DailyOverdueReportGenerator(manager=temp_db)
+    team_group = settings.JIRA_TEAM_GROUP
+    gen.issue_state_repo.upsert(
+        jira_issue_key="CACHED-202",
+        summary="Cached DB Task",
+        status="In Progress",
+        due_date="2026-09-05",
+        updated_at="2026-09-08T10:00:00Z",
+        team_group=team_group,
+    )
+
+    with patch.object(gen, "_fetch_jira_issues_sync", side_effect=Exception("Jira timeout")):
+        with patch.object(Settings, "is_jira_configured", return_value=True):
+            res = gen.generate_digest(target_date="2026-09-10", live_jira=True)
+
+    assert res["overdue_count"] == 1
+    assert res["tickets"][0]["key"] == "CACHED-202"
+    assert res["tickets"][0]["summary"] == "Cached DB Task"
+

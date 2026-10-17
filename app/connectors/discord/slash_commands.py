@@ -320,6 +320,13 @@ class DiscordSlashCommandHandler:
         try:
             from app.core.reports.overdue_report import DailyOverdueReportGenerator
             from app.connectors.discord.formatter import DiscordFormatter
+            from app.connectors.jira.client import JiraClient
+            
+            # Check if active Jira connector is a real client (not mock in unit tests)
+            jira_conn = self.get_action_engine().get_connector("jira")
+            jira_cli = getattr(jira_conn, "client", None)
+            is_real_jira = isinstance(jira_cli, JiraClient) or (jira_cli is None and settings.is_jira_configured())
+
             gen = DailyOverdueReportGenerator(manager=self.mgr)
             if user_input:
                 acc_id, disp_name, res_status = await self.resolve_jira_resource(str(user_input))
@@ -329,10 +336,10 @@ class DiscordSlashCommandHandler:
                     return "❌ Multiple users match. Please use the exact Jira display name."
                 elif res_status == "NOT_FOUND" or not acc_id:
                     return "❌ Resource not found."
-                data = gen.generate_user_overdue_digest(account_id=acc_id, display_name=disp_name, target_date=target_date)
+                data = gen.generate_user_overdue_digest(account_id=acc_id, display_name=disp_name, target_date=target_date, live_jira=is_real_jira)
                 return DiscordFormatter.format_user_overdue_digest_embed(data)
             else:
-                data = gen.generate_digest(target_date=target_date)
+                data = gen.generate_digest(target_date=target_date, live_jira=is_real_jira)
                 return DiscordFormatter.format_overdue_digest(data)
         except Exception as e:
             logger.error(f"Error generating overdue report: {e}", exc_info=True)
