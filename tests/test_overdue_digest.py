@@ -759,8 +759,8 @@ def test_generate_digest_live_jira_success(temp_db):
     assert cached["summary"] == "Fix prod checkout"
 
 
-def test_generate_digest_live_jira_fallback_on_error(temp_db):
-    """When live_jira=True but Jira API throws, fallback cleanly to SQLite repository candidates."""
+def test_generate_digest_live_jira_error_does_not_return_stale_cache(temp_db):
+    """When live_jira=True but Jira API throws, do NOT return stale SQLite tickets. Return degraded error message."""
     from app.config.settings import Settings
     gen = DailyOverdueReportGenerator(manager=temp_db)
     team_group = settings.JIRA_TEAM_GROUP
@@ -777,7 +777,58 @@ def test_generate_digest_live_jira_fallback_on_error(temp_db):
         with patch.object(Settings, "is_jira_configured", return_value=True):
             res = gen.generate_digest(target_date="2026-09-10", live_jira=True)
 
+    # Stale SQLite tickets must NOT be returned
+    assert res["overdue_count"] == 0
+    assert len(res["tickets"]) == 0
+    assert "Unable to retrieve current overdue tickets from Jira" in res.get("error", "")
+
+
+def test_generate_user_overdue_digest_live_jira_error_does_not_return_stale_cache(temp_db):
+    """When live_jira=True for user digest but Jira API throws, do NOT return stale SQLite tickets."""
+    from app.config.settings import Settings
+    gen = DailyOverdueReportGenerator(manager=temp_db)
+    team_group = settings.JIRA_TEAM_GROUP
+    gen.issue_state_repo.upsert(
+        jira_issue_key="CACHED-303",
+        summary="User Cached DB Task",
+        status="In Progress",
+        assignee="Ali Developer",
+        due_date="2026-09-05",
+        updated_at="2026-09-08T10:00:00Z",
+        team_group=team_group,
+    )
+
+    with patch.object(gen, "_fetch_jira_issues_sync", side_effect=Exception("Jira 503")):
+        with patch.object(Settings, "is_jira_configured", return_value=True):
+            res = gen.generate_user_overdue_digest(
+                account_id="acc-123",
+                display_name="Ali Developer",
+                target_date="2026-09-10",
+                live_jira=True,
+            )
+
+    # Stale SQLite tickets must NOT be returned
+    assert res["overdue_count"] == 0
+    assert len(res["tickets"]) == 0
+    assert "Unable to retrieve current overdue tickets from Jira" in res.get("error", "")
+
+
+def test_generate_digest_offline_mode_uses_sqlite_cache(temp_db):
+    """When live_jira=False (e.g. offline consumers or scheduled reports without live jira), SQLite cache is used."""
+    gen = DailyOverdueReportGenerator(manager=temp_db)
+    team_group = settings.JIRA_TEAM_GROUP
+    gen.issue_state_repo.upsert(
+        jira_issue_key="CACHED-404",
+        summary="Offline Consumer Task",
+        status="In Progress",
+        due_date="2026-09-05",
+        updated_at="2026-09-08T10:00:00Z",
+        team_group=team_group,
+    )
+
+    res = gen.generate_digest(target_date="2026-09-10", live_jira=False)
     assert res["overdue_count"] == 1
-    assert res["tickets"][0]["key"] == "CACHED-202"
-    assert res["tickets"][0]["summary"] == "Cached DB Task"
+    assert res["tickets"][0]["key"] == "CACHED-404"
+    assert "error" not in res
+
 

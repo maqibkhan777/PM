@@ -2578,3 +2578,28 @@ class TestDiscordPMChannelAuthorization:
             channel_id=None
         )
         assert res == "❌ PM commands can only be used in #pm-alerts. Please use #pm-alerts for PM operations."
+
+
+@pytest.mark.asyncio
+async def test_overdue_command_live_jira_error_returns_degraded_message(slash_setup, monkeypatch):
+    """When /pm overdue encounters a live Jira API failure, return a clear degraded error message, not stale cache."""
+    handler, _, _, _, _ = slash_setup
+    monkeypatch.setattr(settings, "DISCORD_PM_CHANNEL_ID", "1547090800771604482")
+    mock_error_data = {
+        "team_name": "Mursaleen Cluster",
+        "date": "2026-10-17",
+        "formatted_date": "October 17, 2026",
+        "overdue_count": 0,
+        "tickets": [],
+        "error": "Unable to retrieve current overdue tickets from Jira. Please try again shortly.",
+    }
+    with patch("app.core.reports.overdue_report.DailyOverdueReportGenerator.generate_digest", return_value=mock_error_data):
+        res = await handler.execute_subcommand(
+            subcommand="overdue",
+            options={},
+            discord_user_id="123456789",
+            channel_id="1547090800771604482",
+        )
+        assert res == "❌ Unable to retrieve current overdue tickets from Jira. Please try again shortly."
+
+

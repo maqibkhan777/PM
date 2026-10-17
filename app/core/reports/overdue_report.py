@@ -251,20 +251,32 @@ class DailyOverdueReportGenerator:
         tickets: List[Dict[str, Any]] = []
         live_fetch_success = False
 
-        if live_jira and settings.is_jira_configured():
-            try:
-                # Live JQL query: Authoritative current due date < now, not done, within team group
-                jql = f'duedate < now() AND statusCategory != Done AND assignee in membersOf("{team_group}") ORDER BY duedate ASC'
-                logger.info(f"Querying live Jira for team overdue tasks: {jql}")
-                raw_issues = self._fetch_jira_issues_sync(jql=jql)
-                tickets = self._parse_and_cache_jira_issues(raw_issues, team_group=team_group)
-                live_fetch_success = True
-                logger.info(f"Retrieved {len(tickets)} live overdue tickets for team '{team_group}' from Jira.")
-            except Exception as e:
-                logger.warning(f"Error querying live Jira for overdue digest ({e}). Falling back to local SQLite state cache.")
+        if live_jira:
+            if settings.is_jira_configured():
+                try:
+                    # Live JQL query: Authoritative current due date < now, not done, within team group
+                    jql = f'duedate < now() AND statusCategory != Done AND assignee in membersOf("{team_group}") ORDER BY duedate ASC'
+                    logger.info(f"Querying live Jira for team overdue tasks: {jql}")
+                    raw_issues = self._fetch_jira_issues_sync(jql=jql)
+                    tickets = self._parse_and_cache_jira_issues(raw_issues, team_group=team_group)
+                    live_fetch_success = True
+                    logger.info(f"Retrieved {len(tickets)} live overdue tickets for team '{team_group}' from Jira.")
+                except Exception as e:
+                    logger.error(f"Error querying live Jira for overdue digest ({e}).")
+            else:
+                logger.warning("Live Jira overdue digest requested but Jira is not configured.")
 
-        if not live_fetch_success:
-            # Fall back to local SQLite repository projection
+            if not live_fetch_success:
+                return {
+                    "team_name": team_group,
+                    "date": date_str,
+                    "formatted_date": formatted_date,
+                    "overdue_count": 0,
+                    "tickets": [],
+                    "error": "Unable to retrieve current overdue tickets from Jira. Please try again shortly.",
+                }
+        else:
+            # Fall back to local SQLite repository projection for offline/background consumers
             candidates = self.issue_state_repo.get_overdue_candidates(team_group=team_group)
             for item in candidates:
                 tkey = item.get("jira_issue_key")
@@ -404,24 +416,39 @@ class DailyOverdueReportGenerator:
         tickets: List[Dict[str, Any]] = []
         live_fetch_success = False
 
-        if live_jira and settings.is_jira_configured():
-            try:
-                # Live JQL query: Authoritative overdue query for this specific user
-                user_clauses = [f'assignee = "{account_id}"']
-                if display_name and display_name.strip():
-                    user_clauses.append(f'assignee = "{display_name.strip()}"')
-                assignee_filter = f"({' OR '.join(user_clauses)})"
-                jql = f"duedate < now() AND statusCategory != Done AND {assignee_filter} ORDER BY duedate ASC"
-                logger.info(f"Querying live Jira for user overdue tasks: {jql}")
-                raw_issues = self._fetch_jira_issues_sync(jql=jql)
-                tickets = self._parse_and_cache_jira_issues(raw_issues, team_group=team_group)
-                live_fetch_success = True
-                logger.info(f"Retrieved {len(tickets)} live overdue tickets for user '{display_name or account_id}' from Jira.")
-            except Exception as e:
-                logger.warning(f"Error querying live Jira for user overdue digest ({e}). Falling back to local SQLite state cache.")
+        if live_jira:
+            if settings.is_jira_configured():
+                try:
+                    # Live JQL query: Authoritative overdue query for this specific user
+                    user_clauses = [f'assignee = "{account_id}"']
+                    if display_name and display_name.strip():
+                        user_clauses.append(f'assignee = "{display_name.strip()}"')
+                    assignee_filter = f"({' OR '.join(user_clauses)})"
+                    jql = f"duedate < now() AND statusCategory != Done AND {assignee_filter} ORDER BY duedate ASC"
+                    logger.info(f"Querying live Jira for user overdue tasks: {jql}")
+                    raw_issues = self._fetch_jira_issues_sync(jql=jql)
+                    tickets = self._parse_and_cache_jira_issues(raw_issues, team_group=team_group)
+                    live_fetch_success = True
+                    logger.info(f"Retrieved {len(tickets)} live overdue tickets for user '{display_name or account_id}' from Jira.")
+                except Exception as e:
+                    logger.error(f"Error querying live Jira for user overdue digest ({e}).")
+            else:
+                logger.warning("Live Jira user overdue digest requested but Jira is not configured.")
 
-        if not live_fetch_success:
-            # Fall back to local SQLite repository projection
+            if not live_fetch_success:
+                return {
+                    "account_id": account_id,
+                    "display_name": display_name or account_id,
+                    "team_name": team_group,
+                    "date": date_str,
+                    "formatted_date": formatted_date,
+                    "overdue_count": 0,
+                    "tickets": [],
+                    "is_excluded": False,
+                    "error": "Unable to retrieve current overdue tickets from Jira. Please try again shortly.",
+                }
+        else:
+            # Fall back to local SQLite repository projection for offline consumers
             candidates = self.issue_state_repo.get_overdue_candidates(team_group=team_group)
             for item in candidates:
                 tkey = item.get("jira_issue_key")

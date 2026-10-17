@@ -337,9 +337,13 @@ class DiscordSlashCommandHandler:
                 elif res_status == "NOT_FOUND" or not acc_id:
                     return "❌ Resource not found."
                 data = gen.generate_user_overdue_digest(account_id=acc_id, display_name=disp_name, target_date=target_date, live_jira=is_real_jira)
+                if data.get("error"):
+                    return f"❌ {data['error']}"
                 return DiscordFormatter.format_user_overdue_digest_embed(data)
             else:
                 data = gen.generate_digest(target_date=target_date, live_jira=is_real_jira)
+                if data.get("error"):
+                    return f"❌ {data['error']}"
                 return DiscordFormatter.format_overdue_digest(data)
         except Exception as e:
             logger.error(f"Error generating overdue report: {e}", exc_info=True)
