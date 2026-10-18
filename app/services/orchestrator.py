@@ -7,6 +7,7 @@ from app.connectors.discord import DiscordWebhookConnector, DiscordBotConnector
 from app.connectors.mattermost import MattermostConnector
 from app.core.events.bus import event_bus
 from app.core.events.base import BaseEvent
+from app.core.events.types import TaskCommentAdded
 from app.core.rules.engine import rules_engine
 from app.core.actions.engine import action_engine
 from app.services.scheduler import periodic_scheduler
