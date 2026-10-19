@@ -34,6 +34,7 @@ from app.database.repositories import (
 from app.services.jira_comment_notification_service import (
     JiraCommentNotificationService,
 )
+from app.services.user_identity_service import user_identity_service
 
 
 @pytest.fixture
@@ -45,6 +46,12 @@ def event2_service(temp_db):
 @pytest.fixture
 def setup_users(temp_db):
     """Pre-seed test users in UserMappingRepository."""
+    user_identity_service.set_identity(
+        account_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        email="aqib.khan@objects.email",
+        display_name="Aqib Khan"
+    )
+
     mapping_repo = UserMappingRepository(temp_db)
     user_repo = UserRepository(temp_db)
 
@@ -275,8 +282,8 @@ async def test_tc7_first_tag_equals_assignee(event2_service, setup_users):
         task_key="PROJ-101",
         comment_id="comm-101",
         comment_body="@Mubashir Please investigate this issue.",
-        author_id="jira-author",
-        author_name="Project Manager"
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
     )
     assignee = {
         "accountId": "jira-mubashir",
@@ -321,8 +328,8 @@ async def test_tc8_first_tag_differs_from_assignee_mandatory_example(event2_serv
         task_key="PROJ-202",
         comment_id="comm-202",
         comment_body="@Mubashir Please investigate this issue. @Ahsan @Talha",
-        author_id="jira-pm",
-        author_name="Lead PM",
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan",
         mentioned_account_ids=["jira-mubashir", "jira-ahsan", "jira-talha"],
         mentioned_display_names=["Mubashir", "Ahsan", "Talha"]
     )
@@ -358,8 +365,8 @@ async def test_tc9_multiple_later_cc_mentions(event2_service, setup_users):
         task_key="PROJ-303",
         comment_id="comm-303",
         comment_body="@Mubashir Please investigate this issue. @Ahsan @Talha @Daniyal",
-        author_id="jira-pm",
-        author_name="Lead PM",
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan",
         mentioned_display_names=["Mubashir", "Ahsan", "Talha", "Daniyal"]
     )
     assignee = {
@@ -393,8 +400,8 @@ async def test_section5_test1_first_tag_differs_from_assignee(event2_service, se
         task_key="SEC5-01",
         comment_id="comm-sec5-1",
         comment_body="@Mubashir Please investigate this issue. @Ahsan @Talha",
-        author_id="jira-author",
-        author_name="PM Author"
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
     )
     assignee = {"accountId": "jira-ahsan", "displayName": "Ahsan Iftikhar", "active": True}
     report = await event2_service.evaluate_comment_event(event=event, current_assignee=assignee, dry_run=True)
@@ -417,8 +424,8 @@ async def test_section5_test2_first_tag_ahsan_assignee_mubashir(event2_service, 
         task_key="SEC5-02",
         comment_id="comm-sec5-2",
         comment_body="@Ahsan Please investigate this issue.",
-        author_id="jira-author",
-        author_name="PM Author"
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
     )
     assignee = {"accountId": "jira-mubashir", "displayName": "Mubashir Butt", "active": True}
     report = await event2_service.evaluate_comment_event(event=event, current_assignee=assignee, dry_run=True)
@@ -440,8 +447,8 @@ async def test_section5_test3_first_tag_mubashir_assignee_mubashir(event2_servic
         task_key="SEC5-03",
         comment_id="comm-sec5-3",
         comment_body="@Mubashir Please investigate this issue.",
-        author_id="jira-author",
-        author_name="PM Author"
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
     )
     assignee = {"accountId": "jira-mubashir", "displayName": "Mubashir Butt", "active": True}
     report = await event2_service.evaluate_comment_event(event=event, current_assignee=assignee, dry_run=True)
@@ -462,8 +469,8 @@ async def test_section5_test4_first_tag_mubashir_assignee_talha(event2_service, 
         task_key="SEC5-04",
         comment_id="comm-sec5-4",
         comment_body="@Mubashir Please investigate this issue. @Ahsan @Talha",
-        author_id="jira-author",
-        author_name="PM Author"
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
     )
     assignee = {"accountId": "jira-talha", "displayName": "Talha Bukhari", "active": True}
     report = await event2_service.evaluate_comment_event(event=event, current_assignee=assignee, dry_run=True)
@@ -482,8 +489,8 @@ async def test_tc11_no_assignee_no_notification(event2_service, setup_users):
         task_key="PROJ-505",
         comment_id="comm-505",
         comment_body="@Mubashir Please investigate this issue.",
-        author_id="jira-pm",
-        author_name="Lead PM"
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
     )
 
     report = await event2_service.evaluate_comment_event(
@@ -506,8 +513,8 @@ async def test_tc12_assignee_has_no_mattermost_mapping_fails_closed(event2_servi
         task_key="PROJ-606",
         comment_id="comm-606",
         comment_body="@Mubashir Please investigate this issue.",
-        author_id="jira-pm",
-        author_name="Lead PM"
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
     )
     assignee = {
         "accountId": "jira-unknown-dev",
@@ -535,8 +542,8 @@ async def test_tc13_assignee_inactive_fails_closed(event2_service, setup_users):
         task_key="PROJ-707",
         comment_id="comm-707",
         comment_body="@Mubashir Please investigate this issue.",
-        author_id="jira-pm",
-        author_name="Lead PM"
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
     )
     assignee = {
         "accountId": "jira-ahsan",
@@ -657,8 +664,8 @@ async def test_tc19_same_comment_processed_twice_produces_one_notification(event
         task_key="PROJ-808",
         comment_id="comm-808",
         comment_body="@Mubashir Please investigate this issue.",
-        author_id="jira-pm",
-        author_name="Lead PM"
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
     )
     assignee = {
         "accountId": "jira-ahsan",
@@ -692,7 +699,8 @@ async def test_tc20_overlapping_polling_windows_no_duplicate(event2_service, set
         task_key="PROJ-909",
         comment_id="comm-909",
         comment_body="@Ahsan Please check this.",
-        author_id="jira-pm"
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
     )
     assignee = {"accountId": "jira-ahsan", "displayName": "Ahsan Iftikhar", "active": True}
 
@@ -705,7 +713,8 @@ async def test_tc20_overlapping_polling_windows_no_duplicate(event2_service, set
         task_key="PROJ-909",
         comment_id="comm-909",
         comment_body="@Ahsan Please check this.",
-        author_id="jira-pm"
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
     )
     res2 = await event2_service.process_comment_notification(event=event2, current_assignee=assignee, dry_run=True)
     assert res2["decision"] == "ALREADY_PROCESSED"
@@ -747,8 +756,8 @@ async def test_mandatory_example_1(event2_service, setup_users):
         task_key="OPS-100",
         comment_id="comm-m1",
         comment_body="@Mubashir Please investigate this issue. @Ahsan @Talha",
-        author_id="jira-author",
-        author_name="PM Author"
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
     )
     assignee = {"accountId": "jira-ahsan", "displayName": "Ahsan Iftikhar", "active": True}
 
@@ -779,7 +788,8 @@ async def test_mandatory_example_2(event2_service, setup_users):
         task_key="OPS-200",
         comment_id="comm-m2",
         comment_body="@Mubashir Please investigate this issue.",
-        author_id="jira-author"
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
     )
     assignee = {"accountId": "jira-mubashir", "displayName": "Mubashir Butt", "active": True}
 
@@ -804,7 +814,8 @@ async def test_mandatory_example_3(event2_service, setup_users):
         task_key="OPS-300",
         comment_id="comm-m3",
         comment_body="Please investigate this issue. @Mubashir",
-        author_id="jira-author"
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
     )
     assignee = {"accountId": "jira-mubashir", "displayName": "Mubashir Butt", "active": True}
 
@@ -813,3 +824,185 @@ async def test_mandatory_example_3(event2_service, setup_users):
     assert report["trigger"] is False
     assert report["decision"] == "NO_NOTIFICATION"
     assert report["selected_mattermost_recipient"] is None
+
+
+# ==============================================================================
+# SECTION 7: PHASE 5 REGRESSION TESTS — AUTHOR INVARIANT & ROUTING ENFORCEMENT
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_regression_test1_aqib_author_triggers(event2_service, setup_users):
+    """Test 1: Aqib is author, leading mention = Mubashir, assignee = Mubashir.
+    Expected: Event 2 triggers, Mattermost recipient = Mubashir
+    """
+    event = TaskCommentAdded(
+        source="jira",
+        task_key="REG-101",
+        comment_id="comm-reg-1",
+        comment_body="@Mubashir Please investigate this issue.",
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
+    )
+    assignee = {
+        "accountId": "jira-mubashir",
+        "displayName": "Mubashir Butt",
+        "active": True
+    }
+    report = await event2_service.evaluate_comment_event(event=event, current_assignee=assignee, dry_run=True)
+    assert report["trigger"] is True
+    assert report["decision"] == "SEND"
+    assert report["selected_mattermost_recipient"] == "Mubashir Butt"
+    assert report["mattermost_user_id"] == "mm-mubashir"
+
+
+@pytest.mark.asyncio
+async def test_regression_test2_mubashir_author_no_notification(event2_service, setup_users):
+    """Test 2: Mubashir is author, leading mention = Aqib, assignee = Aqib.
+    Expected: NO Event 2 notification (Comment author != Aqib)
+    """
+    event = TaskCommentAdded(
+        source="jira",
+        task_key="REG-102",
+        comment_id="comm-reg-2",
+        comment_body="@Aqib Please investigate this issue.",
+        author_id="jira-mubashir",
+        author_name="Mubashir Butt"
+    )
+    assignee = {
+        "accountId": "712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        "displayName": "Aqib Khan",
+        "active": True
+    }
+    report = await event2_service.evaluate_comment_event(event=event, current_assignee=assignee, dry_run=True)
+    assert report["trigger"] is False
+    assert report["decision"] == "NO_NOTIFICATION"
+    assert report["reason"] == "COMMENT_AUTHOR_NOT_AQIB"
+
+
+@pytest.mark.asyncio
+async def test_regression_test3_hamza_author_no_notification(event2_service, setup_users):
+    """Test 3: Hamza is author, leading mention = Mubashir, assignee = Mubashir.
+    Expected: NO Event 2 notification (Comment author != Aqib)
+    """
+    event = TaskCommentAdded(
+        source="jira",
+        task_key="REG-103",
+        comment_id="comm-reg-3",
+        comment_body="@Mubashir Please investigate this issue.",
+        author_id="638490c75fce844d606a16ef",
+        author_name="Hamza Hanif"
+    )
+    assignee = {
+        "accountId": "jira-mubashir",
+        "displayName": "Mubashir Butt",
+        "active": True
+    }
+    report = await event2_service.evaluate_comment_event(event=event, current_assignee=assignee, dry_run=True)
+    assert report["trigger"] is False
+    assert report["decision"] == "NO_NOTIFICATION"
+    assert report["reason"] == "COMMENT_AUTHOR_NOT_AQIB"
+
+
+@pytest.mark.asyncio
+async def test_regression_test4_aqib_author_no_leading_mention(event2_service, setup_users):
+    """Test 4: Aqib author + no leading mention.
+    Expected: NO notification (NO_LEADING_MENTION)
+    """
+    event = TaskCommentAdded(
+        source="jira",
+        task_key="REG-104",
+        comment_id="comm-reg-4",
+        comment_body="Please investigate this issue @Mubashir",
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
+    )
+    assignee = {
+        "accountId": "jira-mubashir",
+        "displayName": "Mubashir Butt",
+        "active": True
+    }
+    report = await event2_service.evaluate_comment_event(event=event, current_assignee=assignee, dry_run=True)
+    assert report["trigger"] is False
+    assert report["decision"] == "NO_NOTIFICATION"
+    assert report["reason"] == "NO_LEADING_MENTION"
+
+
+@pytest.mark.asyncio
+async def test_regression_test5_aqib_author_leading_mention_unmapped_assignee(event2_service, setup_users):
+    """Test 5: Aqib author + leading mention + unmapped assignee.
+    Expected: NO notification (ASSIGNEE_UNRESOLVED_OR_UNMAPPED)
+    """
+    event = TaskCommentAdded(
+        source="jira",
+        task_key="REG-105",
+        comment_id="comm-reg-5",
+        comment_body="@Mubashir Please investigate this issue.",
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
+    )
+    assignee = {
+        "accountId": "jira-unmapped-user-999",
+        "displayName": "Unmapped User",
+        "active": True
+    }
+    report = await event2_service.evaluate_comment_event(event=event, current_assignee=assignee, dry_run=True)
+    assert report["trigger"] is True
+    assert report["decision"] == "NO_NOTIFICATION"
+    assert report["reason"] == "ASSIGNEE_UNRESOLVED_OR_UNMAPPED"
+
+
+@pytest.mark.asyncio
+async def test_regression_test6_aqib_author_valid_recipient_exact_url_format(event2_service, setup_users):
+    """Test 6: Aqib author + valid recipient.
+    Verify the Mattermost message is byte-for-byte only:
+    https://objectsws.atlassian.net/browse/{task_key}?focusedCommentId={comment_id}#comment-{comment_id}
+    No greeting, username, mention, prefix, suffix, or extra whitespace.
+    """
+    task_key = "WPTFW-122"
+    comment_id = "654430"
+    event = TaskCommentAdded(
+        source="jira",
+        task_key=task_key,
+        comment_id=comment_id,
+        comment_body="@Mubashir Please investigate this issue.",
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
+    )
+    assignee = {
+        "accountId": "jira-ahsan",
+        "displayName": "Ahsan Iftikhar",
+        "active": True
+    }
+    report = await event2_service.evaluate_comment_event(event=event, current_assignee=assignee, dry_run=True)
+    assert report["trigger"] is True
+    assert report["decision"] == "SEND"
+
+    expected_url = f"https://objectsws.atlassian.net/browse/{task_key}?focusedCommentId={comment_id}#comment-{comment_id}"
+    assert report["prepared_message"] == expected_url
+    assert report["prepared_message"].encode("utf-8") == expected_url.encode("utf-8")
+
+
+@pytest.mark.asyncio
+async def test_regression_test7_idempotency_duplicate_prevention(event2_service, setup_users):
+    """Test 7: Idempotency. Process the same comment twice.
+    Expected: 1 notification, 0 duplicates.
+    """
+    event = TaskCommentAdded(
+        source="jira",
+        task_key="REG-107",
+        comment_id="comm-reg-7",
+        comment_body="@Mubashir Please review this.",
+        author_id="712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+        author_name="Aqib Khan"
+    )
+    assignee = {
+        "accountId": "jira-ahsan",
+        "displayName": "Ahsan Iftikhar",
+        "active": True
+    }
+    res1 = await event2_service.process_comment_notification(event=event, current_assignee=assignee, dry_run=True)
+    assert res1["decision"] == "SEND"
+
+    res2 = await event2_service.process_comment_notification(event=event, current_assignee=assignee, dry_run=True)
+    assert res2["decision"] == "ALREADY_PROCESSED"
+

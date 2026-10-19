@@ -31,6 +31,7 @@ from app.core.events.types import TaskCommentAdded
 from app.core.models.enums import ActionStatus, EventScope
 from app.database.connection import DatabaseManager, db_manager
 from app.database.repositories import Event2NotificationRepository, UserMappingRepository
+from app.services.user_identity_service import user_identity_service
 from app.services.user_mapping_service import UserMappingService
 from app.utils.logger import logger
 
@@ -224,6 +225,47 @@ class JiraCommentNotificationService:
             "resolution_method": method
         }
 
+    def is_aqib_author(self, event: TaskCommentAdded) -> bool:
+        """Check if the comment author is canonically Aqib Khan.
+        
+        Evaluates author_id, actor_id, author_name, and actor_name against:
+        1. Canonical Jira account IDs for Aqib Khan:
+           - Primary: 712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0
+           - Alias: 712020:1b564792-a3ab-447c-951d-17aa5507b946
+        2. user_identity_service.is_me() resolution
+        3. Canonical exclusion checks
+        """
+        # 1. Canonical Account ID check
+        aqib_canonical_ids = {
+            "712020:566cad70-4a54-42bc-bf36-0c6132fe3cf0",
+            "712020:1b564792-a3ab-447c-951d-17aa5507b946",
+        }
+        author_id = getattr(event, "author_id", None) or getattr(event, "actor_id", None)
+        if author_id and str(author_id).strip() in aqib_canonical_ids:
+            return True
+
+        # 2. Check via user_identity_service
+        author_email = getattr(event, "actor_email", None)
+        author_name = getattr(event, "author_name", None) or getattr(event, "actor_name", None)
+        if user_identity_service.is_me(account_id=author_id, email=author_email, display_name=author_name):
+            return True
+
+        # 3. Check payload author object if present
+        if isinstance(event.payload, dict):
+            c_obj = event.payload.get("comment", {}) if isinstance(event.payload.get("comment"), dict) else {}
+            c_author = c_obj.get("author", {}) if isinstance(c_obj.get("author"), dict) else {}
+            payload_author_id = c_author.get("accountId")
+            if payload_author_id and str(payload_author_id).strip() in aqib_canonical_ids:
+                return True
+            if user_identity_service.is_me(
+                account_id=payload_author_id,
+                email=c_author.get("emailAddress"),
+                display_name=c_author.get("displayName")
+            ):
+                return True
+
+        return False
+
     async def evaluate_comment_event(
         self,
         event: TaskCommentAdded,
@@ -292,7 +334,15 @@ class JiraCommentNotificationService:
         all_ids, all_names = self.extract_all_mentions(event)
         report["all_mentions"] = all_names or all_ids
 
-        # 3. Detect Leading Structured Mention
+        # 3. Restrict Event 2 Trigger to Aqib Khan
+        if not self.is_aqib_author(event):
+            report["decision"] = "NO_NOTIFICATION"
+            report["reason"] = "COMMENT_AUTHOR_NOT_AQIB"
+            author_desc = getattr(event, "author_id", None) or getattr(event, "actor_id", None) or getattr(event, "author_name", None) or getattr(event, "actor_name", None)
+            logger.info(f"Event 2: Comment {comment_id} authored by non-Aqib user ({author_desc}). Suppressed.")
+            return report
+
+        # 4. Detect Leading Structured Mention
         # Use raw comment body if provided (e.g. from ADF payload), else event.comment_body
         body_to_parse = raw_comment_body
         if not body_to_parse and isinstance(event.payload, dict):
